@@ -40,6 +40,7 @@ class SynthesisResult:
     iteration: int = 0
     hints_applied: List[str] = field(default_factory=list)
     template_opener_type: Optional[str] = None  # For tracking variety across paragraphs
+    template_opener_phrase: Optional[str] = None  # For exact repetition avoidance
 
 
 class LLMProvider:
@@ -217,7 +218,9 @@ class Synthesizer:
                    transformation_hints: Optional[List[TransformationHint]] = None,
                    iteration: int = 0,
                    position_in_document: Optional[tuple] = None,
-                   used_openers: Optional[List[str]] = None) -> SynthesisResult:
+                   used_openers: Optional[List[str]] = None,
+                   used_phrases: Optional[List[str]] = None,
+                   verbose: bool = False) -> SynthesisResult:
         """
         Synthesize new text expressing input meaning in sample style.
 
@@ -231,6 +234,8 @@ class Synthesizer:
             iteration: Current iteration number
             position_in_document: Tuple of (paragraph_index, total_paragraphs) for template selection
             used_openers: List of opener types already used in this document (for variety)
+            used_phrases: List of opener phrases already used (for exact repetition avoidance)
+            verbose: Print template information
 
         Returns:
             SynthesisResult with output text and metadata
@@ -249,7 +254,7 @@ class Synthesizer:
         # Analyze input structure for role-aware synthesis
         input_structure = self.structural_analyzer.analyze_input_structure(input_text)
 
-        # Generate structural template based on position
+        # Generate structural template based on CONTEXT (input + preceding output)
         structural_template = None
         template_opener_type = None
         if self.template_generator and position_in_document:
@@ -266,22 +271,59 @@ class Synthesizer:
             else:
                 role = 'body'
 
-            # Get template with claim count for sizing, using used_openers for variety
+            # Build context: use preceding output as PRIMARY bias
+            context_for_template = input_text
+            if preceding_output:
+                # Use preceding output as primary context (user's requirement)
+                context_for_template = preceding_output + "\n\n" + input_text
+
+            # Get template using CONTEXT-BASED selection (not just position)
+            # This uses semantic similarity to find similar paragraphs from sample
             claim_count = len(semantic_content.claims)
-            structural_template = self.template_generator.get_template_prompt(
-                role, position_ratio, claim_count,
+
+            # Use context-based method with example selector for semantic similarity
+            structural_template = self.template_generator.get_template_prompt_from_context(
+                input_text=input_text,
+                preceding_output=preceding_output,  # PRIMARY bias
+                example_selector=self.example_selector,  # For semantic similarity
+                role=role,
+                position_ratio=position_ratio,
+                claim_count=claim_count,
                 used_openers=used_openers,
+                used_phrases=used_phrases,
                 paragraph_index=para_idx
             )
 
             # Track opener type from this template for variety tracking
-            template = self.template_generator.generate_template(
-                role, position_ratio, claim_count // 2,
+            template = self.template_generator.generate_template_from_context(
+                input_text=input_text,
+                preceding_output=preceding_output,
+                example_selector=self.example_selector,
+                role=role,
+                position_ratio=position_ratio,
+                semantic_weight=claim_count // 2,
                 used_openers=used_openers,
+                used_phrases=used_phrases,
                 paragraph_index=para_idx
             )
+            template_opener_phrase = None
             if template.sentences:
                 template_opener_type = template.sentences[0].opener_type
+                # Note: opener phrase will be extracted from output text after synthesis
+
+            # Print template details in verbose mode
+            if verbose and template:
+                context_info = "with context" if preceding_output else "position-based"
+                print(f"    [Template] Role: {role}, {context_info}")
+                print(f"    [Template] Structure: {template.sentence_count} sentences, ~{template.total_word_count} words")
+                if template.sentences:
+                    for i, sent in enumerate(template.sentences[:3], 1):  # Show first 3 sentences
+                        opener_desc = sent.opener_type.replace('_', ' ')
+                        complexity = f"{sent.clause_count} clause(s)" if sent.clause_count > 1 else "simple"
+                        sub = " + subordinate" if sent.has_subordinate_clause else ""
+                        print(f"    [Template] S{i}: ~{sent.word_count} words, {complexity}{sub}, opener: {opener_desc}")
+                if len(template.sentences) > 3:
+                    print(f"    [Template] ... and {len(template.sentences) - 3} more sentence(s)")
 
         # Build the synthesis prompt with structural awareness
         system_prompt = self._build_system_prompt(style_profile, iteration > 0)
@@ -316,6 +358,10 @@ class Synthesizer:
         # Clean output (pass input_text to detect fabricated citations)
         output_text = self._clean_output(output_text, input_text)
 
+        # Extract opener phrase from output text for variety tracking
+        if output_text and not template_opener_phrase:
+            template_opener_phrase = self.template_generator._extract_opener_phrase(output_text)
+
         # Track which hints were applied
         hints_applied = []
         if transformation_hints:
@@ -331,7 +377,8 @@ class Synthesizer:
             model_used=self.llm.model,
             iteration=iteration,
             hints_applied=hints_applied,
-            template_opener_type=template_opener_type
+            template_opener_type=template_opener_type,
+            template_opener_phrase=template_opener_phrase
         )
 
     def _build_system_prompt(self, style_profile: StyleProfile, is_refinement: bool = False) -> str:

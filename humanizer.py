@@ -40,6 +40,7 @@ class PipelineResult:
     improvement_history: List[float] = field(default_factory=list)
     convergence_achieved: bool = False
     opener_type_used: Optional[str] = None  # For tracking variety across paragraphs
+    opener_phrase_used: Optional[str] = None  # For exact repetition avoidance
 
     def to_dict(self) -> Dict:
         return {
@@ -50,7 +51,8 @@ class PipelineResult:
             'error': self.error,
             'improvement_history': self.improvement_history,
             'convergence_achieved': self.convergence_achieved,
-            'opener_type_used': self.opener_type_used
+            'opener_type_used': self.opener_type_used,
+            'opener_phrase_used': self.opener_phrase_used
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -243,8 +245,9 @@ class StyleTransferPipeline:
         # Track accumulated output for statistical verification
         accumulated_hints = []  # Hints that apply to the whole document
 
-        # Track used opener types for variety across paragraphs
+        # Track used opener types and phrases for variety across paragraphs
         used_openers = []
+        used_phrases = []
 
         for i, para in enumerate(paragraphs):
             if verbose:
@@ -268,17 +271,24 @@ class StyleTransferPipeline:
                 doc_level_hints=doc_level_hints,
                 position_in_document=position,
                 used_openers=used_openers,  # Pass for variety
+                used_phrases=used_phrases,  # Pass for exact repetition avoidance
                 verbose=verbose
             )
 
             if result.output_text:
                 transformed_paragraphs.append(result.output_text)
 
-                # Track the opener type used for variety
+                # Track the opener type and phrase used for variety
                 if result.opener_type_used:
                     used_openers.append(result.opener_type_used)
-                    if verbose:
-                        print(f"  [Variety] Opener type: {result.opener_type_used} (avoiding: {used_openers[-3:] if len(used_openers) > 1 else 'none yet'})")
+                if result.opener_phrase_used:
+                    used_phrases.append(result.opener_phrase_used)
+                if verbose and (result.opener_type_used or result.opener_phrase_used):
+                    avoiding_types = used_openers[-3:] if len(used_openers) > 1 else []
+                    avoiding_phrases = used_phrases[-5:] if len(used_phrases) > 1 else []
+                    print(f"  [Variety] Opener type: {result.opener_type_used or 'N/A'}, phrase: '{result.opener_phrase_used or 'N/A'}'")
+                    if avoiding_types or avoiding_phrases:
+                        print(f"  [Variety] Avoiding types: {avoiding_types}, phrases: {avoiding_phrases[:3]}")
 
                 # Every 3 paragraphs, run statistical check on accumulated output
                 if (i + 1) % 3 == 0 and self.verifier._stats_initialized:
@@ -346,6 +356,7 @@ class StyleTransferPipeline:
                                           doc_level_hints: Optional[List[str]] = None,
                                           position_in_document: Optional[Tuple[int, int]] = None,
                                           used_openers: Optional[List[str]] = None,
+                                          used_phrases: Optional[List[str]] = None,
                                           verbose: bool = False) -> PipelineResult:
         """
         Transform a single paragraph with full document context and iterative refinement.
@@ -358,6 +369,7 @@ class StyleTransferPipeline:
             doc_level_hints: Document-level hints (e.g., avoid overused words)
             position_in_document: (current_index, total_paragraphs) for position-aware checks
             used_openers: List of opener types already used in document (for variety)
+            used_phrases: List of opener phrases already used (for exact repetition avoidance)
             verbose: Print progress information
         """
         # Extract paragraph-specific semantics
@@ -370,6 +382,7 @@ class StyleTransferPipeline:
         transformation_hints = None
         convergence_achieved = False
         last_opener_type = None  # Track the opener type used for variety
+        last_opener_phrase = None  # Track the opener phrase used for exact repetition avoidance
 
         # Store position for use in verification
         self._current_position = position_in_document
@@ -408,7 +421,9 @@ class StyleTransferPipeline:
                 transformation_hints=transformation_hints,
                 iteration=iteration - 1,
                 position_in_document=self._current_position,
-                used_openers=used_openers  # For template variety
+                used_openers=used_openers,  # For template variety
+                used_phrases=used_phrases,  # For exact repetition avoidance
+                verbose=verbose  # Print template details
             )
 
             if not synthesis_result.output_text.strip():
@@ -416,9 +431,11 @@ class StyleTransferPipeline:
                     print("    WARNING: Empty output from synthesizer")
                 continue
 
-            # Track opener type for variety
+            # Track opener type and phrase for variety
             if synthesis_result.template_opener_type:
                 last_opener_type = synthesis_result.template_opener_type
+            if synthesis_result.template_opener_phrase:
+                last_opener_phrase = synthesis_result.template_opener_phrase
 
             # Build accumulated context for full-document statistical analysis
             if preceding_output:
@@ -461,7 +478,8 @@ class StyleTransferPipeline:
                     error=None,
                     improvement_history=improvement_history,
                     convergence_achieved=True,
-                    opener_type_used=last_opener_type
+                    opener_type_used=last_opener_type,
+                    opener_phrase_used=last_opener_phrase
                 )
 
             # Check for convergence
@@ -484,7 +502,8 @@ class StyleTransferPipeline:
             error=None if best_output else "Failed to generate valid output",
             improvement_history=improvement_history,
             convergence_achieved=convergence_achieved,
-            opener_type_used=last_opener_type
+            opener_type_used=last_opener_type,
+            opener_phrase_used=last_opener_phrase
         )
 
     def _calculate_score(self, verification: VerificationResult) -> float:
