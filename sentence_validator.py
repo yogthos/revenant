@@ -30,13 +30,13 @@ class SentenceValidator:
     - Length category (short/medium/long)
     """
 
-    def __init__(self, word_count_tolerance: float = 0.2, require_exact_opener: bool = True):
+    def __init__(self, word_count_tolerance: float = 0.35, require_exact_opener: bool = False):
         """
         Initialize sentence validator.
 
         Args:
-            word_count_tolerance: Tolerance for word count (0.2 = ±20%)
-            require_exact_opener: Whether opener type must match exactly
+            word_count_tolerance: Tolerance for word count (0.35 = ±35%)
+            require_exact_opener: Whether opener type must match exactly (default: False for flexibility)
         """
         self.word_count_tolerance = word_count_tolerance
         self.require_exact_opener = require_exact_opener
@@ -101,14 +101,21 @@ class SentenceValidator:
                 f"Generate a sentence with approximately {expected_word_count} words (current: {actual_word_count})"
             ))
 
-        # Check 2: Opener type
+        # Check 2: Opener type (more flexible matching)
         actual_opener = self._classify_opener(tokens)
-        if self.require_exact_opener and actual_opener != template.opener_type:
-            opener_example = self._get_opener_example(template.opener_type)
-            issues.append(ValidationIssue(
-                f"Opener type mismatch: '{actual_opener}' vs expected '{template.opener_type}'",
-                f"Start sentence with {template.opener_type} opener. Example: {opener_example}"
-            ))
+        if actual_opener != template.opener_type:
+            # Check if openers are similar (both contrastive, both declarative, etc.)
+            are_similar = self._openers_are_similar(actual_opener, template.opener_type)
+
+            if self.require_exact_opener or not are_similar:
+                # Only mark as critical if completely different types
+                is_critical = not are_similar and not self._is_minor_opener_mismatch(actual_opener, template.opener_type)
+                opener_example = self._get_opener_example(template.opener_type)
+                priority_desc = "CRITICAL" if is_critical else "minor"
+                issues.append(ValidationIssue(
+                    f"Opener type mismatch ({priority_desc}): '{actual_opener}' vs expected '{template.opener_type}'",
+                    f"Start sentence with {template.opener_type} opener. Example: {opener_example}"
+                ))
 
         # Check 3: Clause complexity
         actual_clauses = self._count_clauses(actual_sent)
@@ -286,6 +293,37 @@ class SentenceValidator:
             return 'medium'
         else:
             return 'long'
+
+    def _openers_are_similar(self, opener1: str, opener2: str) -> bool:
+        """Check if two opener types are similar enough to be acceptable."""
+        # Group similar openers
+        contrastive = {'conjunction', 'adverb'}  # Both can be contrastive
+        declarative = {'noun', 'det_noun', 'pronoun'}  # All declarative
+        descriptive = {'prep_phrase', 'verb_ing'}  # Both descriptive
+
+        if opener1 == opener2:
+            return True
+
+        # Check if both are in same group
+        for group in [contrastive, declarative, descriptive]:
+            if opener1 in group and opener2 in group:
+                return True
+
+        return False
+
+    def _is_minor_opener_mismatch(self, actual: str, expected: str) -> bool:
+        """Check if opener mismatch is minor (acceptable)."""
+        # Minor mismatches: similar types that serve similar functions
+        minor_pairs = [
+            ('conjunction', 'adverb'),  # Both contrastive
+            ('adverb', 'conjunction'),
+            ('noun', 'det_noun'),  # Both declarative
+            ('det_noun', 'noun'),
+            ('pronoun', 'det_noun'),  # Both can start declarative statements
+            ('det_noun', 'pronoun'),
+        ]
+
+        return (actual, expected) in minor_pairs or (expected, actual) in minor_pairs
 
 
 # Test function

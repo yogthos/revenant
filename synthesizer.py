@@ -691,9 +691,14 @@ Return ONLY the rewritten text. No commentary, no explanations, no added citatio
             parts.append(f"\n{preceding_output}")
             parts.append("\n(Match the vocabulary choices and tone established above.)")
 
-        # Add semantic content summary
-        parts.append("\n\n## SEMANTIC CONTENT TO EXPRESS")
+        # Add semantic content summary (MANDATORY - ALL CLAIMS MUST BE INCLUDED)
+        parts.append("\n\n## 🔒 SEMANTIC CONTENT TO EXPRESS (MANDATORY - ALL MUST BE INCLUDED)")
+        parts.append("**CRITICAL**: You MUST express ALL of the following claims. Do not omit, condense, or combine them.")
+        parts.append("Every claim below must appear in your output. Count them and verify all are present.")
+        parts.append("")
         parts.append(self._format_semantic_content(semantic_content))
+        parts.append("")
+        parts.append("**VERIFICATION**: After generating, count the claims in your output and ensure all claims above are expressed.")
 
         # Add preserved elements
         parts.append("\n\n## MUST PRESERVE EXACTLY")
@@ -799,12 +804,16 @@ Return ONLY the rewritten text. No commentary, no explanations, no added citatio
         """Format semantic content for the prompt."""
         parts = []
 
-        # Key claims
-        parts.append("### Key Claims (must all be expressed):")
-        for i, claim in enumerate(content.claims[:15], 1):
+        # Key claims - list ALL claims explicitly
+        total_claims = len(content.claims)
+        parts.append(f"### Key Claims (ALL {total_claims} must be expressed - do not omit any):")
+        for i, claim in enumerate(content.claims, 1):  # Show ALL claims, not just first 15
             confidence_str = "certain" if claim.confidence > 0.8 else "likely" if claim.confidence > 0.5 else "possible"
             citations_str = f" {' '.join(claim.citations)}" if claim.citations else ""
             parts.append(f"{i}. [{confidence_str}] {claim.text}{citations_str}")
+
+        if total_claims > 0:
+            parts.append(f"\n**Total: {total_claims} claims. You must express ALL {total_claims} claims in your output.**")
 
         # Key relationships
         if content.relationships:

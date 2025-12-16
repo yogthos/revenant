@@ -96,14 +96,42 @@ class SemanticWordMapper:
             similarity_threshold: Minimum cosine similarity for mapping (0.0-1.0)
             min_sample_frequency: Minimum occurrences in sample to consider a word
         """
-        # Load spaCy model
+        # Load spaCy model (prefer one with word vectors)
         if nlp_model is None:
-            try:
-                self.nlp = spacy.load("en_core_web_sm")
-            except OSError:
-                import subprocess
-                subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
-                self.nlp = spacy.load("en_core_web_sm")
+            # Try to load a model with vectors, fallback to sm if not available
+            models_to_try = ["en_core_web_md", "en_core_web_lg", "en_core_web_sm"]
+            self.nlp = None
+
+            for model_name in models_to_try:
+                try:
+                    self.nlp = spacy.load(model_name)
+                    # Check if model has vectors
+                    if self.nlp.vocab.vectors.size > 0:
+                        break
+                    else:
+                        # Model loaded but no vectors, try next
+                        self.nlp = None
+                except OSError:
+                    continue
+
+            # If no model with vectors found, try to download md model
+            if self.nlp is None:
+                try:
+                    import subprocess
+                    print(f"  [SemanticWordMapper] Downloading en_core_web_md (required for word vectors)...")
+                    subprocess.run(["python", "-m", "spacy", "download", "en_core_web_md"], check=False)
+                    self.nlp = spacy.load("en_core_web_md")
+                except (OSError, subprocess.CalledProcessError):
+                    # Fallback to sm model (will warn about no vectors)
+                    try:
+                        self.nlp = spacy.load("en_core_web_sm")
+                        print(f"  [SemanticWordMapper] WARNING: en_core_web_sm has no word vectors. Semantic mapping will be disabled.")
+                        print(f"  [SemanticWordMapper] Install en_core_web_md for word vector support: python -m spacy download en_core_web_md")
+                    except OSError:
+                        import subprocess
+                        subprocess.run(["python", "-m", "spacy", "download", "en_core_web_sm"])
+                        self.nlp = spacy.load("en_core_web_sm")
+                        print(f"  [SemanticWordMapper] WARNING: en_core_web_sm has no word vectors. Semantic mapping will be disabled.")
         else:
             self.nlp = nlp_model
 
@@ -116,9 +144,15 @@ class SemanticWordMapper:
 
         # Build mappings from common words to sample equivalents
         self.mappings: Dict[str, Dict[str, str]] = defaultdict(dict)  # POS -> {common_word -> sample_word}
-        self._build_mappings()
 
-        print(f"  [SemanticWordMapper] Built {sum(len(m) for m in self.mappings.values())} word mappings")
+        # Only build mappings if model has vectors
+        if self.nlp.vocab.vectors.size > 0:
+            self._build_mappings()
+            total_mappings = sum(len(m) for m in self.mappings.values())
+            print(f"  [SemanticWordMapper] Built {total_mappings} word mappings")
+        else:
+            print(f"  [SemanticWordMapper] WARNING: Model has no word vectors. Semantic mapping disabled.")
+            print(f"  [SemanticWordMapper] Install en_core_web_md for word vector support: python -m spacy download en_core_web_md")
 
     def _extract_sample_vocabulary(self, text: str):
         """Extract vocabulary from sample text with word vectors and frequencies."""

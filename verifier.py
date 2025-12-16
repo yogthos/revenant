@@ -203,6 +203,11 @@ class Verifier:
                 if 'min_structural_match' in verification:
                     self.min_structural_match = verification['min_structural_match']
 
+                # Also check semantic_preservation config for min_claim_coverage (takes precedence)
+                semantic_preservation = config.get('semantic_preservation', {})
+                if 'min_claim_coverage' in semantic_preservation:
+                    self.min_claim_coverage = semantic_preservation['min_claim_coverage']
+
             except (json.JSONDecodeError, IOError):
                 pass  # Use defaults if config can't be read
 
@@ -303,6 +308,24 @@ class Verifier:
             accumulated_context=accumulated_context,
             position_in_document=position_in_document
         )
+
+        # CRITICAL: Add semantic preservation hints if claims are missing
+        semantic_config = self.config.get("semantic_preservation", {})
+        min_claim_coverage = semantic_config.get("min_claim_coverage", 0.95)
+
+        if semantic_result.claim_coverage < min_claim_coverage and semantic_result.missing_claims:
+            missing_count = len(semantic_result.missing_claims)
+            total_count = len(input_semantics.claims) if input_semantics else 0
+            transformation_hints.append(TransformationHint(
+                sentence_index=-1,
+                current_text=output_text[:100] if len(output_text) > 100 else output_text,
+                structural_role="document",
+                expected_patterns=[],
+                issue=f"🚨 CRITICAL: Missing {missing_count} of {total_count} claims ({semantic_result.claim_coverage:.0%} coverage). Semantic content has been lost.",
+                suggestion=f"You MUST include ALL of the following missing claims in your output:\n" +
+                          "\n".join([f"- {claim}" for claim in semantic_result.missing_claims[:10]]),
+                priority=1  # Highest priority - semantic loss is critical
+            ))
 
         # Add sentence template validation hints (CRITICAL - must be checked)
         sentence_template_hints = self._validate_sentence_templates(
@@ -500,8 +523,15 @@ class Verifier:
             issues = sentence_validator.validate_sentence(sentence_text, sentence_template)
 
             for issue in issues:
-                # Determine priority: mismatches are critical, others are important
-                priority = 1 if "mismatch" in issue.description.lower() else 2
+                # Determine priority: only structural/critical mismatches are priority 1
+                # Minor mismatches (word count slightly off, similar opener) are priority 2
+                is_critical = (
+                    "CRITICAL" in issue.description or
+                    ("mismatch" in issue.description.lower() and "minor" not in issue.description.lower()) or
+                    "complexity too low" in issue.description.lower() or
+                    "Missing subordinate clause" in issue.description
+                )
+                priority = 1 if is_critical else 2
 
                 hints.append(TransformationHint(
                     sentence_index=i,
@@ -626,9 +656,17 @@ class Verifier:
         preserved_claims = []
         missing_claims = []
 
+        # Load semantic preservation config
+        semantic_config = self.config.get("semantic_preservation", {})
+        require_full_expression = semantic_config.get("require_full_expression", True)
+
         for claim in input_claims:
-            # Check if key concepts from claim appear in output
-            claim_preserved = self._claim_appears_in_output(claim, output_text_lower)
+            # Check if claim is fully expressed (not just mentioned)
+            if require_full_expression:
+                claim_preserved = self._claim_fully_expressed(claim, output_text_lower)
+            else:
+                claim_preserved = self._claim_appears_in_output(claim, output_text_lower)
+
             if claim_preserved:
                 preserved_claims.append(claim.text)
             else:
@@ -715,6 +753,34 @@ class Verifier:
         # Check if majority of key words appear in output
         found = sum(1 for w in key_words if w in output_lower)
         return found >= len(key_words) * 0.6  # 60% of key words found
+
+    def _claim_fully_expressed(self, claim: Claim, output_lower: str) -> bool:
+        """Check if claim is fully expressed, not just mentioned.
+
+        Requires subject + predicate, or subject + at least one object.
+        """
+        # Check for subject (key concepts)
+        subject_words = [w.lower() for w in claim.subject.split()
+                        if len(w) > 3 and w.lower() not in ('the', 'this', 'that', 'these', 'those', 'a', 'an')]
+        subject_present = any(word in output_lower for word in subject_words) if subject_words else False
+
+        # Check for predicate (action/relationship)
+        predicate_lower = claim.predicate.lower()
+        predicate_present = predicate_lower in output_lower
+
+        # Check for objects (targets/entities)
+        objects_present = False
+        if claim.objects:
+            for obj in claim.objects:
+                obj_words = [w.lower() for w in obj.split()
+                            if len(w) > 3 and w.lower() not in ('the', 'this', 'that', 'a', 'an')]
+                if obj_words and any(word in output_lower for word in obj_words):
+                    objects_present = True
+                    break
+
+        # Require at least subject + predicate, or subject + one object
+        # This ensures the claim is fully expressed, not just mentioned in passing
+        return (subject_present and predicate_present) or (subject_present and objects_present)
 
     def _verify_style(self,
                       output_text: str,

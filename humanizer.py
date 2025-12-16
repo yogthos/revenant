@@ -45,6 +45,7 @@ class PipelineResult:
     convergence_achieved: bool = False
     opener_type_used: Optional[str] = None  # For tracking variety across paragraphs
     opener_phrase_used: Optional[str] = None  # For exact repetition avoidance
+    semantic_coverage: float = 1.0  # Semantic coverage (0.0-1.0) - tracks claim preservation
 
     def to_dict(self) -> Dict:
         return {
@@ -56,7 +57,8 @@ class PipelineResult:
             'improvement_history': self.improvement_history,
             'convergence_achieved': self.convergence_achieved,
             'opener_type_used': self.opener_type_used,
-            'opener_phrase_used': self.opener_phrase_used
+            'opener_phrase_used': self.opener_phrase_used,
+            'semantic_coverage': self.semantic_coverage
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -250,6 +252,35 @@ class StyleTransferPipeline:
 
         return {}  # Return empty dict with defaults
 
+    def _get_semantic_preservation_config(self) -> Dict[str, Any]:
+        """Get semantic preservation configuration from config file."""
+        if self.config_path is None:
+            config_path = Path(__file__).parent / "config.json"
+        else:
+            config_path = Path(self.config_path)
+
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get("semantic_preservation", {})
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        return {}  # Return empty dict with defaults
+
+    def _check_semantic_coverage(self, output_text: str, input_semantics: SemanticContent) -> float:
+        """Check semantic coverage of output text against input semantics.
+
+        Returns coverage as float between 0.0 and 1.0.
+        """
+        if not output_text or not input_semantics or not input_semantics.claims:
+            return 0.0
+
+        # Use verifier's semantic checking
+        semantic_result = self.verifier._verify_semantics("", output_text, input_semantics)
+        return semantic_result.claim_coverage
+
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count (rough: ~4 chars per token for English)."""
         return len(text) // 4
@@ -340,7 +371,8 @@ class StyleTransferPipeline:
                 final_verification=None,
                 semantic_content=None,
                 style_profile=self._style_profile,
-                error=str(e)
+                error=str(e),
+                semantic_coverage=0.0
             )
 
     def _transform_streaming(self, input_text: str,
@@ -507,6 +539,19 @@ class StyleTransferPipeline:
             target_style=self._style_profile
         )
 
+        # Calculate final semantic coverage
+        final_semantic_coverage = final_verification.semantic.claim_coverage if final_verification else 1.0
+
+        if verbose:
+            semantic_config = self._get_semantic_preservation_config()
+            min_claim_coverage = semantic_config.get("min_claim_coverage", 0.95)
+            if final_semantic_coverage < min_claim_coverage:
+                print(f"\n  ⚠️  WARNING: Semantic coverage {final_semantic_coverage:.0%} < {min_claim_coverage:.0%} threshold")
+                if final_verification and final_verification.semantic.missing_claims:
+                    print(f"  Missing claims: {len(final_verification.semantic.missing_claims)}")
+            else:
+                print(f"\n  ✓ Semantic coverage: {final_semantic_coverage:.0%}")
+
         return PipelineResult(
             success=final_verification.overall_passed,
             output_text=combined_output,
@@ -514,7 +559,8 @@ class StyleTransferPipeline:
             final_verification=final_verification,
             semantic_content=full_document_semantics,
             style_profile=self._style_profile,
-            error=None
+            error=None,
+            semantic_coverage=final_semantic_coverage
         )
 
     def _transform_paragraph_with_context(self,
@@ -646,7 +692,16 @@ class StyleTransferPipeline:
                     print("    WARNING: Empty output from synthesizer")
                 continue
 
-            # Validate sentences against template BEFORE verification
+            # Check semantic coverage BEFORE sentence validation
+            # This ensures we don't reject output that preserves semantics
+            semantic_coverage = self._check_semantic_coverage(
+                synthesis_result.output_text, para_semantics
+            )
+
+            if verbose and semantic_coverage < 0.95:
+                print(f"    [Semantic] Coverage: {semantic_coverage:.0%}")
+
+            # Validate sentences against template
             sentence_hints = []
             paragraph_template = synthesis_result.paragraph_template
             if paragraph_template and self.sentence_validator:
@@ -656,20 +711,49 @@ class StyleTransferPipeline:
                     self.sentence_validator
                 )
 
-            # If CRITICAL sentence hints exist, add to transformation hints and continue iteration
+            # If CRITICAL sentence hints exist, check semantic coverage before rejecting
             critical_sentence_hints = [h for h in sentence_hints if h.priority == 1]
-            if critical_sentence_hints:
-                if transformation_hints:
-                    transformation_hints.extend(critical_sentence_hints)
-                else:
-                    transformation_hints = critical_sentence_hints
 
-                # Force another iteration (don't accept this output)
-                if verbose:
-                    print(f"    REJECTED: {len(critical_sentence_hints)} sentences don't match templates")
-                    for hint in critical_sentence_hints[:3]:
-                        print(f"      - {hint.issue}")
-                continue  # Skip verification, regenerate
+            # Load semantic preservation config
+            semantic_config = self._get_semantic_preservation_config()
+            reject_on_semantic_loss = semantic_config.get("reject_on_semantic_loss", True)
+            min_claim_coverage = semantic_config.get("min_claim_coverage", 0.95)
+
+            if critical_sentence_hints:
+                # Only reject if BOTH sentence validation fails AND semantics are lost
+                if semantic_coverage >= min_claim_coverage:
+                    # Semantic coverage is good - add hints but don't reject
+                    # Allow minor sentence issues if semantics are preserved
+                    if transformation_hints:
+                        transformation_hints.extend(critical_sentence_hints)
+                    else:
+                        transformation_hints = critical_sentence_hints
+
+                    if verbose:
+                        print(f"    [Semantic Preserved] {len(critical_sentence_hints)} sentence issues, but {semantic_coverage:.0%} semantic coverage - continuing")
+                    # Continue to verification instead of rejecting
+                elif reject_on_semantic_loss and semantic_coverage < min_claim_coverage:
+                    # Both sentence validation fails AND semantics are lost - reject
+                    if transformation_hints:
+                        transformation_hints.extend(critical_sentence_hints)
+                    else:
+                        transformation_hints = critical_sentence_hints
+
+                    if verbose:
+                        print(f"    REJECTED: {len(critical_sentence_hints)} sentences don't match templates AND semantic coverage {semantic_coverage:.0%} < {min_claim_coverage:.0%}")
+                        for hint in critical_sentence_hints[:3]:
+                            print(f"      - {hint.issue}")
+                    continue  # Skip verification, regenerate
+                else:
+                    # Reject on sentence validation failure (semantic loss not configured to reject)
+                    if transformation_hints:
+                        transformation_hints.extend(critical_sentence_hints)
+                    else:
+                        transformation_hints = critical_sentence_hints
+
+                    if verbose:
+                        print(f"    REJECTED: {len(critical_sentence_hints)} sentences don't match templates")
+                    continue  # Skip verification, regenerate
 
             # Track opener type and phrase for variety
             if synthesis_result.template_opener_type:
@@ -711,6 +795,9 @@ class StyleTransferPipeline:
 
             # Check if passed
             if verification.overall_passed:
+                # Calculate semantic coverage for this result
+                para_coverage = self._check_semantic_coverage(synthesis_result.output_text, para_semantics)
+
                 return PipelineResult(
                     success=True,
                     output_text=synthesis_result.output_text,
@@ -722,7 +809,8 @@ class StyleTransferPipeline:
                     improvement_history=improvement_history,
                     convergence_achieved=True,
                     opener_type_used=last_opener_type,
-                    opener_phrase_used=last_opener_phrase
+                    opener_phrase_used=last_opener_phrase,
+                    semantic_coverage=para_coverage
                 )
 
             # Check for convergence
@@ -733,6 +821,9 @@ class StyleTransferPipeline:
                     if verbose:
                         print(f"    Convergence reached")
                     break
+
+        # Calculate semantic coverage for best result
+        best_coverage = self._check_semantic_coverage(best_output, para_semantics) if best_output else 0.0
 
         # Return best result
         return PipelineResult(
@@ -746,7 +837,8 @@ class StyleTransferPipeline:
             improvement_history=improvement_history,
             convergence_achieved=convergence_achieved,
             opener_type_used=last_opener_type,
-            opener_phrase_used=last_opener_phrase
+            opener_phrase_used=last_opener_phrase,
+            semantic_coverage=best_coverage
         )
 
     def _transform_chunk_with_context(self,
@@ -862,7 +954,15 @@ class StyleTransferPipeline:
             if not synthesis_result.output_text:
                 continue
 
-            # Validate sentences against template BEFORE verification
+            # Check semantic coverage BEFORE sentence validation
+            semantic_coverage = self._check_semantic_coverage(
+                synthesis_result.output_text, chunk_semantics
+            )
+
+            if verbose and semantic_coverage < 0.95:
+                print(f"    [Semantic] Coverage: {semantic_coverage:.0%}")
+
+            # Validate sentences against template
             sentence_hints = []
             paragraph_template = synthesis_result.paragraph_template
             if paragraph_template and self.sentence_validator:
@@ -872,18 +972,45 @@ class StyleTransferPipeline:
                     self.sentence_validator
                 )
 
-            # If CRITICAL sentence hints exist, add to transformation hints and continue iteration
+            # If CRITICAL sentence hints exist, check semantic coverage before rejecting
             critical_sentence_hints = [h for h in sentence_hints if h.priority == 1]
-            if critical_sentence_hints:
-                if transformation_hints:
-                    transformation_hints.extend(critical_sentence_hints)
-                else:
-                    transformation_hints = critical_sentence_hints
 
-                # Force another iteration (don't accept this output)
-                if verbose:
-                    print(f"    REJECTED: {len(critical_sentence_hints)} sentences don't match templates")
-                continue  # Skip verification, regenerate
+            # Load semantic preservation config
+            semantic_config = self._get_semantic_preservation_config()
+            reject_on_semantic_loss = semantic_config.get("reject_on_semantic_loss", True)
+            min_claim_coverage = semantic_config.get("min_claim_coverage", 0.95)
+
+            if critical_sentence_hints:
+                # Only reject if BOTH sentence validation fails AND semantics are lost
+                if semantic_coverage >= min_claim_coverage:
+                    # Semantic coverage is good - add hints but don't reject
+                    if transformation_hints:
+                        transformation_hints.extend(critical_sentence_hints)
+                    else:
+                        transformation_hints = critical_sentence_hints
+
+                    if verbose:
+                        print(f"    [Semantic Preserved] {len(critical_sentence_hints)} sentence issues, but {semantic_coverage:.0%} semantic coverage - continuing")
+                elif reject_on_semantic_loss and semantic_coverage < min_claim_coverage:
+                    # Both sentence validation fails AND semantics are lost - reject
+                    if transformation_hints:
+                        transformation_hints.extend(critical_sentence_hints)
+                    else:
+                        transformation_hints = critical_sentence_hints
+
+                    if verbose:
+                        print(f"    REJECTED: {len(critical_sentence_hints)} sentences don't match templates AND semantic coverage {semantic_coverage:.0%} < {min_claim_coverage:.0%}")
+                    continue  # Skip verification, regenerate
+                else:
+                    # Reject on sentence validation failure
+                    if transformation_hints:
+                        transformation_hints.extend(critical_sentence_hints)
+                    else:
+                        transformation_hints = critical_sentence_hints
+
+                    if verbose:
+                        print(f"    REJECTED: {len(critical_sentence_hints)} sentences don't match templates")
+                    continue  # Skip verification, regenerate
 
             # Verify (create dummy input text from claims for verification)
             dummy_input_text = " ".join([claim.text for claim in chunk_semantics.claims[:3]])
@@ -921,6 +1048,9 @@ class StyleTransferPipeline:
             if verification.overall_passed:
                 if verbose:
                     print(f"    Verification passed after {iteration + 1} iterations")
+                # Calculate semantic coverage for this result
+                chunk_coverage = self._check_semantic_coverage(synthesis_result.output_text, chunk_semantics)
+
                 return PipelineResult(
                     success=True,
                     output_text=synthesis_result.output_text,
@@ -932,7 +1062,8 @@ class StyleTransferPipeline:
                     improvement_history=improvement_history,
                     convergence_achieved=True,
                     opener_type_used=last_opener_type,
-                    opener_phrase_used=last_opener_phrase
+                    opener_phrase_used=last_opener_phrase,
+                    semantic_coverage=chunk_coverage
                 )
 
             # Check for convergence
@@ -943,6 +1074,9 @@ class StyleTransferPipeline:
                     if verbose:
                         print(f"    Convergence reached")
                     break
+
+        # Calculate semantic coverage for best result
+        best_coverage = self._check_semantic_coverage(best_output, chunk_semantics) if best_output else 0.0
 
         # Return best result
         return PipelineResult(
@@ -956,7 +1090,8 @@ class StyleTransferPipeline:
             improvement_history=improvement_history,
             convergence_achieved=convergence_achieved,
             opener_type_used=last_opener_type,
-            opener_phrase_used=last_opener_phrase
+            opener_phrase_used=last_opener_phrase,
+            semantic_coverage=best_coverage
         )
 
     def _calculate_score(self, verification: VerificationResult) -> float:
