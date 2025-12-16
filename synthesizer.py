@@ -266,8 +266,8 @@ class Synthesizer:
             max_tokens=max_tokens
         )
 
-        # Clean output
-        output_text = self._clean_output(output_text)
+        # Clean output (pass input_text to detect fabricated citations)
+        output_text = self._clean_output(output_text, input_text)
 
         # Track which hints were applied
         hints_applied = []
@@ -311,21 +311,27 @@ CRITICAL: You must FULLY TRANSFORM the text, not just make minor edits. The outp
 
         prompt += """## CORE TASK
 - Take the semantic content (facts, claims, relationships)
-- Express it using the EXACT patterns, phrases, and constructions of the target style
-- EVERY sentence should reflect the target style's characteristics
+- Express it using the patterns, phrases, and constructions of the target style
+- Vary your sentence structures - do NOT overuse any single pattern
 
 ## WHAT YOU MUST PRESERVE
 1. All facts and claims (meaning)
-2. All citations [^N]
+2. ONLY citations that exist in the original - DO NOT ADD NEW CITATIONS
 3. Technical terms and proper nouns
 4. Logical flow
 
-## WHAT YOU MUST CHANGE (MANDATORY)
-1. Sentence structure - MUST use target style patterns
-2. Sentence openers - Use "Contrary to...", "Hence,...", "The X method therefore..."
-3. Sentence length - Target 25-35 words with multiple clauses
-4. Discourse markers - Use "therefore", "hence", "consequently", "however"
+## WHAT YOU MUST CHANGE
+1. Sentence structure - vary between the target style patterns
+2. Sentence openers - VARY them: some with "Contrary to...", some with "The...", some with subjects
+3. Sentence length - Target 20-35 words, but VARY the lengths naturally
+4. Discourse markers - Use sparingly: "therefore", "hence", "consequently" should NOT appear in every paragraph
 5. Word choice - Match target vocabulary
+
+## CRITICAL: AVOID REPETITION
+- Do NOT use the same discourse marker (therefore/hence/consequently) more than twice per page
+- Do NOT start every paragraph with "Contrary to..."
+- Do NOT add any citations, footnotes, or references that are not in the original text
+- Vary your sentence structures throughout the document
 
 ## FORBIDDEN (AI-TYPICAL PATTERNS) - NEVER USE THESE
 ### Words to NEVER use:
@@ -352,13 +358,18 @@ innovative, transformative, streamline, optimize, scalable, nuanced, comprehensi
 - "unique perspective", "rich tapestry", "serves as a"
 
 ### INSTEAD use direct, assertive language like the target style:
-- "Contrary to X, Y holds that..."
-- "The X method therefore holds that..."
-- "Hence, it is clear that..."
+- "Contrary to X, Y holds that..." (use sparingly - not every paragraph)
+- "The X therefore holds that..."
 - "It follows from this that..."
+- Simple declarative statements with strong verbs
+
+## CRITICAL RULES
+1. DO NOT ADD CITATIONS - only preserve citations from the original text
+2. DO NOT overuse any word or phrase - variety is essential
+3. If input has no citations, output should have no citations
 
 ## OUTPUT
-Return ONLY the rewritten text. No commentary, no explanations.
+Return ONLY the rewritten text. No commentary, no explanations, no added citations.
 """
 
         # Add style guide
@@ -590,12 +601,16 @@ Return ONLY the rewritten text. No commentary, no explanations.
 
         return excerpts[:3]
 
-    def _clean_output(self, text: str) -> str:
+    def _clean_output(self, text: str, input_text: str = "") -> str:
         """
         Clean LLM output and remove AI fingerprints.
 
         Uses AIWordReplacer to find contextually appropriate replacements
         from the sample text vocabulary instead of hardcoded alternatives.
+
+        Args:
+            text: The LLM output to clean
+            input_text: The original input (to check for citations)
         """
         import re
 
@@ -624,6 +639,20 @@ Return ONLY the rewritten text. No commentary, no explanations.
             if lines and lines[-1].strip() == '```':
                 lines = lines[:-1]
             text = '\n'.join(lines)
+
+        # Remove fabricated citations if input had none
+        if input_text:
+            input_has_citations = bool(re.search(r'\[\^?\d+\]', input_text))
+            if not input_has_citations:
+                # First remove citation definitions at the end [^1]: text or [1]: text
+                # This must come first to avoid partial matches
+                text = re.sub(r'^\[\^?\d+\]:.*$', '', text, flags=re.MULTILINE)
+                # Then remove inline footnote citations [^1] or [1]
+                text = re.sub(r'\s*\[\^?\d+\]', '', text)
+                # Clean up multiple blank lines
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                # Clean up any leftover blank lines at the end
+                text = text.strip()
 
         # Use AIWordReplacer for contextual replacements from sample vocabulary
         if self.ai_word_replacer:
@@ -663,7 +692,67 @@ Return ONLY the rewritten text. No commentary, no explanations.
         for pattern, replacement in stylistic_fixes.items():
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
+        # Reduce overused discourse markers
+        text = self._reduce_repetition(text)
+
         return text.strip()
+
+    def _reduce_repetition(self, text: str) -> str:
+        """
+        Reduce overused words by replacing excess occurrences with alternatives.
+
+        The sample text uses discourse markers sparingly:
+        - "consequently": ~5 times in 400+ lines
+        - "therefore": ~11 times
+        - "hence": ~0 times
+
+        We should match this frequency, not overuse them.
+        """
+        import re
+
+        # Words that get overused and their alternatives
+        overused_words = {
+            'consequently': ['as a result', 'thus', 'accordingly', ''],
+            'therefore': ['thus', 'accordingly', 'so', ''],
+            'hence': ['thus', 'accordingly', 'so', ''],
+            'however': ['yet', 'but', 'still', ''],
+        }
+
+        # Maximum allowed occurrences per ~500 words (roughly one page)
+        word_count = len(text.split())
+        max_per_page = 2
+        max_occurrences = max(2, (word_count // 500) * max_per_page)
+
+        for word, alternatives in overused_words.items():
+            pattern = re.compile(r'\b' + word + r'\b', re.IGNORECASE)
+
+            # Count occurrences
+            matches = list(pattern.finditer(text))
+            excess = len(matches) - max_occurrences
+
+            if excess > 0:
+                # Replace excess occurrences from the end backwards
+                # This avoids index shifting issues
+                alt_idx = 0
+                for match in reversed(matches[max_occurrences:]):
+                    replacement = alternatives[alt_idx % len(alternatives)]
+                    alt_idx += 1
+
+                    # Match case
+                    if match.group(0)[0].isupper():
+                        replacement = replacement.capitalize() if replacement else ''
+
+                    # Replace this specific occurrence
+                    start, end = match.start(), match.end()
+                    text = text[:start] + replacement + text[end:]
+
+        # Clean up any double spaces or punctuation issues from empty replacements
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'\s+([,.])', r'\1', text)
+        text = re.sub(r',\s*,', ',', text)
+        text = re.sub(r'\.\s*,', '.', text)
+
+        return text
 
     def synthesize_paragraph(self, paragraph: str,
                              style_profile: Optional[StyleProfile] = None) -> str:

@@ -4,6 +4,7 @@ Stage 4: Verification Module
 Validates synthesis output independently:
 - Semantic check: Are all claims and facts from input present?
 - Style check: Does output match sample's stylistic patterns?
+- Statistical check: Does output match statistical profile of sample?
 - Structural check: Does output use patterns appropriate for each role?
 - Preserved check: Are citations, technical terms intact?
 
@@ -26,6 +27,7 @@ from structural_analyzer import (
     SentenceAnalysis,
     StructuralPattern
 )
+from style_statistics import StyleStatisticsAnalyzer
 
 
 @dataclass
@@ -94,33 +96,30 @@ class VerificationResult:
         return json.dumps(self.to_dict(), indent=indent)
 
     def get_hint_summary(self) -> str:
-        """Generate a summary of hints for the LLM."""
+        """Generate a concise, actionable summary of hints for the LLM."""
         if not self.transformation_hints:
             return ""
 
-        summary = ["## TRANSFORMATION HINTS (address these issues):\n"]
+        summary = ["## FIX THESE ISSUES:\n"]
 
         # Group by priority
         priority_1 = [h for h in self.transformation_hints if h.priority == 1]
         priority_2 = [h for h in self.transformation_hints if h.priority == 2]
-        priority_3 = [h for h in self.transformation_hints if h.priority == 3]
 
         if priority_1:
-            summary.append("### CRITICAL (must fix):")
+            summary.append("### MUST FIX:")
             for h in priority_1[:5]:
-                summary.append(f"- Sentence {h.sentence_index + 1} ({h.structural_role}): {h.issue}")
-                summary.append(f"  FIX: {h.suggestion}")
+                summary.append(f"- {h.issue}")
+                summary.append(f"  → {h.suggestion}")
 
         if priority_2:
-            summary.append("\n### IMPORTANT (should fix):")
-            for h in priority_2[:5]:
-                summary.append(f"- Sentence {h.sentence_index + 1}: {h.issue}")
-                summary.append(f"  FIX: {h.suggestion}")
-
-        if priority_3:
-            summary.append("\n### MINOR (nice to have):")
-            for h in priority_3[:3]:
-                summary.append(f"- {h.issue}")
+            summary.append("\n### SHOULD FIX:")
+            for h in priority_2[:3]:
+                if h.current_text:
+                    summary.append(f"- \"{h.current_text}\"")
+                    summary.append(f"  → {h.suggestion}")
+                else:
+                    summary.append(f"- {h.issue}: {h.suggestion}")
 
         return '\n'.join(summary)
 
@@ -143,13 +142,18 @@ class Verifier:
         self.semantic_extractor = SemanticExtractor()
         self.style_analyzer = StyleAnalyzer()
         self.structural_analyzer = StructuralAnalyzer()
+        self.style_stats = StyleStatisticsAnalyzer()
 
         # Cache for structural patterns
         self._role_patterns = None
         self._sample_hash = None
+        self._stats_initialized = False
 
         # Load thresholds from config or use defaults
         self._load_thresholds(config_path)
+
+        # Initialize style statistics from sample
+        self._init_style_statistics()
 
     def _load_thresholds(self, config_path: str = None):
         """Load verification thresholds from config file."""
@@ -185,6 +189,19 @@ class Verifier:
 
             except (json.JSONDecodeError, IOError):
                 pass  # Use defaults if config can't be read
+
+    def _init_style_statistics(self):
+        """Initialize style statistics from sample text."""
+        sample_path = Path(__file__).parent / "prompts" / "sample.txt"
+        if sample_path.exists():
+            try:
+                with open(sample_path, 'r', encoding='utf-8') as f:
+                    sample_text = f.read()
+                self.style_stats.set_sample_profile(sample_text)
+                self._stats_initialized = True
+            except Exception as e:
+                print(f"  [Verifier] Warning: Could not initialize style statistics: {e}")
+                self._stats_initialized = False
 
     def _load_sample_patterns(self) -> Dict[str, List[StructuralPattern]]:
         """Load structural patterns from sample text."""
@@ -286,60 +303,74 @@ class Verifier:
                                         output_text: str,
                                         style_result: StyleVerification,
                                         target_style: Optional[StyleProfile]) -> List[TransformationHint]:
-        """Generate detailed transformation hints based on structural analysis."""
+        """
+        Generate FOCUSED transformation hints for iterative refinement.
+
+        Key principle: Fewer, more specific hints work better than many generic ones.
+        We prioritize:
+        1. AI fingerprints (must be removed)
+        2. Overused words (statistical issue)
+        3. Specific sentence rewrites (not generic pattern suggestions)
+        """
         hints = []
 
-        # Get structural patterns
-        role_patterns = self.get_role_patterns()
-
-        # Analyze input structure
-        input_sentences = self.structural_analyzer.analyze_input_structure(input_text)
-
-        # Generate hints from structural analyzer
-        structural_hints = self.structural_analyzer.generate_transformation_hints(
-            input_sentences, output_text, role_patterns
-        )
-        hints.extend(structural_hints)
-
-        # Add hints based on style issues
-        if style_result.pattern_coverage < 0.4:
+        # CRITICAL: AI fingerprints first - these must be addressed
+        ai_patterns = self._detect_ai_patterns(output_text)
+        for pattern in ai_patterns[:5]:  # Limit to top 5 most important
             hints.append(TransformationHint(
-                sentence_index=-1,  # Document-level
-                current_text="",
+                sentence_index=-1,
+                current_text=pattern,
                 structural_role="document",
-                expected_patterns=["section_opener patterns", "paragraph_opener patterns"],
-                issue=f"Overall pattern coverage too low ({style_result.pattern_coverage:.0%})",
-                suggestion="Use more distinctive patterns like 'Contrary to...', 'Hence,...', 'The X method therefore holds that...'",
+                expected_patterns=[],
+                issue=f"🚨 REMOVE: '{pattern}'",
+                suggestion=f"Delete or replace '{pattern}' with direct phrasing",
                 priority=1
             ))
 
-        if style_result.discourse_marker_usage < 0.3:
+        # STATISTICAL: Overused words (priority 1 - very specific and actionable)
+        if self._stats_initialized:
+            _, stat_metrics = self.style_stats.score_text(output_text)
+            if 'overused_markers' in stat_metrics:
+                for marker, ratio in stat_metrics['overused_markers'][:3]:
+                    hints.append(TransformationHint(
+                        sentence_index=-1,
+                        current_text=marker,
+                        structural_role="document",
+                        expected_patterns=[],
+                        issue=f"🔄 '{marker}' used {ratio:.1f}x too often",
+                        suggestion=f"Replace {int(ratio-1)} instances of '{marker}' with 'thus', 'as a result', or remove",
+                        priority=1
+                    ))
+
+            # Top 3 worst sentences by statistical match
+            rejections = self.style_stats.get_rejection_sentences(output_text, threshold=0.4)
+            for sent, score, sent_issues in rejections[:3]:
+                short_sent = sent[:60] + "..." if len(sent) > 60 else sent
+                hints.append(TransformationHint(
+                    sentence_index=-1,
+                    current_text=short_sent,
+                    structural_role="sentence",
+                    expected_patterns=[],
+                    issue=f"📊 Rewrite needed ({score:.0%}): {sent_issues[0] if sent_issues else 'style mismatch'}",
+                    suggestion="REWRITE: make longer with subordinate clauses, or shorter if too complex",
+                    priority=2
+                ))
+
+        # STYLE: Only add these if we're really struggling
+        if style_result.pattern_coverage < 0.3:
             hints.append(TransformationHint(
                 sentence_index=-1,
                 current_text="",
                 structural_role="document",
-                expected_patterns=["therefore", "hence", "consequently", "however"],
-                issue=f"Insufficient discourse markers ({style_result.discourse_marker_usage:.0%})",
-                suggestion="Add connectors: 'therefore' at clause starts, 'however' parenthetically, 'hence' to start sentences",
-                priority=1
+                expected_patterns=[],
+                issue=f"Pattern coverage only {style_result.pattern_coverage:.0%}",
+                suggestion="Add 2-3 sentences starting with 'Contrary to...' or 'Hence, ...'",
+                priority=2
             ))
 
-        # Check for AI patterns that should be removed - CRITICAL priority
-        ai_patterns = self._detect_ai_patterns(output_text)
-        if ai_patterns:
-            # All AI patterns are priority 1 (critical)
-            for pattern in ai_patterns:
-                hints.append(TransformationHint(
-                    sentence_index=-1,
-                    current_text=pattern,
-                    structural_role="document",
-                    expected_patterns=[],
-                    issue=f"🚨 AI FINGERPRINT DETECTED: '{pattern}' - MUST BE REMOVED",
-                    suggestion=f"ELIMINATE '{pattern}' completely. Use direct, assertive phrasing from the target style instead.",
-                    priority=1
-                ))
-
-        return hints
+        # LIMIT: Return max 15 hints, sorted by priority
+        hints.sort(key=lambda h: h.priority)
+        return hints[:15]
 
     def _detect_ai_patterns(self, text: str) -> List[str]:
         """Detect AI-typical patterns that should be removed."""
@@ -607,15 +638,36 @@ class Verifier:
         if discourse_marker_usage < 0.3:
             issues.append("Discourse marker usage differs from target style")
 
-        # Overall style match (now includes pattern metrics)
+        # NEW: Statistical style verification
+        statistical_score = 1.0
+        if self._stats_initialized:
+            stat_score, stat_metrics = self.style_stats.score_text(output_text)
+            statistical_score = stat_score
+
+            # Check for overused markers
+            if 'overused_markers' in stat_metrics and stat_metrics['overused_markers']:
+                for marker, ratio in stat_metrics['overused_markers']:
+                    issues.append(f"🔄 OVERUSED: '{marker}' used {ratio:.1f}x more than sample")
+
+            # Get sentences that should be rejected
+            rejections = self.style_stats.get_rejection_sentences(output_text, threshold=0.35)
+            if rejections:
+                for sent, score, sent_issues in rejections[:3]:  # Top 3 problematic
+                    short_sent = sent[:50] + "..." if len(sent) > 50 else sent
+                    issues.append(f"📊 Low statistical match ({score:.2f}): '{short_sent}'")
+                    for issue in sent_issues[:2]:
+                        issues.append(f"     → {issue}")
+
+        # Overall style match (now includes pattern metrics and statistics)
         overall_match = (
             sentence_length_match +
             opener_diversity +
             formality_match +
             vocab_match +
             pattern_coverage +
-            discourse_marker_usage
-        ) / 6
+            discourse_marker_usage +
+            statistical_score
+        ) / 7
 
         # STRICT: Fail if ANY AI fingerprints are detected
         has_ai_fingerprints = len(ai_fingerprints) > 0

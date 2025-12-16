@@ -5,6 +5,7 @@ transformers>=4.44.0         # Hugging Face interface for downloading/running mo
 # NLP Libraries
 spacy>=3.8.0                 # Natural language processing for style analysis (markov.py)
 sentence-transformers>=2.2.0 # For semantic similarity with embeddings
+textstat>=0.7.0              # Statistical text analysis for style verification
 
 # Utilities
 requests>=2.32.0             # To communicate with the local Ollama API

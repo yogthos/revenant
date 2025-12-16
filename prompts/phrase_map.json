@@ -1,0 +1,144 @@
+{
+  "description": "Maps AI-typical phrases to sample-equivalent phrases that sound more human",
+  "version": "1.0",
+  "mappings": {
+    "connectors": {
+      "furthermore": "what is more",
+      "moreover": "in addition",
+      "additionally": "also",
+      "consequently": "thus",
+      "as a result": "therefore",
+      "in conclusion": "from this it can be seen",
+      "to summarize": "in sum",
+      "hence": "thus",
+      "thereby": "in this way",
+      "nonetheless": "yet",
+      "nevertheless": "however"
+    },
+    "emphasis": {
+      "it is important to note that": "we must note that",
+      "it is worth noting that": "it should be noted that",
+      "it should be emphasized that": "we must emphasize that",
+      "it is essential to understand that": "we must understand that",
+      "it is crucial to recognize that": "we must recognize that",
+      "it is vital to": "we must",
+      "it is essential to": "we must",
+      "it is crucial to": "it is necessary to",
+      "it is imperative to": "we must"
+    },
+    "hedging": {
+      "plays a crucial role": "is of great importance",
+      "plays a significant role": "occupies an important position",
+      "plays an important role": "has great significance",
+      "serves as a": "is",
+      "acts as a": "is",
+      "functions as a": "serves as",
+      "significantly impacts": "influences",
+      "significantly affects": "has a major effect on",
+      "has a significant impact on": "greatly influences"
+    },
+    "temporal": {
+      "in recent years": "in the present period",
+      "in recent times": "at present",
+      "at the present time": "at present",
+      "at this point in time": "now",
+      "in the current era": "today",
+      "throughout history": "in history"
+    },
+    "causal": {
+      "due to the fact that": "because",
+      "owing to the fact that": "because",
+      "as a consequence of": "because of",
+      "for the reason that": "because",
+      "on account of": "because of",
+      "in light of": "considering"
+    },
+    "purpose": {
+      "in order to": "to",
+      "for the purpose of": "to",
+      "with the aim of": "to",
+      "with the goal of": "to",
+      "so as to": "to"
+    },
+    "reference": {
+      "in terms of": "as regards",
+      "with regard to": "concerning",
+      "with respect to": "regarding",
+      "in relation to": "concerning",
+      "pertaining to": "concerning",
+      "as it pertains to": "concerning"
+    },
+    "evidence": {
+      "it is evident that": "it is clear that",
+      "it can be observed that": "we can see that",
+      "this demonstrates that": "this shows that",
+      "this suggests that": "this indicates that",
+      "this indicates that": "this shows",
+      "research shows that": "studies show that",
+      "studies have shown that": "it has been shown that"
+    },
+    "conditional": {
+      "in the event that": "if",
+      "in case": "if",
+      "provided that": "if",
+      "on condition that": "if",
+      "assuming that": "if"
+    },
+    "contrast": {
+      "despite the fact that": "although",
+      "regardless of the fact that": "even though",
+      "notwithstanding": "despite",
+      "in contrast to": "unlike",
+      "as opposed to": "unlike"
+    },
+    "quantifiers": {
+      "a large number of": "many",
+      "a significant number of": "many",
+      "a considerable amount of": "much",
+      "the vast majority of": "most",
+      "a wide range of": "various",
+      "a variety of": "various"
+    }
+  },
+  "preserve_always": [
+    "however",
+    "therefore",
+    "thus",
+    "because",
+    "although",
+    "while",
+    "since",
+    "when",
+    "if",
+    "also",
+    "too"
+  ],
+  "ai_detection_phrases": [
+    "delve",
+    "delve into",
+    "crucial",
+    "tapestry",
+    "intricate tapestry",
+    "landscape",
+    "navigate",
+    "navigate the",
+    "multifaceted",
+    "nuanced",
+    "holistic",
+    "paradigm",
+    "leverage",
+    "leveraging",
+    "realm",
+    "pivotal",
+    "paramount",
+    "underscores",
+    "underscoring",
+    "showcases",
+    "showcasing",
+    "spearheading",
+    "fostering",
+    "underpins",
+    "underpinning"
+  ]
+}
+
