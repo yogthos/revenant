@@ -188,15 +188,20 @@ class Synthesizer:
         if self.sample_text:
             self.ai_word_replacer = AIWordReplacer(self.sample_text)
 
+        # Cache style profile (needed for template generator)
+        self._cached_style_profile = None
+        self._cached_role_patterns = None
+
         # Initialize template generator for structural contracts
         self.template_generator = None
         if self.sample_text:
             print("  [Synthesizer] Initializing template generator...")
-            self.template_generator = TemplateGenerator()
-
-        # Cache style profile
-        self._cached_style_profile = None
-        self._cached_role_patterns = None
+            # Get style profile to extract length distribution
+            style_profile = self.get_style_profile()
+            length_distribution = style_profile.sentences.length_distribution if style_profile else None
+            self.template_generator = TemplateGenerator(
+                sample_length_distribution=length_distribution
+            )
 
     def get_style_profile(self) -> StyleProfile:
         """Get or compute style profile for sample text."""
