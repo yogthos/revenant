@@ -311,20 +311,6 @@ class Synthesizer:
                 template_opener_type = template.sentences[0].opener_type
                 # Note: opener phrase will be extracted from output text after synthesis
 
-            # Print template details in verbose mode
-            if verbose and template:
-                context_info = "with context" if preceding_output else "position-based"
-                print(f"    [Template] Role: {role}, {context_info}")
-                print(f"    [Template] Structure: {template.sentence_count} sentences, ~{template.total_word_count} words")
-                if template.sentences:
-                    for i, sent in enumerate(template.sentences[:3], 1):  # Show first 3 sentences
-                        opener_desc = sent.opener_type.replace('_', ' ')
-                        complexity = f"{sent.clause_count} clause(s)" if sent.clause_count > 1 else "simple"
-                        sub = " + subordinate" if sent.has_subordinate_clause else ""
-                        print(f"    [Template] S{i}: ~{sent.word_count} words, {complexity}{sub}, opener: {opener_desc}")
-                if len(template.sentences) > 3:
-                    print(f"    [Template] ... and {len(template.sentences) - 3} more sentence(s)")
-
         # Build the synthesis prompt with structural awareness
         system_prompt = self._build_system_prompt(style_profile, iteration > 0)
         user_prompt = self._build_user_prompt(

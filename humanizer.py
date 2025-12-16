@@ -406,6 +406,47 @@ class StyleTransferPipeline:
                 for hint in doc_level_hints
             ]
 
+        # Generate and print template info once (before iterations)
+        if verbose and self.synthesizer.template_generator and position_in_document:
+            para_idx, total_paras = position_in_document
+            position_ratio = para_idx / max(total_paras - 1, 1) if total_paras > 1 else 0.5
+
+            # Determine role based on position
+            if para_idx == 0:
+                role = 'section_opener'
+            elif position_ratio > 0.9:
+                role = 'closer'
+            elif position_ratio < 0.1:
+                role = 'paragraph_opener'
+            else:
+                role = 'body'
+
+            # Generate template to show structure
+            template = self.synthesizer.template_generator.generate_template_from_context(
+                input_text=paragraph,
+                preceding_output=preceding_output,
+                example_selector=self.synthesizer.example_selector,
+                role=role,
+                position_ratio=position_ratio,
+                semantic_weight=len(para_semantics.claims) // 2,
+                used_openers=used_openers,
+                used_phrases=used_phrases,
+                paragraph_index=para_idx
+            )
+
+            if template:
+                context_info = "with context" if preceding_output else "position-based"
+                print(f"  [Template] Role: {role}, {context_info}")
+                print(f"  [Template] Structure: {template.sentence_count} sentences, ~{template.total_word_count} words")
+                if template.sentences:
+                    for i, sent in enumerate(template.sentences[:3], 1):  # Show first 3 sentences
+                        opener_desc = sent.opener_type.replace('_', ' ')
+                        complexity = f"{sent.clause_count} clause(s)" if sent.clause_count > 1 else "simple"
+                        sub = " + subordinate" if sent.has_subordinate_clause else ""
+                        print(f"  [Template] S{i}: ~{sent.word_count} words, {complexity}{sub}, opener: {opener_desc}")
+                    if len(template.sentences) > 3:
+                        print(f"  [Template] ... and {len(template.sentences) - 3} more sentence(s)")
+
         for iteration in range(1, max_para_iterations + 1):
             if verbose:
                 hint_info = f" (with {len(transformation_hints)} hints)" if transformation_hints else ""
