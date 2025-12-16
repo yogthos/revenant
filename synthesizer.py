@@ -24,6 +24,8 @@ from structural_analyzer import (
     SentenceAnalysis,
     StructuralPattern
 )
+from example_selector import ExampleSelector
+from ai_word_replacer import AIWordReplacer
 
 
 @dataclass
@@ -155,6 +157,15 @@ class Synthesizer:
         self.style_analyzer = StyleAnalyzer()
         self.structural_analyzer = StructuralAnalyzer()
 
+        # Load config for example selector
+        if config_path is None:
+            config_path = Path(__file__).parent / "config.json"
+        else:
+            config_path = Path(config_path)
+
+        with open(config_path, 'r', encoding='utf-8') as f:
+            self.config = json.load(f)
+
         # Load sample text for few-shot examples
         sample_path = Path(__file__).parent / "prompts" / "sample.txt"
         if sample_path.exists():
@@ -162,6 +173,17 @@ class Synthesizer:
                 self.sample_text = f.read()
         else:
             self.sample_text = ""
+
+        # Initialize contextual example selector
+        self.example_selector = None
+        if self.sample_text:
+            print("  [Synthesizer] Initializing contextual example selector...")
+            self.example_selector = ExampleSelector(self.sample_text, self.config)
+
+        # Initialize AI word replacer (uses sample vocabulary for replacements)
+        self.ai_word_replacer = None
+        if self.sample_text:
+            self.ai_word_replacer = AIWordReplacer(self.sample_text)
 
         # Cache style profile
         self._cached_style_profile = None
@@ -230,12 +252,18 @@ class Synthesizer:
         # Adjust temperature based on iteration (more deterministic as we refine)
         temperature = max(0.3, 0.7 - (iteration * 0.1))
 
+        # Calculate max_tokens based on input length
+        # Style transfer typically produces similar or slightly longer text
+        input_token_estimate = len(input_text) // 4  # ~4 chars per token
+        # Allow 50% buffer for style transfer expansion
+        max_tokens = min(8192, max(4096, int(input_token_estimate * 1.5)))
+
         # Generate using LLM
         output_text = self.llm.generate(
             prompt=user_prompt,
             system_prompt=system_prompt,
             temperature=temperature,
-            max_tokens=4096
+            max_tokens=max_tokens
         )
 
         # Clean output
@@ -361,10 +389,10 @@ Return ONLY the rewritten text. No commentary, no explanations.
                 parts.append(f"   → FIX: {hint.suggestion}")
             parts.append("")
 
-        # Add example passages from sample text
+        # Add example passages from sample text (contextually selected)
         parts.append("## STYLE EXAMPLES (your output MUST look like these)")
-        examples = self._get_sample_excerpts()
-        for i, excerpt in enumerate(examples[:3], 1):
+        examples = self._get_contextual_examples(input_text)
+        for i, excerpt in enumerate(examples, 1):
             parts.append(f"\n### Example {i}:")
             parts.append(excerpt)
 
@@ -519,8 +547,32 @@ Return ONLY the rewritten text. No commentary, no explanations.
 
         return '\n'.join(parts)
 
-    def _get_sample_excerpts(self) -> List[str]:
-        """Get representative excerpts from sample text."""
+    def _get_contextual_examples(self, input_text: str) -> List[str]:
+        """
+        Get contextually relevant examples for the input text.
+
+        Uses the ExampleSelector to find sample paragraphs that are most
+        structurally and semantically similar to the input being transformed.
+        Falls back to static excerpts if selector is unavailable.
+
+        Args:
+            input_text: The text being transformed
+
+        Returns:
+            List of relevant example paragraphs from sample text
+        """
+        # Use contextual selector if available
+        if self.example_selector:
+            # Use diverse selection to get relevant but varied examples
+            examples = self.example_selector.select_diverse_examples(input_text)
+            if examples:
+                return examples
+
+        # Fallback to static excerpts
+        return self._get_sample_excerpts_static()
+
+    def _get_sample_excerpts_static(self) -> List[str]:
+        """Fallback: Get static excerpts from sample text."""
         if not self.sample_text:
             return []
 
@@ -536,10 +588,15 @@ Return ONLY the rewritten text. No commentary, no explanations.
                 if len(excerpts) >= 5:
                     break
 
-        return excerpts
+        return excerpts[:3]
 
     def _clean_output(self, text: str) -> str:
-        """Clean LLM output and remove AI fingerprints."""
+        """
+        Clean LLM output and remove AI fingerprints.
+
+        Uses AIWordReplacer to find contextually appropriate replacements
+        from the sample text vocabulary instead of hardcoded alternatives.
+        """
         import re
 
         # Remove common prefixes/suffixes
@@ -568,44 +625,12 @@ Return ONLY the rewritten text. No commentary, no explanations.
                 lines = lines[:-1]
             text = '\n'.join(lines)
 
-        # POST-PROCESSING: Replace stubborn AI patterns with better alternatives
-        ai_replacements = {
-            # Phrases with direct replacements
-            r'\bconventional notions\b': 'prevailing views',
-            r'\blocal perspective\b': 'our particular standpoint',
-            r'\binternal complexity\b': 'inner structure',
-            r'\bgrander whole\b': 'greater totality',
-            r'\bintrinsic scaffolding\b': 'inherent structure',
-            r'\bbroader context\b': 'wider conditions',
-            r'\bkey insight\b': 'central point',
-            r'\bteeming with\b': 'containing',
-            r'\bsits within\b': 'exists within',
-            r'\boperates under\b': 'functions according to',
-            r'\bunique perspective\b': 'distinct viewpoint',
-            r'\brich tapestry\b': 'complex system',
-            r'\bserves as a\b': 'constitutes a',
-            r'\bstands as a\b': 'represents a',
-            r'\bacts as a reminder\b': 'demonstrates',
-            r'\bin the realm of\b': 'in the domain of',
-            r'\bat its core\b': 'fundamentally',
-            r'\bwhen it comes to\b': 'regarding',
-            r'\bin today\'s world\b': 'under present conditions',
-            r'\bmoving forward\b': 'henceforth',
-            r'\bat the end of the day\b': 'ultimately',
-            r'\bthe fact that\b': 'that',
-            r'\bin order to\b': 'to',
-            r'\bdue to the fact\b': 'because',
-            r'\bfor the purpose of\b': 'for',
-            r'\bwith regard to\b': 'concerning',
-            r'\ba wide range of\b': 'various',
-            r'\ba variety of\b': 'various',
-            r'\bplays a crucial role\b': 'is essential',
-            r'\bis of utmost importance\b': 'is essential',
-            r'\bit goes without saying\b': 'clearly',
-            r'\bneedless to say\b': 'clearly',
-            r'\blast but not least\b': 'finally',
-            r'\bfirst and foremost\b': 'primarily',
-            # Weak phrases - remove or simplify
+        # Use AIWordReplacer for contextual replacements from sample vocabulary
+        if self.ai_word_replacer:
+            text = self.ai_word_replacer.replace_ai_words(text)
+
+        # Additional phrase-level cleanup (stylistic hedges not in AI word list)
+        stylistic_fixes = {
             r'\bwe must consider\b': 'it is necessary to examine',
             r'\bwe must acknowledge\b': 'one must recognize',
             r'\bwe must recognize\b': 'one must recognize',
@@ -632,14 +657,10 @@ Return ONLY the rewritten text. No commentary, no explanations.
             r'\bin essence\b': '',
             r'\bessentially\b': '',
             r'\bbasically\b': '',
-            r'\bfundamentally\b': 'in principle',
-            r'\bto some extent\b': 'partially',
-            r'\bto a certain degree\b': 'partially',
-            r'\bin some ways\b': 'partially',
-            r'\bin many ways\b': 'in several respects',
+            r'\bthe fact that\b': 'that',
         }
 
-        for pattern, replacement in ai_replacements.items():
+        for pattern, replacement in stylistic_fixes.items():
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
 
         return text.strip()

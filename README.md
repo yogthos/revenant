@@ -413,8 +413,11 @@ Control the iterative refinement behavior:
 | `max_retries` | 10 | Maximum number of refinement iterations. Higher values allow more refinement but take longer. Recommended: 8-10 for quality, 3-5 for speed. |
 | `convergence_threshold` | 0.02 | Stop iterating when improvement between iterations is less than this percentage (2%). Lower = more iterations, higher = stops sooner. |
 | `min_iterations` | 2 | Always perform at least this many iterations, even if convergence is detected early. |
+| `auto_chunk_threshold` | 2000 | Token count threshold for automatic chunked mode. Documents exceeding this are processed paragraph-by-paragraph to prevent truncation. |
 
 **Note:** The `-r, --retries` command-line argument overrides `max_retries` from config.json if provided.
+
+**Auto-Chunking:** Long documents are automatically processed paragraph-by-paragraph when they exceed `auto_chunk_threshold` tokens. This prevents LLM output truncation and ensures the entire document is fully restyled. Truncation is also detected and recovered automatically.
 
 **Example Configurations:**
 
@@ -440,6 +443,65 @@ Control the iterative refinement behavior:
 }
 ```
 
+### Example Selection Configuration
+
+Control how few-shot examples are selected from the sample text for each paragraph being transformed:
+
+```json
+{
+  "example_selection": {
+    "num_examples": 3,         // Number of examples to include in prompts
+    "semantic_weight": 0.4,    // Weight for semantic similarity (0.0-1.0)
+    "structural_weight": 0.6,  // Weight for structural similarity (0.0-1.0)
+    "min_word_count": 30,      // Minimum paragraph length to consider
+    "max_word_count": 300      // Maximum paragraph length to consider
+  }
+}
+```
+
+#### Example Selection Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `num_examples` | 3 | Number of example paragraphs to include in synthesis prompts. More examples provide stronger style guidance but use more tokens. |
+| `semantic_weight` | 0.4 | Weight given to semantic (meaning) similarity when selecting examples. Higher values prefer examples with similar topics. |
+| `structural_weight` | 0.6 | Weight given to structural similarity (sentence count, length, opener type). Higher values prefer examples with matching structure. |
+| `min_word_count` | 30 | Minimum word count for a sample paragraph to be considered as an example. |
+| `max_word_count` | 300 | Maximum word count for a sample paragraph to be considered as an example. |
+
+**How It Works:**
+
+Instead of using the same 3 paragraphs for every transformation, the system:
+1. Analyzes all qualifying paragraphs in `sample.txt`
+2. Computes semantic embeddings using sentence-transformers (cached in SQLite)
+3. Extracts structural features (sentence count, opener type, structural role)
+4. For each input paragraph, selects the most similar examples using weighted similarity
+5. Uses diverse selection to avoid redundant examples
+
+**Example Configurations:**
+
+**Semantic-focused (topic matching):**
+```json
+{
+  "example_selection": {
+    "num_examples": 4,
+    "semantic_weight": 0.7,
+    "structural_weight": 0.3
+  }
+}
+```
+
+**Structure-focused (form matching):**
+```json
+{
+  "example_selection": {
+    "num_examples": 3,
+    "semantic_weight": 0.2,
+    "structural_weight": 0.8
+  }
+}
+```
+
 ## Project Structure
 
 ```
@@ -450,6 +512,8 @@ ai-text-depattern/
 ├── synthesizer.py            # Stage 3: Generate text in target style
 ├── verifier.py               # Stage 4: Verify and generate hints
 ├── structural_analyzer.py    # Structural role analysis and pattern extraction
+├── example_selector.py       # Contextual example selection for few-shot prompts
+├── ai_word_replacer.py       # AI fingerprint detection and contextual replacement
 ├── config.json               # Configuration file
 ├── requirements.txt          # Python dependencies
 ├── prompts/
@@ -533,7 +597,8 @@ The pipeline uses a genetic algorithm approach:
 - ✅ **Dynamic Pattern Extraction**: Patterns extracted from sample text at runtime (no hardcoding)
 - ✅ **SQLite Caching**: Structural patterns cached for fast subsequent runs
 - ✅ **Context-Aware Synthesis**: Each sentence considers its structural role (section opener, paragraph opener, etc.)
-- ✅ **AI Fingerprint Detection**: Automatically detects and removes AI-typical phrases
+- ✅ **Contextual Example Selection**: Few-shot examples selected based on semantic and structural similarity to input
+- ✅ **AI Fingerprint Detection**: Automatically detects and removes AI-typical phrases with contextual replacements from sample vocabulary
 - ✅ **Iterative Refinement**: Genetic algorithm approach with convergence detection
 - ✅ **Configurable Thresholds**: Balance style fidelity vs semantic preservation
 - ✅ **Multiple LLM Providers**: DeepSeek, GLM (Z.AI), or Ollama (local)

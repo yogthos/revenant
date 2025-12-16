@@ -113,6 +113,7 @@ class StyleTransferPipeline:
         self.max_retries = 10
         self.convergence_threshold = 0.02  # Stop if improvement < 2%
         self.min_iterations = 2  # Always do at least 2 iterations
+        self.auto_chunk_threshold = 2000  # Token threshold for auto-chunked mode
 
         # Try to load from config
         if self.config_path is None:
@@ -133,6 +134,8 @@ class StyleTransferPipeline:
                     self.convergence_threshold = pipeline_config['convergence_threshold']
                 if 'min_iterations' in pipeline_config:
                     self.min_iterations = pipeline_config['min_iterations']
+                if 'auto_chunk_threshold' in pipeline_config:
+                    self.auto_chunk_threshold = pipeline_config['auto_chunk_threshold']
 
             except (json.JSONDecodeError, IOError):
                 pass  # Use defaults if config can't be read
@@ -140,6 +143,53 @@ class StyleTransferPipeline:
         # Override with provided value (CLI takes precedence)
         if max_retries_override is not None:
             self.max_retries = max_retries_override
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count (rough: ~4 chars per token for English)."""
+        return len(text) // 4
+
+    def _should_use_chunked_mode(self, input_text: str) -> bool:
+        """Determine if text is too long for single-pass processing."""
+        # LLMs typically have 4096 output tokens max
+        # Input + output must fit context; use conservative threshold
+        estimated_tokens = self._estimate_tokens(input_text)
+        # Use configurable threshold (default 2000 tokens)
+        return estimated_tokens > self.auto_chunk_threshold
+
+    def _detect_truncation(self, input_text: str, output_text: str) -> bool:
+        """
+        Detect if output was truncated by the LLM.
+
+        Signs of truncation:
+        - Output significantly shorter than input (paragraphs missing)
+        - Output ends mid-sentence
+        - Paragraph count much lower than input
+        """
+        if not output_text.strip():
+            return True
+
+        # Compare paragraph counts
+        input_paras = len([p for p in input_text.split('\n\n') if p.strip()])
+        output_paras = len([p for p in output_text.split('\n\n') if p.strip()])
+
+        # If output has significantly fewer paragraphs, likely truncated
+        if output_paras < input_paras * 0.7:
+            return True
+
+        # Check if output ends mid-sentence (no terminal punctuation)
+        output_stripped = output_text.strip()
+        if output_stripped and output_stripped[-1] not in '.!?"\'':
+            return True
+
+        # Check word count ratio
+        input_words = len(input_text.split())
+        output_words = len(output_text.split())
+
+        # Style transfer shouldn't reduce word count by more than 40%
+        if output_words < input_words * 0.6:
+            return True
+
+        return False
 
     def transform(self, input_text: str,
                   verbose: bool = False,
@@ -151,15 +201,38 @@ class StyleTransferPipeline:
             input_text: Text to transform
             verbose: Print detailed progress
             chunk_mode: Process paragraph by paragraph for long texts
+                       (auto-enabled for long documents)
 
         Returns:
             PipelineResult with transformed text and metadata
         """
         try:
-            if chunk_mode:
+            # Auto-detect if chunked mode should be used
+            auto_chunk = self._should_use_chunked_mode(input_text)
+            use_chunked = chunk_mode or auto_chunk
+
+            if auto_chunk and not chunk_mode and verbose:
+                estimated_tokens = self._estimate_tokens(input_text)
+                print(f"\n  [Auto] Document is long (~{estimated_tokens} tokens)")
+                print(f"  [Auto] Switching to chunked mode for complete coverage")
+
+            if use_chunked:
                 return self._transform_chunked(input_text, verbose)
             else:
-                return self._transform_full(input_text, verbose)
+                # Try full transform first
+                result = self._transform_full(input_text, verbose)
+
+                # Check for truncation
+                if result.output_text and self._detect_truncation(input_text, result.output_text):
+                    if verbose:
+                        print("\n  ⚠️ Truncation detected in output!")
+                        print("  Retrying with chunked mode for complete coverage...")
+
+                    # Retry with chunked mode
+                    return self._transform_chunked(input_text, verbose)
+
+                return result
+
         except Exception as e:
             return PipelineResult(
                 success=False,
