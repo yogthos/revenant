@@ -191,13 +191,14 @@ class TemplateGenerator:
 
     DB_PATH = Path(__file__).parent / "template_cache.db"
 
-    def __init__(self, sample_path: str = None, sample_length_distribution: Optional[Dict[str, float]] = None):
+    def __init__(self, sample_path: str = None, sample_length_distribution: Optional[Dict[str, float]] = None, config: Optional[Dict[str, Any]] = None):
         """Initialize the template generator.
 
         Args:
-            sample_path: Path to sample text file
+            sample_path: Path to sample text file (overrides config if provided)
             sample_length_distribution: Target length distribution from style analyzer
                                       {'short': 0.2, 'medium': 0.5, 'long': 0.3}
+            config: Configuration dictionary (optional, for reading sample path)
         """
         try:
             self.nlp = spacy.load("en_core_web_sm")
@@ -222,7 +223,12 @@ class TemplateGenerator:
         # Load and analyze sample if provided
         self.sample_templates: Dict[str, List[ParagraphTemplate]] = {}
         if sample_path is None:
-            sample_path = Path(__file__).parent / "prompts" / "sample.txt"
+            # Try to get from config, with fallback to default
+            if config and "sample" in config and "file" in config.get("sample", {}):
+                sample_file = config["sample"]["file"]
+                sample_path = Path(__file__).parent / sample_file
+            else:
+                sample_path = Path(__file__).parent / "prompts" / "sample.txt"
 
         if Path(sample_path).exists():
             sample_text = Path(sample_path).read_text()

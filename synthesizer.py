@@ -26,6 +26,7 @@ from structural_analyzer import (
 )
 from example_selector import ExampleSelector
 from ai_word_replacer import AIWordReplacer
+from semantic_word_mapper import SemanticWordMapper
 from template_generator import TemplateGenerator
 
 
@@ -170,11 +171,14 @@ class Synthesizer:
             self.config = json.load(f)
 
         # Load sample text for few-shot examples
-        sample_path = Path(__file__).parent / "prompts" / "sample.txt"
+        # Get sample path from config, with fallback to default
+        sample_file = self.config.get("sample", {}).get("file", "prompts/sample.txt")
+        sample_path = Path(__file__).parent / sample_file
         if sample_path.exists():
             with open(sample_path, 'r', encoding='utf-8') as f:
                 self.sample_text = f.read()
         else:
+            print(f"  [Synthesizer] Warning: Sample file not found at {sample_path}")
             self.sample_text = ""
 
         # Initialize contextual example selector
@@ -188,6 +192,26 @@ class Synthesizer:
         if self.sample_text:
             self.ai_word_replacer = AIWordReplacer(self.sample_text)
 
+        # Initialize semantic word mapper (maps common words to sample vocabulary)
+        self.semantic_word_mapper = None
+        if self.sample_text:
+            # Get config settings with defaults
+            semantic_config = self.config.get("semantic_mapping", {})
+            enabled = semantic_config.get("enabled", True)
+            similarity_threshold = semantic_config.get("similarity_threshold", 0.5)
+            min_sample_frequency = semantic_config.get("min_sample_frequency", 2)
+
+            if enabled:
+                print("  [Synthesizer] Initializing semantic word mapper...")
+                # Reuse spaCy model from AIWordReplacer if available
+                nlp_model = self.ai_word_replacer.nlp if self.ai_word_replacer else None
+                self.semantic_word_mapper = SemanticWordMapper(
+                    self.sample_text,
+                    nlp_model=nlp_model,
+                    similarity_threshold=similarity_threshold,
+                    min_sample_frequency=min_sample_frequency
+                )
+
         # Cache style profile (needed for template generator)
         self._cached_style_profile = None
         self._cached_role_patterns = None
@@ -200,7 +224,8 @@ class Synthesizer:
             style_profile = self.get_style_profile()
             length_distribution = style_profile.sentences.length_distribution if style_profile else None
             self.template_generator = TemplateGenerator(
-                sample_length_distribution=length_distribution
+                sample_length_distribution=length_distribution,
+                config=self.config
             )
 
     def get_style_profile(self) -> StyleProfile:
@@ -370,6 +395,137 @@ class Synthesizer:
             hints_applied=hints_applied,
             template_opener_type=template_opener_type,
             template_opener_phrase=template_opener_phrase
+        )
+
+    def synthesize_from_chunk(self,
+                              semantic_chunk: SemanticContent,
+                              style_profile: Optional[StyleProfile] = None,
+                              document_context: Optional[str] = None,
+                              preceding_output: Optional[str] = None,
+                              transformation_hints: Optional[List[TransformationHint]] = None,
+                              iteration: int = 0,
+                              position_in_document: Optional[tuple] = None,
+                              used_openers: Optional[List[str]] = None,
+                              used_phrases: Optional[List[str]] = None,
+                              target_length: int = 0,
+                              target_sentence_count: int = 0,
+                              verbose: bool = False) -> SynthesisResult:
+        """
+        Synthesize text from a semantic chunk (regrouped semantic content).
+
+        Similar to synthesize() but takes SemanticContent directly and uses
+        target_length/target_sentence_count constraints.
+
+        Args:
+            semantic_chunk: Pre-extracted semantic content to synthesize
+            style_profile: Pre-analyzed style (or None to analyze sample)
+            document_context: Full document for context
+            preceding_output: Already-transformed preceding paragraphs
+            transformation_hints: Hints from previous iteration
+            iteration: Current iteration number
+            position_in_document: Tuple of (chunk_index, total_chunks)
+            used_openers: List of opener types already used
+            used_phrases: List of opener phrases already used
+            target_length: Target word count for output
+            target_sentence_count: Target sentence count for output
+            verbose: Print template information
+
+        Returns:
+            SynthesisResult with output text and metadata
+        """
+        # Get style profile if not provided
+        if style_profile is None:
+            style_profile = self.get_style_profile()
+
+        # Determine position
+        para_idx, total_paras = position_in_document if position_in_document else (0, 1)
+        position_ratio = para_idx / max(total_paras - 1, 1)
+
+        # Determine role (will be set by caller, default to body)
+        role = 'body'
+
+        # Build system prompt
+        system_prompt = self._build_system_prompt(style_profile, is_refinement=(iteration > 0))
+
+        # Build user prompt with semantic content
+        # Create a dummy input text for formatting (not used for extraction)
+        dummy_input = " ".join([claim.text for claim in semantic_chunk.claims[:3]])
+
+        # Get template if available
+        structural_template = ""
+        if self.template_generator:
+            template = self.template_generator.generate_template_from_context(
+                input_text=dummy_input,
+                preceding_output=preceding_output,
+                example_selector=self.example_selector,
+                role=role,
+                position_ratio=position_ratio,
+                semantic_weight=len(semantic_chunk.claims),
+                used_openers=used_openers,
+                used_phrases=used_phrases,
+            )
+            if template:
+                structural_template = template.to_constraint_string(used_phrases=used_phrases)
+
+        # Add target length/sentence constraints if provided
+        if target_length > 0 or target_sentence_count > 0:
+            if structural_template:
+                structural_template += "\n\n"
+            structural_template += "## TARGET STRUCTURE\n"
+            if target_length > 0:
+                structural_template += f"Target word count: approximately {target_length} words\n"
+            if target_sentence_count > 0:
+                structural_template += f"Target sentence count: approximately {target_sentence_count} sentences\n"
+
+        # Get input structure and role patterns (needed for _build_user_prompt)
+        input_structure = None
+        role_patterns = None
+        if self.structural_analyzer:
+            # Extract structure from dummy input for formatting
+            try:
+                input_structure = self.structural_analyzer.analyze_input_structure(dummy_input)
+                role_patterns = self.get_role_patterns()
+            except:
+                pass
+
+        user_prompt = self._build_user_prompt(
+            input_text=dummy_input,
+            semantic_content=semantic_chunk,
+            style_profile=style_profile,
+            document_context=document_context,
+            preceding_output=preceding_output,
+            input_structure=input_structure,
+            role_patterns=role_patterns,
+            transformation_hints=transformation_hints,
+            iteration=iteration,
+            structural_template=structural_template
+        )
+
+        # Adjust temperature based on iteration (more deterministic as we refine)
+        temperature = max(0.3, 0.7 - (iteration * 0.1))
+
+        # Calculate max_tokens based on target length
+        max_tokens = min(8192, max(4096, int(target_length * 1.5) if target_length > 0 else 4096))
+
+        # Generate using LLM
+        raw_output = self.llm.generate(
+            prompt=user_prompt,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            max_tokens=max_tokens
+        )
+
+        # Clean output
+        cleaned_output = self._clean_output(raw_output, input_text=dummy_input)
+
+        return SynthesisResult(
+            output_text=cleaned_output,
+            semantic_input=semantic_chunk,
+            style_profile=style_profile,
+            provider_used=self.llm.provider,
+            model_used=self.llm.model,
+            iteration=iteration,
+            hints_applied=[hint.suggestion for hint in transformation_hints] if transformation_hints else []
         )
 
     def _build_system_prompt(self, style_profile: StyleProfile, is_refinement: bool = False) -> str:
@@ -759,6 +915,10 @@ Return ONLY the rewritten text. No commentary, no explanations, no added citatio
         # Use AIWordReplacer for contextual replacements from sample vocabulary
         if self.ai_word_replacer:
             text = self.ai_word_replacer.replace_ai_words(text)
+
+        # Apply semantic word mapping (maps common words to sample vocabulary)
+        if self.semantic_word_mapper:
+            text = self.semantic_word_mapper.apply_mapping(text)
 
         # Additional phrase-level cleanup (stylistic hedges not in AI word list)
         stylistic_fixes = {

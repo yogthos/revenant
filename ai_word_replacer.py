@@ -250,7 +250,7 @@ class AIWordReplacer:
 
         # Build vocabulary by POS category
         for pos, words in pos_words.items():
-            for word, freq in words.most_common(100):  # Top 100 per POS
+            for word, freq in words.most_common():  # All words (no limit)
                 # Skip if it's an AI word
                 if word.lower() in self.ALL_AI_WORDS:
                     continue

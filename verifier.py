@@ -151,6 +151,18 @@ class Verifier:
         self._sample_hash = None
         self._stats_initialized = False
 
+        # Load config
+        if config_path is None:
+            config_path = Path(__file__).parent / "config.json"
+        else:
+            config_path = Path(config_path)
+
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                self.config = json.load(f)
+        except (IOError, json.JSONDecodeError):
+            self.config = {}
+
         # Load thresholds from config or use defaults
         self._load_thresholds(config_path)
 
@@ -194,7 +206,9 @@ class Verifier:
 
     def _init_style_statistics(self):
         """Initialize style statistics from sample text."""
-        sample_path = Path(__file__).parent / "prompts" / "sample.txt"
+        # Get sample path from config, with fallback to default
+        sample_file = self.config.get("sample", {}).get("file", "prompts/sample.txt")
+        sample_path = Path(__file__).parent / sample_file
         if sample_path.exists():
             try:
                 with open(sample_path, 'r', encoding='utf-8') as f:
@@ -207,7 +221,9 @@ class Verifier:
 
     def _load_sample_patterns(self) -> Dict[str, List[StructuralPattern]]:
         """Load structural patterns from sample text."""
-        sample_path = Path(__file__).parent / "prompts" / "sample.txt"
+        # Get sample path from config, with fallback to default
+        sample_file = self.config.get("sample", {}).get("file", "prompts/sample.txt")
+        sample_path = Path(__file__).parent / sample_file
         if sample_path.exists():
             with open(sample_path, 'r', encoding='utf-8') as f:
                 sample_text = f.read()

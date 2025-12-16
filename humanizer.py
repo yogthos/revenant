@@ -25,6 +25,8 @@ from style_analyzer import StyleAnalyzer, StyleProfile
 from synthesizer import Synthesizer, SynthesisResult
 from verifier import Verifier, VerificationResult, TransformationHint
 from structural_analyzer import StructuralAnalyzer, StructuralPattern
+from cadence_analyzer import CadenceAnalyzer, CadenceProfile
+from semantic_regrouper import SemanticRegrouper, SemanticChunk
 
 
 @dataclass
@@ -112,6 +114,26 @@ class StyleTransferPipeline:
         print("Loading structural patterns...")
         self._role_patterns = self.synthesizer.get_role_patterns()
 
+        # Initialize cadence analyzer (if enabled)
+        self.cadence_analyzer = None
+        self.cadence_profile = None
+        cadence_config = self._get_cadence_config()
+        if cadence_config.get("enabled", True):
+            print("Analyzing sample text cadence...")
+            sample_text = self.synthesizer.sample_text
+            if sample_text:
+                sequence_window = cadence_config.get("sequence_window_size", 5)
+                position_segments = cadence_config.get("position_segments", 4)
+                self.cadence_analyzer = CadenceAnalyzer(
+                    sample_text,
+                    self.semantic_extractor,
+                    sequence_window_size=sequence_window,
+                    position_segments=position_segments
+                )
+                self.cadence_profile = self.cadence_analyzer.analyze_cadence()
+                print(f"  - Analyzed {self.cadence_profile.paragraph_count} paragraphs")
+                print(f"  - Avg length: {self.cadence_profile.avg_paragraph_length:.0f} words")
+
         print(f"Pipeline ready (provider: {self.synthesizer.llm.provider}, max_retries: {self.max_retries})")
 
     def _load_pipeline_config(self, max_retries_override: Optional[int] = None):
@@ -147,6 +169,23 @@ class StyleTransferPipeline:
         # Override with provided value (CLI takes precedence)
         if max_retries_override is not None:
             self.max_retries = max_retries_override
+
+    def _get_cadence_config(self) -> Dict[str, Any]:
+        """Get cadence matching configuration from config file."""
+        if self.config_path is None:
+            config_path = Path(__file__).parent / "config.json"
+        else:
+            config_path = Path(self.config_path)
+
+        if config_path.exists():
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    return config.get("cadence_matching", {})
+            except (json.JSONDecodeError, IOError):
+                pass
+
+        return {}  # Return empty dict with defaults
 
     def _estimate_tokens(self, text: str) -> int:
         """Estimate token count (rough: ~4 chars per token for English)."""
@@ -191,6 +230,30 @@ class StyleTransferPipeline:
                 print(f"  - Identified {len(semantic_content.relationships)} relationships")
                 print(f"  - Preserved elements: {list(semantic_content.preserved_elements.keys())}")
 
+            # Cadence-based regrouping (if enabled)
+            semantic_chunks = None
+            if self.cadence_profile and self.cadence_analyzer:
+                cadence_config = self._get_cadence_config()
+                if cadence_config.get("enabled", True):
+                    if verbose:
+                        print("\n=== Cadence-Based Regrouping ===")
+
+                    regrouper = SemanticRegrouper(
+                        semantic_content,
+                        self.cadence_profile,
+                        self.cadence_analyzer,
+                        min_chunk_claims=cadence_config.get("min_chunk_claims", 1),
+                        max_chunk_claims=cadence_config.get("max_chunk_claims", 5),
+                        semantic_similarity_threshold=cadence_config.get("semantic_similarity_threshold", 0.6)
+                    )
+                    semantic_chunks = regrouper.regroup_to_cadence()
+
+                    if verbose:
+                        print(f"  - Regrouped into {len(semantic_chunks)} semantic chunks")
+                        for i, chunk in enumerate(semantic_chunks[:3], 1):
+                            print(f"    Chunk {i}: {len(chunk.claims)} claims, "
+                                  f"{chunk.target_length} words target, {chunk.role}")
+
             # Stage 2: Style Analysis (already cached)
             if verbose:
                 print("\n=== Stage 2: Style Analysis ===")
@@ -201,7 +264,7 @@ class StyleTransferPipeline:
 
             # Stage 3 & 4: Stream through paragraphs with context
             return self._transform_streaming(
-                input_text, semantic_content, verbose
+                input_text, semantic_content, verbose, semantic_chunks
             )
 
         except Exception as e:
@@ -219,7 +282,8 @@ class StyleTransferPipeline:
 
     def _transform_streaming(self, input_text: str,
                                semantic_content: SemanticContent,
-                               verbose: bool) -> PipelineResult:
+                               verbose: bool,
+                               semantic_chunks: Optional[List[SemanticChunk]] = None) -> PipelineResult:
         """
         Transform text using streaming paragraph-by-paragraph processing.
 
@@ -229,10 +293,17 @@ class StyleTransferPipeline:
         - Accumulated statistics (for overuse detection)
         - Position awareness (for opening/closing style)
         """
-        paragraphs = [p.strip() for p in input_text.split('\n\n') if p.strip()]
+        # Use semantic chunks if available, otherwise use paragraphs
+        if semantic_chunks:
+            items_to_process = semantic_chunks
+            item_type = "semantic chunks"
+        else:
+            paragraphs = [p.strip() for p in input_text.split('\n\n') if p.strip()]
+            items_to_process = paragraphs
+            item_type = "paragraphs"
 
         if verbose:
-            print(f"\n=== Stage 3 & 4: Streaming Transform ({len(paragraphs)} paragraphs) ===")
+            print(f"\n=== Stage 3 & 4: Streaming Transform ({len(items_to_process)} {item_type}) ===")
             print(f"  - Document has {len(semantic_content.claims)} total claims")
             print(f"  - Context-aware processing enabled")
 
@@ -249,9 +320,9 @@ class StyleTransferPipeline:
         used_openers = []
         used_phrases = []
 
-        for i, para in enumerate(paragraphs):
+        for i, item in enumerate(items_to_process):
             if verbose:
-                print(f"\n--- Paragraph {i + 1}/{len(paragraphs)} ---")
+                print(f"\n--- {item_type.capitalize().rstrip('s')} {i + 1}/{len(items_to_process)} ---")
 
             # Build context: preceding output for consistency
             preceding_output = '\n\n'.join(transformed_paragraphs) if transformed_paragraphs else None
@@ -260,20 +331,35 @@ class StyleTransferPipeline:
             doc_level_hints = accumulated_hints if accumulated_hints else None
 
             # Position tracking for position-aware style checks
-            position = (i, len(paragraphs))
+            position = (i, len(items_to_process))
 
-            # Transform this paragraph with full document context and variety tracking
-            result = self._transform_paragraph_with_context(
-                paragraph=para,
-                full_document=input_text,
-                full_semantics=full_document_semantics,
-                preceding_output=preceding_output,
-                doc_level_hints=doc_level_hints,
-                position_in_document=position,
-                used_openers=used_openers,  # Pass for variety
-                used_phrases=used_phrases,  # Pass for exact repetition avoidance
-                verbose=verbose
-            )
+            # Transform based on type
+            if semantic_chunks:
+                # Transform semantic chunk
+                result = self._transform_chunk_with_context(
+                    semantic_chunk=item,
+                    full_document=input_text,
+                    full_semantics=full_document_semantics,
+                    preceding_output=preceding_output,
+                    doc_level_hints=doc_level_hints,
+                    position_in_document=position,
+                    used_openers=used_openers,
+                    used_phrases=used_phrases,
+                    verbose=verbose
+                )
+            else:
+                # Transform paragraph (existing logic)
+                result = self._transform_paragraph_with_context(
+                    paragraph=item,
+                    full_document=input_text,
+                    full_semantics=full_document_semantics,
+                    preceding_output=preceding_output,
+                    doc_level_hints=doc_level_hints,
+                    position_in_document=position,
+                    used_openers=used_openers,  # Pass for variety
+                    used_phrases=used_phrases,  # Pass for exact repetition avoidance
+                    verbose=verbose
+                )
 
             if result.output_text:
                 transformed_paragraphs.append(result.output_text)
@@ -540,6 +626,186 @@ class StyleTransferPipeline:
             iterations=len(improvement_history),
             final_verification=best_verification,
             semantic_content=para_semantics,
+            style_profile=self._style_profile,
+            error=None if best_output else "Failed to generate valid output",
+            improvement_history=improvement_history,
+            convergence_achieved=convergence_achieved,
+            opener_type_used=last_opener_type,
+            opener_phrase_used=last_opener_phrase
+        )
+
+    def _transform_chunk_with_context(self,
+                                     semantic_chunk: SemanticChunk,
+                                     full_document: str,
+                                     full_semantics: SemanticContent,
+                                     preceding_output: Optional[str],
+                                     doc_level_hints: Optional[List[str]] = None,
+                                     position_in_document: Optional[Tuple[int, int]] = None,
+                                     used_openers: Optional[List[str]] = None,
+                                     used_phrases: Optional[List[str]] = None,
+                                     verbose: bool = False) -> PipelineResult:
+        """
+        Transform a semantic chunk with full document context and iterative refinement.
+
+        Similar to _transform_paragraph_with_context but uses semantic chunk directly.
+
+        Args:
+            semantic_chunk: The semantic chunk to transform
+            full_document: The complete original document
+            full_semantics: Semantics extracted from the full document
+            preceding_output: Already-transformed preceding paragraphs
+            doc_level_hints: Document-level hints (e.g., avoid overused words)
+            position_in_document: (current_index, total_chunks) for position-aware checks
+            used_openers: List of opener types already used in document (for variety)
+            used_phrases: List of opener phrases already used (for exact repetition avoidance)
+            verbose: Print progress information
+        """
+        # Create semantic content from chunk
+        from semantic_extractor import SemanticContent
+        chunk_semantics = SemanticContent(
+            entities=semantic_chunk.entities,
+            claims=semantic_chunk.claims,
+            relationships=semantic_chunk.relationships,
+            preserved_elements=full_semantics.preserved_elements,  # Use full document preserved elements
+            paragraph_structure=[]  # Will be generated during synthesis
+        )
+
+        best_output = ""
+        best_verification = None
+        best_score = 0.0
+        improvement_history = []
+        transformation_hints = None
+        convergence_achieved = False
+        last_opener_type = None
+        last_opener_phrase = None
+
+        # Store position for use in verification
+        self._current_position = position_in_document
+
+        # Use fewer iterations per chunk
+        max_chunk_iterations = min(5, self.max_retries)
+
+        # If we have document-level hints, add them
+        if doc_level_hints:
+            from structural_analyzer import TransformationHint
+            transformation_hints = [
+                TransformationHint(
+                    sentence_index=-1,
+                    current_text=hint,
+                    structural_role="document",
+                    expected_patterns=[],
+                    issue=hint,
+                    suggestion="",
+                    priority=2
+                ) for hint in doc_level_hints
+            ]
+
+        para_idx, total_paras = position_in_document if position_in_document else (0, 1)
+        position_ratio = para_idx / max(total_paras - 1, 1)
+
+        # Use chunk's role and position
+        role = semantic_chunk.role
+        position_ratio = semantic_chunk.position
+
+        for iteration in range(max_chunk_iterations):
+            if verbose and iteration > 0:
+                print(f"    Iteration {iteration + 1}/{max_chunk_iterations}")
+
+            # Generate template
+            template = self.synthesizer.template_generator.generate_template_from_context(
+                input_text="",  # No input text, using semantic chunk
+                preceding_output=preceding_output,
+                example_selector=self.synthesizer.example_selector,
+                role=role,
+                position_ratio=position_ratio,
+                semantic_weight=len(chunk_semantics.claims),
+                used_openers=used_openers,
+                used_phrases=used_phrases,
+            )
+
+            # Synthesize from semantic chunk
+            synthesis_result = self.synthesizer.synthesize_from_chunk(
+                semantic_chunk=chunk_semantics,
+                style_profile=self._style_profile,
+                document_context=full_document,
+                preceding_output=preceding_output,
+                transformation_hints=transformation_hints,
+                iteration=iteration,
+                position_in_document=position_in_document,
+                used_openers=used_openers,
+                used_phrases=used_phrases,
+                target_length=semantic_chunk.target_length,
+                target_sentence_count=semantic_chunk.target_sentence_count,
+                verbose=verbose
+            )
+
+            if not synthesis_result.output_text:
+                continue
+
+            # Verify (create dummy input text from claims for verification)
+            dummy_input_text = " ".join([claim.text for claim in chunk_semantics.claims[:3]])
+            verification = self.verifier.verify(
+                input_text=dummy_input_text,
+                output_text=synthesis_result.output_text,
+                input_semantics=chunk_semantics,
+                target_style=self._style_profile,
+                iteration=iteration,
+                position_in_document=position_in_document
+            )
+
+            score = self._calculate_score(verification)
+            improvement_history.append(score)
+
+            if verbose:
+                print(f"    Score: {score:.3f} (drift={verification.semantic.meaning_drift_score:.2f}, "
+                      f"coverage={verification.semantic.claim_coverage:.2f})")
+
+            # Update best if better
+            if not best_verification or self._is_better(verification, best_verification):
+                best_output = synthesis_result.output_text
+                best_verification = verification
+                best_score = score
+
+                # Extract opener info from synthesis result if available
+                if hasattr(synthesis_result, 'opener_type_used'):
+                    last_opener_type = synthesis_result.opener_type_used
+                if hasattr(synthesis_result, 'opener_phrase_used'):
+                    last_opener_phrase = synthesis_result.opener_phrase_used
+
+            # Check if verification passed
+            if verification.overall_passed:
+                if verbose:
+                    print(f"    Verification passed after {iteration + 1} iterations")
+                return PipelineResult(
+                    success=True,
+                    output_text=synthesis_result.output_text,
+                    iterations=iteration + 1,
+                    final_verification=verification,
+                    semantic_content=chunk_semantics,
+                    style_profile=self._style_profile,
+                    error=None,
+                    improvement_history=improvement_history,
+                    convergence_achieved=True,
+                    opener_type_used=last_opener_type,
+                    opener_phrase_used=last_opener_phrase
+                )
+
+            # Check for convergence
+            if iteration >= 2 and len(improvement_history) >= 2:
+                recent_improvement = abs(improvement_history[-1] - improvement_history[-2])
+                if recent_improvement < self.convergence_threshold:
+                    convergence_achieved = True
+                    if verbose:
+                        print(f"    Convergence reached")
+                    break
+
+        # Return best result
+        return PipelineResult(
+            success=best_verification.overall_passed if best_verification else False,
+            output_text=best_output,
+            iterations=len(improvement_history),
+            final_verification=best_verification,
+            semantic_content=chunk_semantics,
             style_profile=self._style_profile,
             error=None if best_output else "Failed to generate valid output",
             improvement_history=improvement_history,
