@@ -196,11 +196,16 @@ class Synthesizer:
         # Initialize semantic word mapper (maps common words to sample vocabulary)
         self.semantic_word_mapper = None
         if self.sample_text:
-            # Get config settings with defaults
+            # Get config settings with defaults (updated for comprehensive mapping)
             semantic_config = self.config.get("semantic_mapping", {})
             enabled = semantic_config.get("enabled", True)
-            similarity_threshold = semantic_config.get("similarity_threshold", 0.5)
-            min_sample_frequency = semantic_config.get("min_sample_frequency", 2)
+            similarity_threshold = semantic_config.get("similarity_threshold", 0.3)
+            min_sample_frequency = semantic_config.get("min_sample_frequency", 1)
+            max_spacy_words = semantic_config.get("max_spacy_words", 10000)
+            use_nltk = semantic_config.get("use_nltk", True)
+            nltk_corpus = semantic_config.get("nltk_corpus", "brown")
+            words_per_pos = semantic_config.get("words_per_pos", 2000)
+            cache_mappings = semantic_config.get("cache_mappings", True)
 
             if enabled:
                 print("  [Synthesizer] Initializing semantic word mapper...")
@@ -210,7 +215,12 @@ class Synthesizer:
                     self.sample_text,
                     nlp_model=nlp_model,
                     similarity_threshold=similarity_threshold,
-                    min_sample_frequency=min_sample_frequency
+                    min_sample_frequency=min_sample_frequency,
+                    max_spacy_words=max_spacy_words,
+                    use_nltk=use_nltk,
+                    nltk_corpus=nltk_corpus,
+                    words_per_pos=words_per_pos,
+                    cache_mappings=cache_mappings
                 )
 
         # Cache style profile (needed for template generator)

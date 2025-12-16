@@ -353,12 +353,17 @@ class TemplateGenerator:
         for idx, (para, position_ratio, is_section_start) in enumerate(substantial_paras):
             total_substantial = len(substantial_paras)
 
-            # Determine role based on position in substantial paragraphs
-            if idx == 0 or is_section_start:
+            # Multi-factor role detection combining position and content patterns
+            role = None
+
+            # Section opener: explicit markers OR content-based detection OR first paragraph
+            if idx == 0 or is_section_start or self._is_section_start_by_content(para, idx):
                 role = 'section_opener'
-            elif idx >= total_substantial - 2:  # Last 2 paragraphs
+            # Closer: last 20% OR content-based conclusion detection
+            elif idx >= int(total_substantial * 0.8) or self._is_closer(para, idx, total_substantial):
                 role = 'closer'
-            elif idx < 3:  # First few paragraphs after opener
+            # Paragraph opener: first 20% OR content-based detection
+            elif idx < int(total_substantial * 0.2) or self._is_paragraph_opener(para, idx, total_substantial):
                 role = 'paragraph_opener'
             else:
                 role = 'body'
@@ -368,13 +373,54 @@ class TemplateGenerator:
             if template and template.total_word_count >= 15 and template.sentence_count >= 1:
                 self.sample_templates[role].append(template)
 
-        # Ensure we have at least some templates for each role by borrowing from body
+        # Ensure minimum template diversity per role (at least 5 templates)
+        min_templates_per_role = 5
         for role in ['section_opener', 'paragraph_opener', 'closer']:
-            if not self.sample_templates[role] and self.sample_templates['body']:
-                # Use longest body templates for missing roles
-                sorted_body = sorted(self.sample_templates['body'],
-                                    key=lambda t: t.total_word_count, reverse=True)
-                self.sample_templates[role] = sorted_body[:5]
+            current_count = len(self.sample_templates[role])
+            if current_count < min_templates_per_role and self.sample_templates['body']:
+                needed = min_templates_per_role - current_count
+
+                # Prioritize variety when borrowing: different opener types, sentence counts, lengths
+                body_templates = self.sample_templates['body'].copy()
+
+                # Get existing opener types for this role to avoid duplicates
+                existing_openers = set()
+                if self.sample_templates[role]:
+                    for t in self.sample_templates[role]:
+                        if t.sentences and t.sentences[0].opener_type:
+                            existing_openers.add(t.sentences[0].opener_type)
+
+                # Score body templates by diversity (prefer different opener types)
+                scored_body = []
+                for t in body_templates:
+                    opener_type = t.sentences[0].opener_type if t.sentences and t.sentences[0].opener_type else 'other'
+                    # Boost score if opener type is different from existing
+                    diversity_score = 2.0 if opener_type not in existing_openers else 1.0
+                    # Also consider sentence count and length variety
+                    length_score = 1.0 + (t.sentence_count / 10.0)  # Prefer multi-sentence
+                    total_score = diversity_score * length_score
+                    scored_body.append((total_score, t, opener_type))
+
+                # Sort by score (highest diversity first)
+                scored_body.sort(key=lambda x: -x[0])
+
+                # Select diverse templates
+                selected = []
+                selected_openers = existing_openers.copy()
+                for score, template, opener_type in scored_body:
+                    if len(selected) >= needed:
+                        break
+                    # Prefer templates with different opener types
+                    if opener_type not in selected_openers or len(selected) < needed // 2:
+                        selected.append(template)
+                        selected_openers.add(opener_type)
+
+                # If we still need more, just take the highest scored ones
+                if len(selected) < needed:
+                    remaining = [t for _, t, _ in scored_body if t not in selected]
+                    selected.extend(remaining[:needed - len(selected)])
+
+                self.sample_templates[role].extend(selected[:needed])
 
         # Log stats
         for role, templates in self.sample_templates.items():
@@ -396,6 +442,139 @@ class TemplateGenerator:
         ]
         import re
         return any(re.match(p, first_line) for p in section_patterns)
+
+    def _is_section_start_by_content(self, para: str, idx: int) -> bool:
+        """Detect section boundaries by content patterns."""
+        import re
+        para_lower = para.lower()
+        first_sentence = para.split('.')[0].strip().lower() if '.' in para else para_lower[:100]
+
+        # Check for transition markers that indicate new sections
+        section_markers = [
+            r'^before\b',
+            r'^above all\b',
+            r'^next\b',
+            r'^similarly\b',
+            r'^however\b',
+            r'^but\b',
+            r'^in the process\b',
+            r'^contrary to\b',
+            r'^as opposed to\b',
+            r'^the principal features\b',
+        ]
+
+        # Check first sentence for section markers
+        for pattern in section_markers:
+            if re.match(pattern, first_sentence, re.IGNORECASE):
+                return True
+
+        # Check for enumeration markers
+        enumeration_markers = [
+            r'^first\b',
+            r'^second\b',
+            r'^third\b',
+            r'^finally\b',
+        ]
+        for pattern in enumeration_markers:
+            if re.match(pattern, first_sentence, re.IGNORECASE):
+                return True
+
+        # Check if paragraph is significantly longer (indicating major point)
+        word_count = len(para.split())
+        if word_count > 200:  # Very long paragraphs often indicate major sections
+            return True
+
+        return False
+
+    def _is_paragraph_opener(self, para: str, idx: int, total: int) -> bool:
+        """Detect paragraphs that open new topics."""
+        import re
+        para_lower = para.lower()
+        first_sentence = para.split('.')[0].strip().lower() if '.' in para else para_lower[:100]
+
+        # Check for transition markers at start
+        opener_markers = [
+            r'^hence\b',
+            r'^thus\b',
+            r'^therefore\b',
+            r'^consequently\b',
+            r'^further\b',
+            r'^moreover\b',
+            r'^in addition\b',
+            r'^furthermore\b',
+            r'^likewise\b',
+            r'^additionally\b',
+        ]
+
+        for pattern in opener_markers:
+            if re.match(pattern, first_sentence, re.IGNORECASE):
+                return True
+
+        # Check for topic introduction patterns (first sentence introduces new concept)
+        # This is a heuristic: paragraphs that start with "In", "For", "To", "When", "If"
+        topic_intro_patterns = [
+            r'^in [a-z]+',
+            r'^for [a-z]+',
+            r'^to [a-z]+',
+            r'^when [a-z]+',
+            r'^if [a-z]+',
+        ]
+
+        # Only consider if not already in first 20% (to avoid double-counting)
+        if idx >= int(total * 0.2):
+            for pattern in topic_intro_patterns:
+                if re.match(pattern, first_sentence, re.IGNORECASE):
+                    return True
+
+        return False
+
+    def _is_closer(self, para: str, idx: int, total: int) -> bool:
+        """Detect closing/synthesis paragraphs."""
+        import re
+        para_lower = para.lower()
+        first_sentence = para.split('.')[0].strip().lower() if '.' in para else para_lower[:100]
+        last_sentence = para.split('.')[-1].strip().lower() if '.' in para else para_lower[-100:]
+
+        # Check for conclusion markers
+        conclusion_markers = [
+            r'^thus\b',
+            r'^therefore\b',
+            r'^hence\b',
+            r'^in conclusion\b',
+            r'^this means\b',
+            r'^it follows\b',
+            r'^such is\b',
+            r'^this form\b',
+            r'^our conclusion\b',
+            r'^we conclude\b',
+            r'^in summary\b',
+        ]
+
+        # Check first sentence
+        for pattern in conclusion_markers:
+            if re.match(pattern, first_sentence, re.IGNORECASE):
+                return True
+
+        # Check last sentence for synthesis patterns
+        synthesis_patterns = [
+            r'such is\b',
+            r'this form\b',
+            r'our conclusion\b',
+            r'this means\b',
+            r'it follows\b',
+        ]
+
+        for pattern in synthesis_patterns:
+            if re.search(pattern, last_sentence, re.IGNORECASE):
+                return True
+
+        # Check if paragraph synthesizes previous content (contains summary words)
+        summary_words = ['conclusion', 'summary', 'synthesis', 'therefore', 'thus', 'hence', 'consequently']
+        summary_count = sum(1 for word in summary_words if word in para_lower)
+        if summary_count >= 2:  # Multiple summary indicators
+            return True
+
+        return False
 
     def _extract_paragraph_template(self, para: str, role: str,
                                      position_ratio: float) -> Optional[ParagraphTemplate]:
