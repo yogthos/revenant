@@ -68,7 +68,7 @@ The project uses `config.json` for configuration. Here's the complete structure:
     "critic_model": "deepseek-chat"
   },
   "sample": {
-    "file": "prompts/sample_sagan.txt"
+    "file": "styles/sample_sagan.txt"
   },
   "atlas": {
     "persist_path": "atlas_cache/",
@@ -80,6 +80,10 @@ The project uses `config.json` for configuration. Here's the complete structure:
     "min_pipeline_score": 0.6,
     "max_retries": 5,
     "max_pipeline_retries": 2
+  },
+  "blend": {
+    "authors": ["Sagan"],
+    "ratio": 0.5
   }
 }
 ```
@@ -105,7 +109,7 @@ The project uses `config.json` for configuration. Here's the complete structure:
 
 #### Sample Text
 
-- **sample.file**: Path to the sample text file that defines the target style (relative to project root)
+- **sample.file**: Path to the sample text file that defines the target style (relative to project root, typically in `styles/` folder)
 
 #### Style Atlas Settings
 
@@ -120,6 +124,17 @@ The project uses `config.json` for configuration. Here's the complete structure:
 - **critic.max_retries**: Maximum retry attempts per sentence within critic loop (default: `5`)
 - **critic.max_pipeline_retries**: Maximum retry attempts at pipeline level when score is below threshold (default: `2`)
 
+#### Style Blending Settings
+
+- **blend.authors**: List of author identifiers to blend (e.g., `["Hemingway", "Lovecraft"]`)
+  - Single author: `["Sagan"]` → single-author mode (backward compatible)
+  - Multiple authors: `["Hemingway", "Lovecraft"]` → blend mode
+- **blend.ratio**: Blend ratio (0.0 to 1.0, default: `0.5`)
+  - `0.0` = All Author A (first in list)
+  - `1.0` = All Author B (second in list)
+  - `0.5` = Balanced blend
+  - Can be overridden via `--blend-ratio` CLI flag
+
 ### Getting an API Key
 
 1. Sign up at https://platform.deepseek.com
@@ -128,6 +143,28 @@ The project uses `config.json` for configuration. Here's the complete structure:
 4. Copy the key and paste it into `config.json`
 
 ## Usage
+
+### Loading Styles into ChromaDB
+
+Before using style blending, you need to load author styles into ChromaDB. Each author's style is stored with an `author_id` tag for later retrieval.
+
+**Example: Loading multiple author styles**
+
+```bash
+# Load Hemingway's style
+python3 restyle.py input/small.md -o output/small.md \
+  --load-style styles/sample_hemingway.txt --author "Hemingway" \
+  --atlas-cache atlas_cache/
+
+# Load Lovecraft's style (adds to existing collection)
+python3 restyle.py input/small.md -o output/small.md \
+  --load-style styles/sample_lovecraft.txt --author "Lovecraft" \
+  --atlas-cache atlas_cache/
+
+# Now you can blend them (see Style Blending section below)
+```
+
+**Note**: When using `--load-style`, the input file is still required but won't be processed if you're just loading a style. The style will be added to the ChromaDB collection and can be used in subsequent runs.
 
 ### Command Line Interface (Recommended)
 
@@ -142,13 +179,19 @@ With additional options:
 
 ```bash
 # Specify a custom sample file
-python3 restyle.py input/small.md -o output/small.md --sample prompts/custom_sample.txt
+python3 restyle.py input/small.md -o output/small.md --sample styles/custom_sample.txt
 
 # Cache the Style Atlas for faster subsequent runs
 python3 restyle.py input/small.md -o output/small.md --atlas-cache atlas_data/
 
 # Clear ChromaDB when switching to a different sample text
 python3 restyle.py input/small.md -o output/small.md --clear-db
+
+# Load a style file with an author tag (for style blending)
+python3 restyle.py input/small.md -o output/small.md --load-style styles/sample_hemingway.txt --author "Hemingway"
+
+# Blend two author styles (requires authors to be loaded first)
+python3 restyle.py input/small.md -o output/small.md --blend-ratio 0.3
 
 # Adjust retry settings
 python3 restyle.py input/small.md -o output/small.md --max-retries 5
@@ -166,6 +209,9 @@ python3 restyle.py input/small.md -o output/small.md -v
 - `--max-retries`: Maximum retry attempts per sentence (default: 3, overrides config.json)
 - `--atlas-cache`: Path to directory for persisting/loading Style Atlas (optional)
 - `--clear-db`: Clear ChromaDB collection before building atlas (use when switching sample texts)
+- `--load-style FILE`: Load a style file and tag it with an author name (requires `--author`)
+- `--author NAME`: Author name to tag the style file with (required with `--load-style`)
+- `--blend-ratio FLOAT`: Override blend ratio from config (0.0 to 1.0, CLI overrides config.json)
 - `-v, --verbose`: Enable verbose output
 
 ### Python API
@@ -216,11 +262,13 @@ text-style-transfer/
 ├── tests/                      # Test files
 ├── input/                      # Input text files
 ├── output/                     # Generated output files
-├── prompts/                    # Sample style files and prompt templates
-│   ├── sample_*.txt           # Sample style text files
+├── styles/                     # Sample style text files
+│   └── sample_*.txt           # Author style samples (e.g., sample_sagan.txt)
+├── prompts/                    # LLM prompt templates
 │   ├── generator_system.md    # Generator system prompt template
 │   ├── generator_examples.md  # Generator examples template
-│   ├── generation_prompt.md   # Generation prompt template
+│   ├── generation_prompt.md   # Generation prompt template (single-author)
+│   ├── generation_blended.md  # Blended style prompt template
 │   ├── critic_system.md       # Critic system prompt template
 │   └── critic_user.md         # Critic user prompt template
 ├── config.json                 # Configuration file
@@ -301,6 +349,10 @@ flowchart TD
    - **Structure Match**: Queries ChromaDB by cluster ID and filters by length ratio (0.7x-1.5x) to find rhythm/structure examples
      - Uses stochastic selection with history tracking to prevent repetition
      - Prefers candidates with better length matches
+   - **Blend Mode**: When multiple authors are configured, uses `StyleBlender` to find "bridge texts" via vector interpolation
+     - Calculates author centroids (average style vectors)
+     - Interpolates between author styles: `target_vec = (vec_a * (1 - ratio)) + (vec_b * ratio)`
+     - Finds paragraphs that naturally blend both styles
 
 5. **Constrained Generation**: Uses LLM with RAG-based prompts that:
    - Explicitly separate vocabulary guidance (from situation match) and structure guidance (from structure match)
@@ -366,7 +418,7 @@ The system uses markdown template files in the `prompts/` directory for all LLM 
 - **`prompts/generator_examples.md`**: Examples section added to system message
   - Shows good vs bad examples of style transfer
   - Demonstrates structure matching requirements
-- **`prompts/generation_prompt.md`**: Main generation prompt template
+- **`prompts/generation_prompt.md`**: Main generation prompt template (single-author mode)
   - Template variables:
     - `{structure_match}` - Structural reference text
     - `{structure_instructions}` - Formatted structure analysis
@@ -377,6 +429,14 @@ The system uses markdown template files in the `prompts/` directory for all LLM 
     - `{input_word_count}` - Input word count
     - `{target_word_count}` - Target output word count
     - `{avg_sentence_len}` - Average sentence length from structure match
+- **`prompts/generation_blended.md`**: Blended style generation prompt template
+  - Template variables:
+    - `{bridge_template}` - Bridge text that connects two author styles
+    - `{hybrid_vocab}` - Comma-separated list of words from both authors
+    - `{author_a}` - First author name
+    - `{author_b}` - Second author name
+    - `{blend_desc}` - Description of the blend (e.g., "primarily Hemingway with subtle Lovecraft influences")
+    - `{input_text}` - Original input text
 
 ### Critic Prompts
 
@@ -419,6 +479,8 @@ If you see ChromaDB errors:
 - Check that `onnxruntime` is installed (required dependency)
 - If switching between different sample texts, use `--clear-db` to clear old embeddings
 - If ChromaDB collection is corrupted, delete the `atlas_cache/` directory and rebuild
+- When loading multiple authors, use the same `--atlas-cache` path to ensure they're added to the same collection
+- Author styles are stored with prefixed IDs (e.g., `Hemingway_para_0`) to avoid conflicts
 
 ### Import Errors
 
@@ -435,6 +497,8 @@ The pipeline includes retry mechanisms, but if output quality is consistently lo
 - Ensure the sample text has sufficient variety in style
 - Check that the Style Atlas is being built correctly (check logs with `-v`)
 - Review prompt templates in `prompts/` - they may need adjustment for your use case
+- For style blending: Ensure both authors have sufficient text loaded (at least 10-20 paragraphs each)
+- If bridge texts aren't found, try adjusting `blend.ratio` or ensure authors have overlapping style characteristics
 
 ### Length Expansion Issues
 

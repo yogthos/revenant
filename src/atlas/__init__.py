@@ -8,6 +8,7 @@ from src.atlas.navigator import (
     find_structure_match,
     StructureNavigator
 )
+from src.atlas.blender import StyleBlender
 
 __all__ = [
     'StyleAtlas',
@@ -20,5 +21,6 @@ __all__ = [
     'find_situation_match',
     'find_structure_match',
     'StructureNavigator',
+    'StyleBlender',
 ]
 

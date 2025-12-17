@@ -23,7 +23,8 @@ from src.atlas import (
     predict_next_cluster,
     find_situation_match,
     find_structure_match,
-    StructureNavigator
+    StructureNavigator,
+    StyleBlender
 )
 from src.generator.llm_interface import generate_sentence
 from src.validator.critic import generate_with_critic, ConvergenceError
@@ -72,7 +73,8 @@ def process_text(
     max_retries: int = 3,
     output_file: Optional[str] = None,
     atlas_cache_path: Optional[str] = None,
-    clear_db: bool = False
+    clear_db: bool = False,
+    blend_ratio: Optional[float] = None
 ) -> List[str]:
     """Process input text through Style Atlas pipeline.
 
@@ -102,6 +104,23 @@ def process_text(
     critic_min_pipeline_score = critic_config.get("min_pipeline_score", 0.6)
     critic_max_retries = critic_config.get("max_retries", 5)
     critic_max_pipeline_retries = critic_config.get("max_pipeline_retries", 2)
+
+    # Detect blend mode from config
+    blend_config = config.get("blend", {})
+    blend_authors = blend_config.get("authors", [])
+    blend_ratio_config = blend_config.get("ratio", 0.5)
+    # CLI blend_ratio overrides config
+    final_blend_ratio = blend_ratio if blend_ratio is not None else blend_ratio_config
+
+    # Determine if we're in blend mode (multiple authors) or single-author mode
+    is_blend_mode = len(blend_authors) > 1
+    style_blender = None
+
+    if is_blend_mode:
+        print(f"Phase 1: Blend mode detected with authors: {blend_authors}")
+        print(f"  Blend ratio: {final_blend_ratio} (0.0 = All {blend_authors[0]}, 1.0 = All {blend_authors[1]})")
+    else:
+        print(f"Phase 1: Single-author mode")
 
     # Clear ChromaDB if requested
     if clear_db:
@@ -164,6 +183,16 @@ def process_text(
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             save_atlas(atlas, str(cache_file))
             print(f"  ✓ Saved atlas to cache")
+
+    # Initialize StyleBlender if in blend mode
+    if is_blend_mode:
+        try:
+            style_blender = StyleBlender(atlas)
+            print(f"  ✓ Initialized StyleBlender for blend mode")
+        except Exception as e:
+            print(f"  ⚠ Failed to initialize StyleBlender: {e}")
+            print(f"  Falling back to single-author mode")
+            is_blend_mode = False
 
     # Build cluster Markov chain
     print("Phase 1: Building cluster Markov chain...")
@@ -240,20 +269,40 @@ def process_text(
                 print(f"  Processing sentence {unit_idx + 1}/{len(para_units)}")
                 print(f"    Original: {content_unit.original_text[:80]}...")
 
-                # Retrieve dual RAG references
-                situation_match = find_situation_match(
-                    atlas,
-                    content_unit.original_text,
-                    similarity_threshold=similarity_threshold
-                )
+                # Retrieve dual RAG references (blend mode vs single-author mode)
+                if is_blend_mode and style_blender and len(blend_authors) >= 2:
+                    # Blend mode: use StyleBlender to find bridge texts
+                    author_a = blend_authors[0]
+                    author_b = blend_authors[1]
 
-                structure_match = find_structure_match(
-                    atlas,
-                    current_cluster,
-                    input_text=content_unit.original_text,
-                    length_tolerance=0.3,
-                    navigator=structure_navigator
-                )
+                    # Get blended structure match (bridge text)
+                    structure_match = style_blender.retrieve_blended_template(
+                        author_a=author_a,
+                        author_b=author_b,
+                        blend_ratio=final_blend_ratio
+                    )
+
+                    # For situation match, still use semantic similarity (could be enhanced later)
+                    situation_match = find_situation_match(
+                        atlas,
+                        content_unit.original_text,
+                        similarity_threshold=similarity_threshold
+                    )
+                else:
+                    # Single-author mode: use existing retrieval
+                    situation_match = find_situation_match(
+                        atlas,
+                        content_unit.original_text,
+                        similarity_threshold=similarity_threshold
+                    )
+
+                    structure_match = find_structure_match(
+                        atlas,
+                        current_cluster,
+                        input_text=content_unit.original_text,
+                        length_tolerance=0.3,
+                        navigator=structure_navigator
+                    )
 
                 if situation_match:
                     print(f"    Retrieved situation match (vocabulary): {situation_match[:80]}...")
@@ -269,9 +318,20 @@ def process_text(
                     continue
 
                 # Determine sentiment and select appropriate vocabulary
-                sentiment = _detect_sentiment(content_unit.original_text)
-                sentiment_key = sentiment.lower() if sentiment else 'neutral'
-                global_vocab_list = global_vocab_dict.get(sentiment_key, global_vocab_dict.get('neutral', []))
+                if is_blend_mode and style_blender and len(blend_authors) >= 2:
+                    # Blend mode: get hybrid vocabulary
+                    author_a = blend_authors[0]
+                    author_b = blend_authors[1]
+                    global_vocab_list = style_blender.get_hybrid_vocab(
+                        author_a=author_a,
+                        author_b=author_b,
+                        ratio=final_blend_ratio
+                    )
+                else:
+                    # Single-author mode: use existing vocabulary extraction
+                    sentiment = _detect_sentiment(content_unit.original_text)
+                    sentiment_key = sentiment.lower() if sentiment else 'neutral'
+                    global_vocab_list = global_vocab_dict.get(sentiment_key, global_vocab_dict.get('neutral', []))
 
                 # Calculate adaptive threshold based on structure match quality
                 # If structure match is very different from input, lower the threshold
@@ -299,9 +359,17 @@ def process_text(
                     # Pipeline-level retry loop
                     for pipeline_attempt in range(critic_max_pipeline_retries + 1):
                         try:
+                            # Determine author names for prompt (for blend mode)
+                            author_names = None
+                            if is_blend_mode and len(blend_authors) >= 2:
+                                author_names = blend_authors
+
                             generated, critic_result = generate_with_critic(
                                 generate_fn=lambda cu, struct_match, sit_match, cfg, hint=None: generate_sentence(
-                                    cu, struct_match, sit_match, cfg, hint=hint, global_vocab_list=global_vocab_list
+                                    cu, struct_match, sit_match, cfg, hint=hint,
+                                    global_vocab_list=global_vocab_list,
+                                    author_names=author_names,
+                                    blend_ratio=final_blend_ratio if is_blend_mode else None
                                 ),
                                 content_unit=content_unit,
                                 structure_match=structure_match,
@@ -413,7 +481,10 @@ def run_pipeline(
     output_file: Optional[str] = None,
     max_retries: int = 3,
     atlas_cache_path: Optional[str] = None,
-    clear_db: bool = False
+    clear_db: bool = False,
+    load_style_file: Optional[str] = None,
+    author_name: Optional[str] = None,
+    blend_ratio: Optional[float] = None
 ) -> List[str]:
     """Run the Style Atlas pipeline with file I/O.
 
@@ -438,6 +509,39 @@ def run_pipeline(
         with open(input_file, 'r', encoding='utf-8') as f:
             input_text = f.read()
 
+    # Handle --load-style and --author flags
+    if load_style_file and author_name:
+        # Load the style file and build atlas with author tag
+        with open(load_style_file, 'r', encoding='utf-8') as f:
+            style_text = f.read()
+
+        # Build atlas with author_id
+        from src.atlas.builder import build_style_atlas
+        atlas_config = {}
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+            atlas_config = config.get("atlas", {})
+
+        atlas_cache_path = atlas_cache_path or atlas_config.get("persist_path")
+        num_clusters = atlas_config.get("num_clusters", 5)
+        collection_name = atlas_config.get("collection_name", "style_atlas")
+
+        print(f"Loading style from {load_style_file} with author tag: {author_name}")
+        atlas = build_style_atlas(
+            sample_text=style_text,
+            num_clusters=num_clusters,
+            collection_name=collection_name,
+            persist_directory=atlas_cache_path,
+            author_id=author_name
+        )
+        print(f"✓ Loaded style for author: {author_name}")
+
+        # If we're just loading a style, we might want to exit here
+        # But for now, continue with normal pipeline if input is provided
+        if input_file is None and input_text is None:
+            print("Style loaded successfully. Use with input file to generate text.")
+            return []
+
     # Load sample text
     if sample_text is None:
         if sample_file is None:
@@ -449,15 +553,20 @@ def run_pipeline(
         with open(sample_file, 'r', encoding='utf-8') as f:
             sample_text = f.read()
 
-    # Run pipeline
-    output = process_text(
-        input_text=input_text,
-        sample_text=sample_text,
-        config_path=config_path,
-        max_retries=max_retries,
-        output_file=output_file,
-        atlas_cache_path=atlas_cache_path,
-        clear_db=clear_db
-    )
+    # Run pipeline (only if we have input to process)
+    if input_file or input_text:
+        output = process_text(
+            input_text=input_text,
+            sample_text=sample_text,
+            config_path=config_path,
+            max_retries=max_retries,
+            output_file=output_file,
+            atlas_cache_path=atlas_cache_path,
+            clear_db=clear_db,
+            blend_ratio=blend_ratio
+        )
+    else:
+        # Just loaded a style, no input to process
+        output = []
 
     return output

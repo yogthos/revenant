@@ -84,7 +84,42 @@ Examples:
         help='Clear ChromaDB collection before building atlas (use when switching sample texts)'
     )
 
+    parser.add_argument(
+        '--load-style',
+        type=str,
+        default=None,
+        help='Load a style file and tag it with an author name (requires --author)'
+    )
+
+    parser.add_argument(
+        '--author',
+        type=str,
+        default=None,
+        help='Author name to tag the style file with (required with --load-style)'
+    )
+
+    parser.add_argument(
+        '--blend-ratio',
+        type=float,
+        default=None,
+        help='Blend ratio for style mixing (0.0 = All Author A, 1.0 = All Author B, default: 0.5). Overrides config.json'
+    )
+
     args = parser.parse_args()
+
+    # Validate --load-style and --author are used together
+    if args.load_style and not args.author:
+        print("Error: --author is required when using --load-style", file=sys.stderr)
+        sys.exit(1)
+    if args.author and not args.load_style:
+        print("Error: --load-style is required when using --author", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate blend_ratio if provided
+    if args.blend_ratio is not None:
+        if args.blend_ratio < 0.0 or args.blend_ratio > 1.0:
+            print("Error: --blend-ratio must be between 0.0 and 1.0", file=sys.stderr)
+            sys.exit(1)
 
     # Validate input file exists
     input_path = Path(args.input)
@@ -121,6 +156,10 @@ Examples:
             print(f"Atlas cache: {args.atlas_cache}")
         if args.clear_db:
             print(f"Clear DB: enabled")
+        if args.load_style:
+            print(f"Load style: {args.load_style} (author: {args.author})")
+        if args.blend_ratio is not None:
+            print(f"Blend ratio: {args.blend_ratio}")
         print()
 
     try:
@@ -132,7 +171,10 @@ Examples:
             output_file=args.output,
             max_retries=args.max_retries,
             atlas_cache_path=args.atlas_cache,
-            clear_db=args.clear_db
+            clear_db=args.clear_db,
+            load_style_file=args.load_style,
+            author_name=args.author,
+            blend_ratio=args.blend_ratio
         )
 
         if args.verbose:

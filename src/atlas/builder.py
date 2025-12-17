@@ -120,7 +120,8 @@ def build_style_atlas(
     sample_text: str,
     num_clusters: int = 5,
     collection_name: str = "style_atlas",
-    persist_directory: Optional[str] = None
+    persist_directory: Optional[str] = None,
+    author_id: Optional[str] = None
 ) -> StyleAtlas:
     """Build a Style Atlas from sample text.
 
@@ -128,7 +129,7 @@ def build_style_atlas(
     1. Chunks sample text into paragraphs
     2. Generates semantic embeddings (sentence-transformers)
     3. Generates style vectors (deterministic metrics)
-    4. Stores in ChromaDB with metadata
+    4. Stores in ChromaDB with metadata (including author_id if provided)
     5. Runs K-means clustering on style vectors
     6. Assigns cluster IDs to paragraphs
 
@@ -137,6 +138,7 @@ def build_style_atlas(
         num_clusters: Number of K-means clusters (default: 5).
         collection_name: Name for ChromaDB collection (default: "style_atlas").
         persist_directory: Optional directory to persist ChromaDB (default: in-memory).
+        author_id: Optional author identifier to tag paragraphs with (for style blending).
 
     Returns:
         StyleAtlas object containing collection, cluster assignments, and metadata.
@@ -153,18 +155,24 @@ def build_style_atlas(
     else:
         client = chromadb.Client(Settings(anonymized_telemetry=False))
 
-    # Get or create collection
+    # Get or create collection (don't delete if adding author to existing collection)
     try:
         collection = client.get_collection(name=collection_name)
-        # Clear existing collection
-        collection.delete()
+        # If author_id is provided and collection exists, we'll add to it instead of clearing
+        if author_id is None:
+            # Clear existing collection only if not adding an author
+            collection.delete()
+            collection = client.create_collection(
+                name=collection_name,
+                metadata={"description": "Style Atlas for text style transfer"}
+            )
+        # If author_id is provided, keep existing collection to add to it
     except:
-        pass
-
-    collection = client.create_collection(
-        name=collection_name,
-        metadata={"description": "Style Atlas for text style transfer"}
-    )
+        # Collection doesn't exist, create it
+        collection = client.create_collection(
+            name=collection_name,
+            metadata={"description": "Style Atlas for text style transfer"}
+        )
 
     # Chunk into paragraphs
     paragraphs = _chunk_into_paragraphs(sample_text)
@@ -213,21 +221,23 @@ def build_style_atlas(
             if sentence_count == 0:
                 sentence_count = 1  # At least one sentence
 
-        metadatas.append({
+        metadata_entry = {
             "paragraph_idx": idx,
             "word_count": word_count,
             "sentence_count": sentence_count
-        })
+        }
 
-    # Store in ChromaDB
-    collection.add(
-        ids=paragraph_ids,
-        embeddings=semantic_embeddings,
-        documents=texts,
-        metadatas=metadatas
-    )
+        # Add author_id if provided
+        if author_id:
+            metadata_entry["author_id"] = author_id
 
-    # Run K-means clustering on style vectors
+        # Store style vector in metadata for efficient centroid calculation
+        # Convert numpy array to list for JSON serialization
+        metadata_entry["style_vec"] = style_vec.tolist()
+
+        metadatas.append(metadata_entry)
+
+    # Run K-means clustering on style vectors (before storing, so we can add cluster_id to metadata)
     style_matrix = np.array(style_vectors)
 
     if len(paragraphs) < num_clusters:
@@ -242,20 +252,30 @@ def build_style_atlas(
         cluster_labels = np.zeros(len(paragraphs), dtype=int)
         cluster_centers = np.array([style_vectors[0]]) if style_vectors else np.array([])
 
-    # Create cluster_id mapping
-    cluster_ids = {para_id: int(label) for para_id, label in zip(paragraph_ids, cluster_labels)}
+    # Add cluster_id to metadata before storing
+    for idx, meta in enumerate(metadatas):
+        meta["cluster_id"] = int(cluster_labels[idx])
 
-    # Update ChromaDB metadata with cluster IDs (preserve existing metadata)
-    updated_metadatas = []
-    for idx in range(len(paragraphs)):
-        updated_meta = metadatas[idx].copy()
-        updated_meta["cluster_id"] = int(cluster_labels[idx])
-        updated_metadatas.append(updated_meta)
+    # Store in ChromaDB
+    # If collection already exists and we're adding an author, we need unique IDs
+    # Use author_id prefix if provided to avoid conflicts
+    if author_id:
+        # Prefix paragraph IDs with author_id to ensure uniqueness
+        prefixed_ids = [f"{author_id}_{para_id}" for para_id in paragraph_ids]
+    else:
+        prefixed_ids = paragraph_ids
 
-    collection.update(
-        ids=paragraph_ids,
-        metadatas=updated_metadatas
+    collection.add(
+        ids=prefixed_ids,
+        embeddings=semantic_embeddings,
+        documents=texts,
+        metadatas=metadatas
     )
+
+    # Create cluster_id mapping using prefixed IDs
+    cluster_ids = {prefixed_id: int(cluster_labels[idx])
+                  for idx, prefixed_id in enumerate(prefixed_ids)}
+
 
     # Create StyleAtlas object
     atlas = StyleAtlas(

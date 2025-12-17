@@ -82,7 +82,9 @@ def generate_sentence(
     config_path: str = "config.json",
     hint: Optional[str] = None,
     target_author_name: str = "Target Author",
-    global_vocab_list: Optional[List[str]] = None
+    global_vocab_list: Optional[List[str]] = None,
+    author_names: Optional[List[str]] = None,
+    blend_ratio: Optional[float] = None
 ) -> str:
     """Generate a sentence using LLM with dual RAG references.
 
@@ -143,14 +145,26 @@ def generate_sentence(
 
     style_metrics = {'avg_sentence_len': avg_sentence_len}
 
-    # Build user prompt using PromptAssembler
-    user_prompt = assembler.build_generation_prompt(
-        input_text=content_unit.original_text,
-        situation_match=situation_match,
-        structure_match=structure_match,
-        style_metrics=style_metrics,
-        global_vocab_list=global_vocab_list
-    )
+    # Build user prompt using PromptAssembler (blend mode or single-author mode)
+    if author_names and len(author_names) >= 2 and blend_ratio is not None:
+        # Blend mode: use blended prompt
+        user_prompt = assembler.build_blended_prompt(
+            input_text=content_unit.original_text,
+            bridge_template=structure_match,
+            hybrid_vocab=global_vocab_list or [],
+            author_a=author_names[0],
+            author_b=author_names[1],
+            blend_ratio=blend_ratio
+        )
+    else:
+        # Single-author mode: use regular prompt
+        user_prompt = assembler.build_generation_prompt(
+            input_text=content_unit.original_text,
+            situation_match=situation_match,
+            structure_match=structure_match,
+            style_metrics=style_metrics,
+            global_vocab_list=global_vocab_list
+        )
 
     # Add entity preservation if needed
     if content_unit.entities:
