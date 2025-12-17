@@ -153,7 +153,6 @@ CRITICAL: Check that all [^number] citations and direct quotations from Original
             result = json.loads(response_text)
         except json.JSONDecodeError:
             # If JSON parsing fails, try to extract JSON from response
-            import re
             json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
@@ -172,11 +171,32 @@ CRITICAL: Check that all [^number] citations and direct quotations from Original
             result["feedback"] = "No specific feedback provided."
         if "score" not in result:
             result["score"] = 0.5
+        if "primary_failure_type" not in result:
+            # Infer from feedback if not provided
+            feedback_lower = result.get("feedback", "").lower()
+            if "structure" in feedback_lower or "length" in feedback_lower or "syntax" in feedback_lower:
+                result["primary_failure_type"] = "structure"
+            elif "vocab" in feedback_lower or "word" in feedback_lower or "tone" in feedback_lower:
+                result["primary_failure_type"] = "vocab"
+            elif "meaning" in feedback_lower or "semantic" in feedback_lower:
+                result["primary_failure_type"] = "meaning"
+            else:
+                result["primary_failure_type"] = "none" if result.get("pass", False) else "structure"
 
         # Ensure types
         result["pass"] = bool(result["pass"])
         result["score"] = float(result["score"])
         result["feedback"] = str(result["feedback"])
+        result["primary_failure_type"] = str(result["primary_failure_type"])
+
+        # Validate feedback is a single instruction (not a numbered list)
+        # If it contains multiple numbered items, extract the first one
+        feedback = result["feedback"]
+        numbered_pattern = r'^\d+[\.\)]\s*([^\.]+(?:\.[^\.]+)*)'
+        match = re.match(numbered_pattern, feedback)
+        if match:
+            # Extract just the first instruction
+            result["feedback"] = match.group(1).strip()
 
         return result
 
@@ -192,6 +212,118 @@ CRITICAL: Check that all [^number] citations and direct quotations from Original
 class ConvergenceError(Exception):
     """Raised when critic cannot converge to minimum score threshold."""
     pass
+
+
+def apply_surgical_fix(
+    draft_text: str,
+    instruction: str,
+    config_path: str = "config.json"
+) -> str:
+    """Apply a surgical fix to text using Editor Mode.
+
+    Used when we are CLOSE to passing (Score > 0.5) but need a specific tweak.
+    This mode applies ONLY the requested change without rewriting the whole text.
+
+    Args:
+        draft_text: The current draft text to edit.
+        instruction: Specific edit instruction from critic (e.g., "Remove the comma and change 'reinforcing' to 'reinforces'").
+        config_path: Path to configuration file.
+
+    Returns:
+        Edited text with the surgical fix applied.
+    """
+    config = _load_config(config_path)
+    provider = config.get("provider", "deepseek")
+
+    if provider == "deepseek":
+        deepseek_config = config.get("deepseek", {})
+        api_key = deepseek_config.get("api_key")
+        api_url = deepseek_config.get("api_url")
+        model = deepseek_config.get("editor_model", "deepseek-chat")
+
+        if not api_key or not api_url:
+            raise ValueError("DeepSeek API key or URL not found in config")
+    else:
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    # Build editor prompt
+    system_prompt = "You are a Text Editor. Your task is to apply specific edits to text without rewriting the entire content."
+
+    user_prompt = f"""You are a Text Editor. DO NOT REWRITE the whole content.
+
+Input Text: "{draft_text}"
+
+Editor Instruction: {instruction}
+
+Apply ONLY this change. Keep everything else exactly the same.
+
+Output the edited text only, without any explanation or commentary."""
+
+    # Call API
+    response_text = _call_deepseek_api(system_prompt, user_prompt, api_key, api_url, model)
+
+    # Clean up response (remove quotes if present)
+    edited_text = response_text.strip()
+    if edited_text.startswith('"') and edited_text.endswith('"'):
+        edited_text = edited_text[1:-1]
+
+    return edited_text
+
+
+def _check_length_gate(
+    generated_text: str,
+    structural_ref: str,
+    min_ratio: float = 0.6,
+    max_ratio: float = 1.5
+) -> Optional[Dict[str, any]]:
+    """Hard gate: Check length before LLM evaluation.
+
+    Calculates word count ratio between generated and structural reference.
+    If length is way off, fail immediately with specific math to save tokens
+    and provide mathematically precise feedback.
+
+    Args:
+        generated_text: Generated text to check.
+        structural_ref: Structural reference text to compare against.
+        min_ratio: Minimum acceptable ratio (default: 0.6).
+        max_ratio: Maximum acceptable ratio (default: 1.5).
+
+    Returns:
+        None if length is acceptable, or failure dict with feedback if not.
+    """
+    # Calculate word counts
+    gen_words = generated_text.split()
+    ref_words = structural_ref.split()
+
+    gen_len = len(gen_words)
+    ref_len = len(ref_words)
+
+    if ref_len == 0:
+        # Can't compare against empty reference
+        return None
+
+    len_ratio = gen_len / ref_len
+
+    # Check if length is way off
+    if len_ratio > max_ratio:
+        words_to_delete = gen_len - ref_len
+        return {
+            "pass": False,
+            "feedback": f"FATAL ERROR: Output is {gen_len} words, but Reference is {ref_len}. You MUST delete at least {words_to_delete} words.",
+            "score": 0.0,
+            "primary_failure_type": "structure"
+        }
+    elif len_ratio < min_ratio:
+        words_to_add = ref_len - gen_len
+        return {
+            "pass": False,
+            "feedback": f"FATAL ERROR: Output is too short ({gen_len} words). Expand on the description to reach ~{ref_len} words (add approximately {words_to_add} words).",
+            "score": 0.0,
+            "primary_failure_type": "structure"
+        }
+
+    # Length is acceptable
+    return None
 
 
 def _extract_issues_from_feedback(feedback: str) -> List[str]:
@@ -309,6 +441,50 @@ def _consolidate_feedback(feedback_history: List[str]) -> str:
     return "ACTION ITEMS TO FIX:\n" + "\n".join(action_items)
 
 
+def _is_specific_edit_instruction(feedback: str) -> bool:
+    """Detect if feedback is a specific edit instruction vs structural rewrite.
+
+    Specific edit instructions contain action verbs and mention specific elements
+    (punctuation, words, phrases) rather than asking for structural rewrites.
+
+    Args:
+        feedback: Feedback string from critic.
+
+    Returns:
+        True if feedback is a specific edit instruction, False if it's a structural rewrite.
+    """
+    if not feedback:
+        return False
+
+    feedback_lower = feedback.lower()
+
+    # Check for edit verbs that indicate specific edits
+    edit_verbs = ['remove', 'change', 'add', 'replace', 'delete', 'fix', 'correct', 'insert']
+    has_edit_verb = any(verb in feedback_lower for verb in edit_verbs)
+
+    if not has_edit_verb:
+        return False
+
+    # Check for specific elements mentioned (punctuation, words, phrases)
+    specific_elements = [
+        'dash', 'comma', 'period', 'semicolon', 'colon', 'quote', 'quotation',
+        'word', 'phrase', 'sentence', 'punctuation', 'capitalization',
+        'apostrophe', 'hyphen', 'parenthesis', 'bracket'
+    ]
+    has_specific_element = any(element in feedback_lower for element in specific_elements)
+
+    # Check for structural rewrite indicators (these suggest regeneration, not editing)
+    structural_indicators = [
+        'rewrite', 'restructure', 'reorganize', 'rephrase', 'completely',
+        'entire', 'whole', 'match the structure', 'follow the pattern',
+        'adopt the style', 'emulate', 'mirror'
+    ]
+    has_structural_indicator = any(indicator in feedback_lower for indicator in structural_indicators)
+
+    # It's a specific edit if it has edit verbs and specific elements, but not structural indicators
+    return has_edit_verb and (has_specific_element or not has_structural_indicator)
+
+
 def generate_with_critic(
     generate_fn,
     content_unit,
@@ -316,7 +492,8 @@ def generate_with_critic(
     situation_match: Optional[str] = None,
     config_path: str = "config.json",
     max_retries: int = 3,
-    min_score: float = 0.75
+    min_score: float = 0.75,
+    use_fallback_structure: bool = False
 ) -> Tuple[str, Dict[str, any]]:
     """Generate text with adversarial critic loop.
 
@@ -342,53 +519,150 @@ def generate_with_critic(
         generated = content_unit.original_text
         return generated, {"pass": False, "feedback": "No structure match provided", "score": 0.0}
 
+    # Three-phase workflow: Generate -> Critique -> Edit
     best_text = None
     best_score = 0.0
     best_result = None
     feedback_history: List[str] = []
+    current_structure = structure_match
+    structure_dropped = use_fallback_structure
 
-    for attempt in range(max_retries):
-        # Build consolidated hint from all previous attempts
-        hint = None
-        if feedback_history:
-            consolidated = _consolidate_feedback(feedback_history)
-            if consolidated:
-                hint = f"CRITICAL FEEDBACK FROM ALL PREVIOUS ATTEMPTS:\n{consolidated}\n\nPlease address ALL of these action items in your rewrite."
+    # Track separate counters for generation and editing
+    current_text = None
+    is_edited = False
+    edit_attempts = 0
+    generation_attempts = 0
+    max_edit_attempts = 3  # Max edits before regenerating
+    should_regenerate = True  # Start by generating
+    last_score_before_edit = None  # Track score before editing to detect improvement
 
-        # Generate with hint from previous attempts
-        generated = generate_fn(content_unit, structure_match, situation_match, config_path, hint=hint)
+    # Main loop: Generate -> Critique -> Edit
+    # Allow up to max_retries generations and max_edit_attempts edits per generation
+    max_total_attempts = max_retries * (1 + max_edit_attempts)
+    for attempt in range(max_total_attempts):
+        # Smart Retreat: After 2 generation attempts, drop strict structural constraint
+        if generation_attempts == 2 and not structure_dropped:
+            print("    ⚠ Dropping strict structural constraint (Fallback Mode)")
+            structure_dropped = True
+            current_structure = None  # Signal to use fallback
+            should_regenerate = True  # Force regeneration with new structure
 
-        # Evaluate with critic
-        critic_result = critic_evaluate(
-            generated,
-            structure_match,
-            situation_match,
-            original_text=content_unit.original_text,
-            config_path=config_path
-        )
-        score = critic_result.get("score", 0.0)
+        # Phase 1: Generate (Generator Mode) - Only when needed
+        if current_text is None or should_regenerate:
+            # Build consolidated hint from all previous generation attempts
+            hint = None
+            if feedback_history:
+                consolidated = _consolidate_feedback(feedback_history)
+                if consolidated:
+                    hint = f"CRITICAL FEEDBACK FROM ALL PREVIOUS ATTEMPTS:\n{consolidated}\n\nPlease address ALL of these action items in your rewrite."
+
+            # Generate with hint from previous attempts
+            generate_kwargs = {
+                'hint': hint,
+                'use_fallback_structure': structure_dropped
+            }
+            current_text = generate_fn(content_unit, current_structure or structure_match, situation_match, config_path, **generate_kwargs)
+            is_edited = False
+            generation_attempts += 1
+            edit_attempts = 0  # Reset edit attempts when regenerating
+            should_regenerate = False
+
+        # Phase 2: Critique
+        eval_structure = current_structure if current_structure else structure_match
+
+        # Hard gate: Check length before LLM evaluation (skip if using fallback structure)
+        length_gate_result = None
+        if not structure_dropped:
+            length_gate_result = _check_length_gate(current_text, structure_match)
+
+        if length_gate_result:
+            # Length gate failed - use deterministic feedback, skip LLM call
+            critic_result = length_gate_result
+            score = critic_result.get("score", 0.0)
+        else:
+            # Length is acceptable - proceed with LLM critic evaluation
+            critic_result = critic_evaluate(
+                current_text,
+                eval_structure,
+                situation_match,
+                original_text=content_unit.original_text,
+                config_path=config_path
+            )
+            score = critic_result.get("score", 0.0)
 
         # Track best result
         if score > best_score:
-            best_text = generated
+            best_text = current_text
             best_score = score
             best_result = critic_result
 
         # Check if we should accept
         if critic_result.get("pass", False) and score >= min_score:
-            return generated, critic_result
+            return current_text, critic_result
 
-        # Accumulate feedback for next attempt
+        # Phase 3: Determine next action - Edit or Regenerate
         feedback = critic_result.get("feedback", "")
-        if feedback:
-            feedback_history.append(feedback)
+        is_specific_edit = _is_specific_edit_instruction(feedback)
+
+        # Check if last edit improved the score (only check if we've already edited)
+        edit_improved = False
+        if is_edited and last_score_before_edit is not None and score > last_score_before_edit:
+            edit_improved = True
+
+        # Edit Mode: If feedback is specific edit and score is decent, apply edit
+        if (is_specific_edit and score > 0.5 and edit_attempts < max_edit_attempts and
+            generation_attempts < max_retries):  # Don't edit if we've exhausted generation attempts
+            # If we've already edited and it didn't improve, regenerate instead
+            if edit_attempts > 0 and not edit_improved and last_score_before_edit is not None:
+                # Editing didn't help, regenerate
+                should_regenerate = True
+                edit_attempts = 0
+                last_score_before_edit = None
+                is_edited = False
+                if feedback:
+                    feedback_history.append(feedback)
+            else:
+                # Try editing
+                try:
+                    last_score_before_edit = score  # Track score before editing
+                    # Apply surgical fix
+                    edited_text = apply_surgical_fix(
+                        current_text,
+                        feedback,
+                        config_path=config_path
+                    )
+                    current_text = edited_text
+                    is_edited = True
+                    edit_attempts += 1
+                    # Continue loop to re-critique the edited version
+                    continue
+                except Exception as e:
+                    # If surgical fix fails, fall back to regeneration
+                    should_regenerate = True
+                    edit_attempts = 0
+                    last_score_before_edit = None
+                    is_edited = False
+                    if feedback:
+                        feedback_history.append(feedback)
+        else:
+            # Regenerate Mode: Feedback is not specific edit or editing exhausted
+            should_regenerate = True
+            edit_attempts = 0  # Reset edit attempts
+            last_score_before_edit = None
+            is_edited = False
+            if feedback:
+                feedback_history.append(feedback)
+
+            # Check if we've exhausted generation attempts
+            if generation_attempts >= max_retries:
+                break
 
     # Enforce minimum score - raise exception if not met
     if best_score < min_score:
         consolidated_feedback = _consolidate_feedback(feedback_history) if feedback_history else "No specific feedback available"
         raise ConvergenceError(
-            f"Failed to converge to minimum score {min_score} after {max_retries} attempts. "
-            f"Best score: {best_score:.3f}. Issues: {consolidated_feedback}"
+            f"Failed to converge to minimum score {min_score} after {generation_attempts} generation attempts "
+            f"and {edit_attempts} edit attempts. Best score: {best_score:.3f}. Issues: {consolidated_feedback}"
         )
 
     # Return best result if it meets threshold

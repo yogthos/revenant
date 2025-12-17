@@ -7,12 +7,65 @@ This module provides functions to:
 4. Stochastic selection with history tracking to prevent repetition
 """
 
+import re
 import random
 import numpy as np
 from typing import Dict, Optional, Tuple, List
 from collections import defaultdict
 
 from src.atlas.builder import StyleAtlas
+
+
+def is_valid_structural_template(text: str) -> bool:
+    """Filter out titles, headers, fragments, and other invalid templates.
+
+    Returns False if the text is likely a header, title, or citation garbage.
+    Uses spaCy for verb checking if available, with graceful fallback.
+
+    Args:
+        text: Text to validate as a structural template.
+
+    Returns:
+        True if text is a valid structural template, False otherwise.
+    """
+    # Try to load spaCy (optional)
+    nlp = None
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+    except (ImportError, OSError):
+        pass  # Graceful fallback - spaCy not available
+
+    # 1. Citation Killer (enhanced regex)
+    # Rejects: "15. Charles Higham...", "[1] See logic...", "Page 45"
+    if re.match(r'^\[?\d+\]?\.?\s*[A-Z]', text.strip()):
+        return False
+
+    # 2. Header Killer
+    # Rejects: "CHAPTER ONE", "THE FINITUDE RULE" (all caps with < 10 words)
+    if text.isupper() and len(text.split()) < 10:
+        return False
+
+    # 3. Verb Check (if spaCy available)
+    # A valid sentence MUST have at least one verb. Citations usually don't.
+    if nlp:
+        try:
+            doc = nlp(text)
+            has_verb = any(token.pos_ == "VERB" for token in doc)
+            if not has_verb:
+                return False
+            # 4. Junk Filter (using spaCy tokens)
+            if len(doc) < 4:  # Very short fragments
+                return False
+        except Exception:
+            # If spaCy processing fails, fall through to basic checks
+            pass
+    else:
+        # Fallback: basic length check (no spaCy available)
+        if len(text.split()) < 5:
+            return False
+
+    return True
 
 
 class StructureNavigator:
@@ -373,17 +426,19 @@ def find_structure_match(
         max_ratio = 1.0 + length_tolerance
 
         if min_ratio <= len_ratio <= max_ratio:
-            candidates.append((doc, len_ratio, cand_word_count))
-            # Create candidate dict for navigator with quality score
-            # Quality score: 1.0 for perfect match, decreases as ratio deviates
-            quality_score = 1.0 / (abs(len_ratio - 1.0) + 0.1)  # Higher score = better match
-            candidate_dicts.append({
-                'id': para_id,
-                'text': doc,
-                'word_count': cand_word_count,
-                'len_ratio': len_ratio,
-                'quality_score': quality_score
-            })
+            # Filter out invalid structural templates (titles, headers, fragments)
+            if is_valid_structural_template(doc):
+                candidates.append((doc, len_ratio, cand_word_count))
+                # Create candidate dict for navigator with quality score
+                # Quality score: 1.0 for perfect match, decreases as ratio deviates
+                quality_score = 1.0 / (abs(len_ratio - 1.0) + 0.1)  # Higher score = better match
+                candidate_dicts.append({
+                    'id': para_id,
+                    'text': doc,
+                    'word_count': cand_word_count,
+                    'len_ratio': len_ratio,
+                    'quality_score': quality_score
+                })
 
     # If navigator is provided, use stochastic selection
     if navigator:
@@ -401,7 +456,7 @@ def find_structure_match(
                 cluster_id = metadata.get('cluster_id')
                 if cluster_id == target_cluster_id:
                     doc = all_results['documents'][idx] if all_results['documents'] else None
-                    if doc:
+                    if doc and is_valid_structural_template(doc):
                         cand_word_count = metadata.get('word_count', len(doc.split()))
                         all_cluster_candidates.append({
                             'id': para_id,
@@ -436,7 +491,7 @@ def find_structure_match(
         cluster_id = metadata.get('cluster_id')
         if cluster_id == target_cluster_id:
             doc = all_results['documents'][idx] if all_results['documents'] else None
-            if doc:
+            if doc and is_valid_structural_template(doc):
                 matching_paragraphs.append(doc)
                 matching_metadata.append(metadata)
 

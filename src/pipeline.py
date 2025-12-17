@@ -418,11 +418,12 @@ def process_text(
                                 author_names = blend_authors
 
                             generated, critic_result = generate_with_critic(
-                                generate_fn=lambda cu, struct_match, sit_match, cfg, hint=None: generate_sentence(
-                                    cu, struct_match, sit_match, cfg, hint=hint,
+                                generate_fn=lambda cu, struct_match, sit_match, cfg, **kwargs: generate_sentence(
+                                    cu, struct_match, sit_match, cfg,
                                     global_vocab_list=global_vocab_list,
                                     author_names=author_names,
-                                    blend_ratio=final_blend_ratio if is_blend_mode else None
+                                    blend_ratio=final_blend_ratio if is_blend_mode else None,
+                                    **kwargs
                                 ),
                                 content_unit=content_unit,
                                 structure_match=structure_match,

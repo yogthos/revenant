@@ -145,7 +145,8 @@ class PromptAssembler:
         situation_match: Optional[str],
         structure_match: str,
         style_metrics: Optional[Dict[str, float]] = None,
-        global_vocab_list: Optional[List[str]] = None
+        global_vocab_list: Optional[List[str]] = None,
+        use_fallback_structure: bool = False
     ) -> str:
         """Assemble the Few-Shot prompt using Dual-RAG data.
 
@@ -171,28 +172,40 @@ class PromptAssembler:
                 avg_sentence_len = len(words)
             style_metrics = {'avg_sentence_len': avg_sentence_len}
 
-        # Analyze structure match in detail
-        structure_analysis = _analyze_structure(structure_match)
+        # Handle fallback structure mode
+        if use_fallback_structure:
+            # Use simplified structure instructions for fallback mode
+            structure_instructions_text = """- Use simple, clear Subject-Verb-Object structure
+- Match the approximate length of the input text
+- Maintain natural flow and readability"""
+            # Use basic structure analysis for fallback
+            structure_analysis = {
+                'word_count': len(input_text.split()),
+                'avg_sentence_len': len(input_text.split()) / max(1, input_text.count('.') + input_text.count('!') + input_text.count('?'))
+            }
+        else:
+            # Analyze structure match in detail
+            structure_analysis = _analyze_structure(structure_match)
 
-        # Build explicit structure instructions
-        structure_instructions = []
-        structure_instructions.append(f"- Word count: ~{structure_analysis['word_count']} words")
-        structure_instructions.append(f"- Sentence structure: {structure_analysis['complexity']} ({structure_analysis['clause_count']} clauses)")
-        structure_instructions.append(f"- Voice: {structure_analysis['voice']}")
+            # Build explicit structure instructions
+            structure_instructions = []
+            structure_instructions.append(f"- Word count: ~{structure_analysis['word_count']} words")
+            structure_instructions.append(f"- Sentence structure: {structure_analysis['complexity']} ({structure_analysis['clause_count']} clauses)")
+            structure_instructions.append(f"- Voice: {structure_analysis['voice']}")
 
-        if structure_analysis['punctuation_pattern']:
-            structure_instructions.append(f"- Punctuation: Use {', '.join(structure_analysis['punctuation_pattern'])}")
+            if structure_analysis.get('punctuation_pattern'):
+                structure_instructions.append(f"- Punctuation: Use {', '.join(structure_analysis['punctuation_pattern'])}")
 
-        if structure_analysis['has_dashes']:
-            structure_instructions.append("- Include dashes (— or -) for parenthetical or explanatory elements")
-        if structure_analysis['has_semicolons']:
-            structure_instructions.append("- Use semicolons to connect related independent clauses")
-        if structure_analysis['has_parentheses']:
-            structure_instructions.append("- Include parenthetical asides using parentheses")
-        if structure_analysis['has_asterisks']:
-            structure_instructions.append("- Use asterisks (*) for emphasis or special notation")
+            if structure_analysis.get('has_dashes'):
+                structure_instructions.append("- Include dashes (— or -) for parenthetical or explanatory elements")
+            if structure_analysis.get('has_semicolons'):
+                structure_instructions.append("- Use semicolons to connect related independent clauses")
+            if structure_analysis.get('has_parentheses'):
+                structure_instructions.append("- Include parenthetical asides using parentheses")
+            if structure_analysis.get('has_asterisks'):
+                structure_instructions.append("- Use asterisks (*) for emphasis or special notation")
 
-        structure_instructions_text = "\n".join(structure_instructions)
+            structure_instructions_text = "\n".join(structure_instructions)
 
         # Build situation match content
         if situation_match:

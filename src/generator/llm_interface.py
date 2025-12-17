@@ -7,6 +7,7 @@ structural templates and vocabulary requirements.
 
 import json
 import os
+import re
 from typing import Dict, List, Optional
 import requests
 
@@ -84,7 +85,8 @@ def generate_sentence(
     target_author_name: str = "Target Author",
     global_vocab_list: Optional[List[str]] = None,
     author_names: Optional[List[str]] = None,
-    blend_ratio: Optional[float] = None
+    blend_ratio: Optional[float] = None,
+    use_fallback_structure: bool = False
 ) -> str:
     """Generate a sentence using LLM with dual RAG references.
 
@@ -163,7 +165,8 @@ def generate_sentence(
             situation_match=situation_match,
             structure_match=structure_match,
             style_metrics=style_metrics,
-            global_vocab_list=global_vocab_list
+            global_vocab_list=global_vocab_list,
+            use_fallback_structure=use_fallback_structure
         )
 
     # Add entity preservation if needed
@@ -178,15 +181,42 @@ def generate_sentence(
         user_prompt += f"Key concepts to include: {', '.join(important_words)}"
 
     # Add hint from previous attempt if provided (for retries)
+    # Use Chain-of-Thought format for retries
     if hint:
         user_prompt += "\n\n"
-        user_prompt += "IMPORTANT FEEDBACK FROM PREVIOUS ATTEMPT:\n"
-        user_prompt += hint
-        user_prompt += "\n\n"
-        user_prompt += "Please address the feedback above in your rewrite."
+        user_prompt += "--- RETRY MODE: CHAIN-OF-THOUGHT CORRECTION ---\n\n"
+        user_prompt += f"CRITIC FEEDBACK: {hint}\n\n"
+        user_prompt += "TASK:\n"
+        user_prompt += "1. Analyze WHY the previous attempt failed the critic's specific rule.\n"
+        user_prompt += "2. Write a 'Plan of Correction' (1 sentence).\n"
+        user_prompt += "3. Generate the final corrected text.\n\n"
+        user_prompt += "Output format:\n"
+        user_prompt += "PLAN: [Your reasoning]\n"
+        user_prompt += "TEXT: [The corrected text]"
+        # If hint contains length information, emphasize it
+        if "words" in hint.lower() and ("delete" in hint.lower() or "expand" in hint.lower() or "add" in hint.lower()):
+            user_prompt += "\n\nCRITICAL: The length constraint above is a hard requirement. You MUST follow the exact word count instruction."
 
     # Call API
     generated_text = _call_deepseek_api(system_prompt, user_prompt, api_key, api_url, model)
+
+    # Parse CoT response if hint was provided (retry mode)
+    if hint:
+        # Try to extract text after "TEXT:" marker
+        text_match = re.search(r'TEXT:\s*(.+?)(?:\n\n|$)', generated_text, re.DOTALL | re.IGNORECASE)
+        if text_match:
+            generated_text = text_match.group(1).strip()
+        # Fallback: if no TEXT marker, try to find the last paragraph or sentence
+        elif "PLAN:" in generated_text.upper():
+            # Split by PLAN: and take everything after the last occurrence
+            parts = re.split(r'PLAN:', generated_text, flags=re.IGNORECASE)
+            if len(parts) > 1:
+                # Take the last part and try to extract text
+                last_part = parts[-1]
+                # Remove "TEXT:" if present and take the rest
+                text_cleaned = re.sub(r'^TEXT:\s*', '', last_part, flags=re.IGNORECASE).strip()
+                if text_cleaned:
+                    generated_text = text_cleaned
 
     return generated_text
 
