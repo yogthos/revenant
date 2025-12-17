@@ -9,9 +9,12 @@ GENERATED TEXT (to evaluate):
 Evaluate the GENERATED TEXT against the HIERARCHY:
 1. GRAMMAR AND READABILITY: Is the text grammatically correct and readable? (NON-NEGOTIABLE)
    - Check for: proper sentence structure, complete sentences, readable phrasing
+   - **CRITICAL**: The text must make semantic sense, not just be grammatically correct
+   - Check for incomplete thoughts, dangling clauses, and nonsensical constructions
+   - Examples of semantic failures: "The code, even though it is embedded in every particle and field." (incomplete - missing main clause), "limits, even though they are only implied by an exterior." (incomplete fragment)
    - **CRITICAL**: If the Structural Reference uses em-dashes (—), colons (:), or other punctuation, and the Generated Text matches it, this is VALID STYLE, NOT a grammar error.
    - **NEVER flag punctuation as grammar error if it matches the Structural Reference.**
-   - If grammar is broken or text is unreadable (AND it doesn't match the Structural Reference), this is a CRITICAL FAILURE - mark "pass": false, "score": 0.0, "primary_failure_type": "grammar"
+   - If grammar is broken, text is unreadable, OR text is semantically incomplete/nonsensical (AND it doesn't match the Structural Reference), this is a CRITICAL FAILURE - mark "pass": false, "score": 0.0, "primary_failure_type": "grammar"
 2. SEMANTIC SAFETY: Does it preserve the original meaning? (Highest Priority)
    - CRITICAL: Check that ALL facts, concepts, details, and information from the Original Text are present in the Generated Text
    - CRITICAL: Check that NO proper nouns, names, or specific entities appear in Generated Text that do NOT appear in Original Text

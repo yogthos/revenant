@@ -20,6 +20,10 @@ HIERARCHY OF RULES (If conflicts arise, higher rules win):
 1. GRAMMAR AND READABILITY: Is the text grammatically correct and readable? (NON-NEGOTIABLE)
    - CRITICAL: The text MUST be grammatically correct with proper sentence structure
    - CRITICAL: The text MUST be readable and coherent - no awkward phrasing, incomplete sentences, or nonsensical constructions
+   - CRITICAL: The text MUST make semantic sense, not just be grammatically correct
+   - Check for incomplete thoughts, dangling clauses, and nonsensical constructions
+   - Examples of semantic failures: "The code, even though it is embedded in every particle and field." (incomplete - missing main clause), "limits, even though they are only implied by an exterior." (incomplete fragment)
+   - If a sentence is grammatically correct but semantically incomplete/nonsensical, score MUST be 0.0
    - If grammar is broken or text is unreadable, this is a CRITICAL FAILURE - score MUST be 0.0
    - Examples of failures: "Human experience confirms finitude's rule?" (awkward phrasing), incomplete sentences, broken syntax
 2. SEMANTIC SAFETY: Does the text preserve the original meaning of the Input? (Must pass)

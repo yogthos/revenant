@@ -445,6 +445,147 @@ def _is_minor_omission(feedback: str, original_text: str, generated_text: str) -
     return False
 
 
+def _check_semantic_validity(generated_text: str) -> Optional[Dict[str, any]]:
+    """Check if generated text makes semantic sense (not just grammatically correct).
+
+    Detects incomplete sentences, dangling clauses, and nonsensical constructions.
+
+    Args:
+        generated_text: The generated text to check.
+
+    Returns:
+        None if semantically valid, or failure dict with feedback if invalid.
+    """
+    import re
+
+    if not generated_text or not generated_text.strip():
+        return None  # Empty text is handled elsewhere
+
+    # Split into sentences
+    sentences = re.split(r'[.!?]+\s+', generated_text.strip())
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    if not sentences:
+        return None
+
+    # Check each sentence for semantic validity
+    for sentence in sentences:
+        sentence_lower = sentence.lower()
+
+        # Pattern 1: Dependent clause at end without main clause
+        # "The X, even though Y." or "X, even though Y."
+        # These are incomplete - they need a main clause after the comma
+        # BUT "X does Y, even though Z." is valid (has main clause before comma)
+        dependent_clause_end_patterns = [
+            r',\s+even\s+though\s+[^,]+\.?\s*$',  # ", even though X."
+            r',\s+although\s+[^,]+\.?\s*$',  # ", although X."
+            r',\s+while\s+[^,]+\.?\s*$',  # ", while X."
+            r',\s+whereas\s+[^,]+\.?\s*$',  # ", whereas X."
+        ]
+
+        for pattern in dependent_clause_end_patterns:
+            if re.search(pattern, sentence, re.IGNORECASE):
+                # Find the comma before the dependent clause
+                comma_match = re.search(r',\s+(?:even\s+though|although|while|whereas)', sentence, re.IGNORECASE)
+                if comma_match:
+                    # Check what's BEFORE the comma - if it's just a noun phrase, it's incomplete
+                    before_comma = sentence[:comma_match.start()].strip()
+
+                    # Check if there's a main verb before the comma
+                    # Simple heuristic: if before_comma is very short (< 5 words) and doesn't contain common verbs, it's likely incomplete
+                    before_words = before_comma.split()
+
+                    # Common main verbs that indicate a complete clause
+                    main_verb_indicators = ['is', 'are', 'was', 'were', 'has', 'have', 'had', 'does', 'do', 'did',
+                                           'works', 'works', 'exists', 'contains', 'provides', 'creates', 'defines',
+                                           'requires', 'needs', 'eliminates', 'embeds', 'embedded']
+
+                    has_main_verb = any(verb in before_comma.lower() for verb in main_verb_indicators)
+
+                    # If before_comma is short and has no main verb, it's likely incomplete
+                    if len(before_words) < 5 and not has_main_verb:
+                        # Check if after_comma is just the dependent clause (ends the sentence)
+                        after_comma = sentence[comma_match.end():].strip()
+                        after_comma = re.sub(r'[.!?]+$', '', after_comma).strip()
+
+                        # If the sentence ends with the dependent clause (no main clause after), it's incomplete
+                        # This catches: "The code, even though it is embedded." (incomplete)
+                        # But allows: "The code works, even though it is complex." (has "works" before comma)
+                        return {
+                            "pass": False,
+                            "feedback": f"CRITICAL: Text contains an incomplete sentence: '{sentence}'. The sentence has a dependent clause but is missing the main clause. Complete the thought.",
+                            "score": 0.0,
+                            "primary_failure_type": "grammar"
+                        }
+
+        # Pattern 2: Dependent clause at start without main clause
+        # "Even though X, Y." is valid, but "Even though X." is incomplete
+        dependent_clause_start_patterns = [
+            r'^(?:even\s+though|although|while|whereas)\s+[^,]+\.?\s*$',  # "Even though X." (no comma, no main clause)
+        ]
+
+        for pattern in dependent_clause_start_patterns:
+            if re.match(pattern, sentence, re.IGNORECASE):
+                return {
+                    "pass": False,
+                    "feedback": f"CRITICAL: Text contains an incomplete sentence: '{sentence}'. The sentence starts with a dependent clause but is missing the main clause. Complete the thought.",
+                    "score": 0.0,
+                    "primary_failure_type": "grammar"
+                }
+
+        # Pattern 3: Incomplete relative clause
+        # "The X, which is Y." - missing main verb
+        # But "The X, which is Y, does Z." is valid
+        relative_clause_pattern = r'^[^,]+,\s+which\s+[^,]+\.?\s*$'
+        if re.match(relative_clause_pattern, sentence, re.IGNORECASE):
+            # Check if there's a main verb after the relative clause
+            which_match = re.search(r',\s+which\s+[^,]+', sentence, re.IGNORECASE)
+            if which_match:
+                after_which = sentence[which_match.end():].strip()
+                after_which = re.sub(r'[.!?]+$', '', after_which).strip()
+                # If nothing substantial after the relative clause, it's incomplete
+                if not after_which or len(after_which.split()) < 2:
+                    return {
+                        "pass": False,
+                        "feedback": f"CRITICAL: Text contains an incomplete sentence: '{sentence}'. The sentence has a relative clause but is missing the main verb. Complete the thought.",
+                        "score": 0.0,
+                        "primary_failure_type": "grammar"
+                    }
+
+        # Pattern 4: Very short incomplete fragments starting with noun
+        # "limits, even though they are only implied by an exterior."
+        # These are often just noun phrases with dependent clauses
+        words = sentence.split()
+
+        # Check for pattern: "noun, even though..." where noun is at start
+        # This is different from "The X, even though..." which we already check
+        short_fragment_pattern = r'^[A-Za-z]+\s*,\s+(?:even\s+though|although|while|whereas)'
+        if re.match(short_fragment_pattern, sentence, re.IGNORECASE):
+            # Check if it's very short (likely incomplete)
+            if len(words) < 10:
+                # Check if there's a main verb before the comma
+                comma_pos = sentence.find(',')
+                if comma_pos > 0:
+                    before_comma = sentence[:comma_pos].strip()
+                    before_words = before_comma.split()
+
+                    # If before_comma is just 1-2 words (likely just a noun), it's incomplete
+                    if len(before_words) <= 2:
+                        main_verb_indicators = ['is', 'are', 'was', 'were', 'has', 'have', 'works', 'exists']
+                        has_main_verb = any(verb in before_comma.lower() for verb in main_verb_indicators)
+
+                        if not has_main_verb:
+                            return {
+                                "pass": False,
+                                "feedback": f"CRITICAL: Text contains an incomplete sentence fragment: '{sentence}'. The sentence appears to be missing the main clause. Complete the thought.",
+                                "score": 0.0,
+                                "primary_failure_type": "grammar"
+                            }
+
+    # All sentences are semantically valid
+    return None
+
+
 def critic_evaluate(
     generated_text: str,
     structure_match: str,
@@ -489,6 +630,12 @@ def critic_evaluate(
         keep_alive = ollama_config.get("keep_alive", "10m")
     else:
         raise ValueError(f"Unsupported provider: {provider}")
+
+    # HARD GATE: Check for semantic validity before LLM evaluation
+    # This deterministic check catches incomplete sentences and nonsensical constructions
+    semantic_check = _check_semantic_validity(generated_text)
+    if semantic_check:
+        return semantic_check
 
     # HARD GATE: Check for hallucinated words before LLM evaluation
     # This deterministic check catches hallucinations that the LLM might miss
