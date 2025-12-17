@@ -345,7 +345,7 @@ def process_text(
                 for unit_idx_in_chunk, content_unit in enumerate(chunk_units):
                     unit_idx = chunk_start + unit_idx_in_chunk
                     print(f"  Processing sentence {unit_idx + 1}/{len(para_units)}")
-                    print(f"    Original: {content_unit.original_text[:80]}...")
+                    print(f"    Original: {content_unit.original_text}")
 
                     # Initialize structure_match and situation_match
                     structure_match = None
@@ -375,14 +375,25 @@ def process_text(
                         if window_matches and unit_idx_in_chunk < len(window_matches):
                             # Use skeleton from window match (The "Zipper")
                             _, structure_match = window_matches[unit_idx_in_chunk]
-                            print(f"    Retrieved structure match from window (rhythm): {structure_match[:80]}...")
-                        else:
-                            # Fallback to single sentence retrieval if window match failed
+
+                            # SAFETY CHECK: Verify length before committing
+                            # This catches edge cases where a 3-word skeleton might still be garbage
+                            if len(structure_match.split()) < 3:
+                                print(f"    ⚠ Window match '{structure_match[:50]}...' is too short. Fallback triggered.")
+                                structure_match = None  # Triggers the fallback block below
+
+                            if structure_match:
+                                print(f"    Retrieved structure match from window (rhythm): {structure_match[:80]}...")
+
+                        # Fallback: Use find_structure_match if window match failed or was invalid
+                        if not structure_match:
+                            # Get length tolerance from config
+                            length_tolerance = atlas_config.get("length_tolerance", 0.3)
                             structure_match = find_structure_match(
                                 atlas,
                                 current_cluster,
                                 input_text=content_unit.original_text,
-                                length_tolerance=0.3,
+                                length_tolerance=length_tolerance,
                                 navigator=structure_navigator
                             )
 
@@ -425,22 +436,25 @@ def process_text(
 
                     # Calculate adaptive threshold based on structure match quality
                     # If structure match is very different from input, lower the threshold
-                    input_word_count = len(content_unit.original_text.split())
-                    structure_word_count = len(structure_match.split()) if structure_match else input_word_count
-                    length_ratio = structure_word_count / input_word_count if input_word_count > 0 else 1.0
+                    from src.utils import calculate_length_ratio, is_very_different_length, is_moderate_different_length
 
-                    # If length ratio is very different (>2x or <0.5x), lower the threshold
+                    length_ratio = calculate_length_ratio(
+                        structure_match if structure_match else "",
+                        content_unit.original_text if content_unit.original_text else ""
+                    )
+
+                    # Get thresholds from config
                     adaptive_threshold_base = critic_config.get("adaptive_threshold_base", 0.6)
                     adaptive_threshold_moderate = critic_config.get("adaptive_threshold_moderate", 0.65)
                     adaptive_threshold_penalty_high = critic_config.get("adaptive_threshold_penalty_high", 0.15)
                     adaptive_threshold_penalty_moderate = critic_config.get("adaptive_threshold_penalty_moderate", 0.1)
 
                     adaptive_min_score = critic_min_score
-                    if length_ratio > 2.0 or length_ratio < 0.5:
+                    if is_very_different_length(length_ratio, config_path=config_path):
                         # Structure match is very different, be more lenient
                         adaptive_min_score = max(adaptive_threshold_base, critic_min_score - adaptive_threshold_penalty_high)
                         print(f"    ⚠ Structure match length ratio {length_ratio:.2f} is very different, lowering threshold to {adaptive_min_score:.2f}")
-                    elif length_ratio > 1.5 or length_ratio < 0.67:
+                    elif is_moderate_different_length(length_ratio, config_path=config_path):
                         # Structure match is moderately different, slightly lower threshold
                         adaptive_min_score = max(adaptive_threshold_moderate, critic_min_score - adaptive_threshold_penalty_moderate)
                         print(f"    ⚠ Structure match length ratio {length_ratio:.2f} is different, adjusting threshold to {adaptive_min_score:.2f}")
@@ -506,7 +520,7 @@ def process_text(
                                                 atlas,
                                                 current_cluster,
                                                 input_text=content_unit.original_text,
-                                                length_tolerance=0.3,
+                                                length_tolerance=atlas_config.get("length_tolerance", 0.3),
                                                 navigator=structure_navigator
                                             )
                                             if structure_match:
@@ -537,6 +551,8 @@ def process_text(
                         # Log final result
                         passed = critic_result.get("pass", False) if critic_result else False
                         print(f"    Generated: {generated}")
+                        print(f"    DEBUG: Full original input: '{content_unit.original_text}'")
+                        print(f"    DEBUG: Full generated output: '{generated}'")
                         print(f"    Critic score: {final_score:.3f} (pass: {passed})")
 
                         if not passed:

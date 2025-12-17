@@ -254,8 +254,14 @@ def build_style_atlas(
                 para_sentences = [paragraph]
         all_sentences.extend([s.strip() for s in para_sentences if s.strip()])
 
+    # CLEAN DATA AT THE SOURCE: Filter out invalid sentences before creating windows
+    # This prevents fragments like "If 4^..." from entering ChromaDB
+    # Import here to avoid circular dependency (navigator imports StyleAtlas from builder)
+    from src.atlas.navigator import is_valid_structural_template
+    all_sentences = [s for s in all_sentences if is_valid_structural_template(s)]
+
     if not all_sentences:
-        raise ValueError("Sample text contains no sentences")
+        raise ValueError("Sample text contains no valid sentences after filtering")
 
     # Create sliding windows of 3 sentences
     windows = _chunk_into_windows(all_sentences, window_size=3, stride=1)

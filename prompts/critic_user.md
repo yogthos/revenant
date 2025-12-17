@@ -9,12 +9,20 @@ GENERATED TEXT (to evaluate):
 Evaluate the GENERATED TEXT against the HIERARCHY:
 1. GRAMMAR AND READABILITY: Is the text grammatically correct and readable? (NON-NEGOTIABLE)
    - Check for: proper sentence structure, complete sentences, readable phrasing
-   - If grammar is broken or text is unreadable, this is a CRITICAL FAILURE - mark "pass": false, "score": 0.0, "primary_failure_type": "grammar"
+   - **CRITICAL**: If the Structural Reference uses em-dashes (—), colons (:), or other punctuation, and the Generated Text matches it, this is VALID STYLE, NOT a grammar error.
+   - **NEVER flag punctuation as grammar error if it matches the Structural Reference.**
+   - If grammar is broken or text is unreadable (AND it doesn't match the Structural Reference), this is a CRITICAL FAILURE - mark "pass": false, "score": 0.0, "primary_failure_type": "grammar"
 2. SEMANTIC SAFETY: Does it preserve the original meaning? (Highest Priority)
    - CRITICAL: Check that ALL facts, concepts, details, and information from the Original Text are present in the Generated Text
-   - CRITICAL: Check that NO words, names, or entities appear in Generated Text that do NOT appear in Original Text
-   - Extract all proper nouns, capitalized words, and entity-like words from Generated Text
-   - For each proper noun/capitalized word in Generated Text, verify it appears in Original Text
+   - CRITICAL: Check that NO proper nouns, names, or specific entities appear in Generated Text that do NOT appear in Original Text
+   - IMPORTANT: Allow synonyms and paraphrases (e.g., 'essential' for 'important', 'reinforces' for 'confirms', 'confirms' for 'validates')
+   - CRITICAL RULE: ONLY flag words that are CAPITALIZED in the MIDDLE of a sentence (not at sentence start)
+   - DO NOT flag lowercase words like "essential", "land", "necessary", "ingredient" - these are NEVER proper nouns
+   - DO NOT flag phrases like "essential ingredient" - these are NEVER entities
+   - Extract only CAPITALIZED words from the MIDDLE of sentences (not sentence starts) from Generated Text
+   - For each capitalized word (mid-sentence) in Generated Text, verify it appears in Original Text (case-insensitive)
+   - Examples of what to FLAG: "Schneider" (capitalized, mid-sentence, not in original), "Einstein" (capitalized, mid-sentence, not in original)
+   - Examples of what NOT to flag: "essential" (lowercase), "land" (lowercase), "essential ingredient" (phrase with lowercase words), "Human" (at sentence start)
    - If any proper nouns, names, or entities in Generated Text are NOT in Original Text, this is a CRITICAL FAILURE - mark "pass": false, "score": 0.0, "primary_failure_type": "meaning"
    - If the Original Text contains multiple facts/concepts, verify ALL are present
    - If any facts, concepts, or details are missing, this is a CRITICAL FAILURE - mark "pass": false, "score": 0.0, "primary_failure_type": "meaning"
@@ -29,7 +37,7 @@ Format your feedback as a direct editing instruction with specific metrics when 
 Example: "Current text has 25 words; Target has 12. Delete adjectives and split the relative clause."
 
 For grammar failures: "CRITICAL: Text contains grammatical errors. [specific error]. Rewrite with proper grammar."
-For hallucinated words: "CRITICAL: Text contains word '[word]' that does not appear in original. Remove all words not present in original text."
+For hallucinated proper nouns/entities: "CRITICAL: Text contains proper noun/entity '[word]' that does not appear in original. Remove all proper nouns and entities not present in original text."
 For meaning loss: "CRITICAL: Text omits [specific concept/fact] from original. Include all concepts from original text."
 
 {preservation_checks}

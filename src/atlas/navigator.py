@@ -23,7 +23,8 @@ from src.analyzer.style_metrics import get_style_vector
 def is_valid_structural_template(text: str) -> bool:
     """Filter out titles, headers, fragments, and other invalid templates.
 
-    Returns False if the text is likely a header, title, or citation garbage.
+    Centralized validation logic - "Single Source of Truth" for structural templates.
+    Returns False if the text is likely a header, title, citation garbage, or fragment.
     Uses spaCy for verb checking if available, with graceful fallback.
 
     Args:
@@ -32,6 +33,21 @@ def is_valid_structural_template(text: str) -> bool:
     Returns:
         True if text is a valid structural template, False otherwise.
     """
+    if not text:
+        return False
+
+    words = text.split()
+
+    # CRITICAL: Reject tiny fragments (e.g., "If 4^...", "Page 12")
+    # This is the first check to catch obvious garbage early
+    if len(words) < 3:
+        return False
+
+    # Check for non-sentence junk (no vowels, mostly numbers/symbols)
+    # Rejects things like "4^", "123", "---", etc.
+    if not any(c.lower() in 'aeiouy' for c in text):
+        return False
+
     # Try to load spaCy (optional)
     nlp = None
     try:
@@ -47,7 +63,7 @@ def is_valid_structural_template(text: str) -> bool:
 
     # 2. Header Killer
     # Rejects: "CHAPTER ONE", "THE FINITUDE RULE" (all caps with < 10 words)
-    if text.isupper() and len(text.split()) < 10:
+    if text.isupper() and len(words) < 10:
         return False
 
     # 3. Verb Check (if spaCy available)
@@ -66,7 +82,8 @@ def is_valid_structural_template(text: str) -> bool:
             pass
     else:
         # Fallback: basic length check (no spaCy available)
-        if len(text.split()) < 5:
+        # Already checked for < 3 words above, so this is redundant but kept for safety
+        if len(words) < 5:
             return False
 
     return True
@@ -442,8 +459,19 @@ def retrieve_window_match(
             else:
                 len_ratio = 1.0
 
-            # Apply hard cap: only consider windows within 0.5x to 2.0x length
-            if len_ratio < 0.5 or len_ratio > 2.0:
+            # Apply hard cap: only consider windows within configured length ratio bounds
+            # Get thresholds from config (with fallback defaults)
+            try:
+                with open("config.json", 'r') as f:
+                    config = json.load(f)
+                atlas_config = config.get("atlas", {})
+                min_length_ratio = atlas_config.get("min_length_ratio", 0.5)
+                max_length_ratio = atlas_config.get("max_length_ratio", 2.0)
+            except (FileNotFoundError, json.JSONDecodeError, KeyError):
+                min_length_ratio = 0.5
+                max_length_ratio = 2.0
+
+            if len_ratio < min_length_ratio or len_ratio > max_length_ratio:
                 continue
 
             # Calculate Gaussian length penalty
@@ -474,17 +502,29 @@ def retrieve_window_match(
 
         # Select best matching window
         best_window = candidates[0]
-        skeletons = best_window['skeletons']
+        raw_skeletons = best_window['skeletons']
 
-        # The Zipper: Map skeletons to input sentences
-        # If input has N sentences and window has M skeletons, map 1:1 up to min(N, M)
+        # FILTER: Sanitize the skeletons using the central validation logic
+        # This prevents fragments like "If 4^..." from being used as structure matches
+        valid_skeletons = [
+            s for s in raw_skeletons
+            if is_valid_structural_template(s)
+        ]
+
+        # If the window contains ONLY garbage, discard the whole window
+        # This triggers fallback to find_structure_match
+        if not valid_skeletons:
+            return None
+
+        # The Zipper: Map valid skeletons to input sentences
+        # If input has N sentences and window has M valid skeletons, map 1:1 up to min(N, M)
         mapped_pairs = []
         for i, input_sent in enumerate(input_sentences):
-            if i < len(skeletons):
-                mapped_pairs.append((input_sent, skeletons[i]))
+            if i < len(valid_skeletons):
+                mapped_pairs.append((input_sent, valid_skeletons[i]))
             else:
-                # If more input sentences than skeletons, use last skeleton
-                mapped_pairs.append((input_sent, skeletons[-1]))
+                # If we run out of valid skeletons, reuse the last valid one
+                mapped_pairs.append((input_sent, valid_skeletons[-1]))
 
         return mapped_pairs
 
@@ -587,9 +627,34 @@ def find_structure_match(
         else:
             sent_ratio = 1.0
 
-        # Hard Cap: Only consider candidates within 0.5x to 2.0x length
+        # Hard Cap: Only consider candidates within configured length ratio bounds
         # This prevents "Procrustean Bed" problem where we try to force incompatible lengths
-        if len_ratio < 0.5 or len_ratio > 2.0:
+        # Get thresholds from config (with fallback defaults)
+        try:
+            with open("config.json", 'r') as f:
+                config = json.load(f)
+            atlas_config = config.get("atlas", {})
+            min_length_ratio = atlas_config.get("min_length_ratio", 0.5)
+            max_length_ratio = atlas_config.get("max_length_ratio", 2.0)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            min_length_ratio = 0.5
+            max_length_ratio = 2.0
+
+        if len_ratio < min_length_ratio or len_ratio > max_length_ratio:
+            continue
+
+        # FILTER: Reject tiny fragments
+        # If a template is below minimum word count, it's likely a page number, header, or OCR artifact.
+        # Get threshold from config (with fallback default)
+        try:
+            with open("config.json", 'r') as f:
+                config = json.load(f)
+            atlas_config = config.get("atlas", {})
+            min_structure_words = atlas_config.get("min_structure_words", 3)
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            min_structure_words = 3
+
+        if len(doc.split()) < min_structure_words:
             continue
 
         # Filter out invalid structural templates (titles, headers, fragments)
@@ -632,7 +697,7 @@ def find_structure_match(
             'quality_score': quality_score
         })
 
-    # Hard Cap: If no candidates exist within 0.5x to 2.0x length, return None
+    # Hard Cap: If no candidates exist within configured length ratio bounds, return None
     # Do not force a bad match
     if not candidate_dicts:
         return None

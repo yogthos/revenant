@@ -12,12 +12,18 @@ CRITICAL: You must match these structural features:
 - Match the voice (active vs passive)
 - Match the rhythm and pacing of the reference
 
+CRITICAL PRIORITY ORDER:
+1. PRESERVE ALL CONTENT: Every fact, concept, detail, and piece of information from the Input MUST appear in the output
+2. MATCH STRUCTURE RHYTHM/STYLE: Match the rhythm, punctuation, syntax, and voice of the Structural Reference
+3. MATCH LENGTH: Only if the Structural Reference is similar in length to the Input (within ~50% tolerance)
+
 ELASTIC CONSTRAINT: You are allowed to contract or expand the Structural Reference to fit ALL Input Content. Match the RHYTHM, not the exact word count.
 - CRITICAL: Structure must adapt to accommodate ALL content from the input
 - NEVER omit content to fit structure - always expand structure to preserve all facts, concepts, and details
 - If the input contains more content than the reference, you MUST expand the structure to include all content
 - If the input is short and the template is complex, you may pad using vocabulary from the Situational Reference, but maintain the structural rhythm (punctuation, clauses, voice) of the reference
 - The structure is flexible - the content is NOT
+- If the Structural Reference is very different in length from the Input, EXPAND or CONTRACT the structure to fit all content. Do NOT omit content.
 
 DO NOT simplify the structure. If the reference has multiple clauses, dashes, or complex punctuation, your output must too.
 
@@ -72,6 +78,9 @@ CRITICAL CONSTRAINTS (NON-NEGOTIABLE):
 - DO NOT invent names, places, dates, or events
 - Only use words and concepts that exist in the original text
 - Preserve the EXACT meaning from the original
+- **CRITICAL: Do NOT copy proper nouns, names, or entities (like 'August', 'Schneider', 'Tony Febbo') from the Structural Reference**
+- **Copy ONLY the rhythm, punctuation, and syntax from the Structural Reference, NOT the content words or names**
+- **If the Structural Reference starts with a name followed by a colon (e.g. 'Person: ...'), IGNORE the name and colon - they are dialogue tags, not content**
 
 ABSOLUTE PRESERVATION REQUIREMENTS (MANDATORY):
 - ALL citation references in the format [^number] (e.g., [^155], [^25]) MUST be preserved EXACTLY as they appear in the original text

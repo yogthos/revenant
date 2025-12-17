@@ -30,6 +30,36 @@ def _load_prompt_template(template_name: str) -> str:
     return template_path.read_text().strip()
 
 
+def sanitize_structural_reference(text: str) -> str:
+    """
+    Strips dialogue tags and metadata artifacts from structural templates.
+
+    Removes patterns like:
+    - "August: No, it's an experience!" → "No, it's an experience!"
+    - "Schneider: And that's a slogan?" → "And that's a slogan?"
+    - "15. Some text" → "Some text"
+    - "[1] Some text" → "Some text"
+
+    Args:
+        text: Structural reference text that may contain dialogue tags or citations.
+
+    Returns:
+        Cleaned text with dialogue tags and citations removed.
+    """
+    if not text:
+        return text
+
+    # Regex to remove "Name:" or "Name [ACTION]:" at the start
+    # Matches "Word:", "Word Word:", "WORD:" followed by space
+    # Examples: "August:", "Tony Febbo:", "SCHNEIDER:"
+    clean_text = re.sub(r'^[A-Z][a-z]+(?:\s+[A-Za-z]+)?:\s*', '', text)
+
+    # Also strip leading citation numbers like "15." or "[1]"
+    clean_text = re.sub(r'^(?:\[?\d+\]?\.?)\s*', '', clean_text)
+
+    return clean_text.strip()
+
+
 def _analyze_structure(text: str) -> Dict[str, any]:
     """Analyze structural features of a text snippet.
 
@@ -160,6 +190,10 @@ class PromptAssembler:
         Returns:
             Complete user prompt string.
         """
+        # CRITICAL: Sanitize structure_match to remove dialogue tags like "August:" before using it
+        # This prevents the generator from copying proper nouns from structure matches
+        structure_match = sanitize_structural_reference(structure_match)
+
         # Extract style metrics from structure_match if not provided
         if style_metrics is None:
             style_vec = get_style_vector(structure_match)
