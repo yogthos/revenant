@@ -10,6 +10,13 @@ from typing import Dict, Tuple, Optional, Set, List
 from src.ingestion.blueprint import SemanticBlueprint, BlueprintExtractor
 
 try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+    np = None
+
+try:
     from sentence_transformers import SentenceTransformer, util
     import torch
     SENTENCE_TRANSFORMERS_AVAILABLE = True
@@ -73,6 +80,7 @@ class SemanticCritic:
                 If None, loads from config.
             config_path: Path to configuration file.
         """
+        self.config_path = config_path
         self.extractor = BlueprintExtractor()
 
         # Load config
@@ -149,7 +157,11 @@ class SemanticCritic:
         generated_text: str,
         input_blueprint: SemanticBlueprint,
         allowed_style_words: Optional[List[str]] = None,
-        skeleton: Optional[str] = None
+        skeleton: Optional[str] = None,
+        skeleton_type: Optional[str] = None,
+        propositions: Optional[List[str]] = None,
+        is_paragraph: bool = False,
+        author_style_vector: Optional[np.ndarray] = None
     ) -> Dict[str, any]:
         """Evaluate generated text against input blueprint.
 
@@ -199,22 +211,30 @@ class SemanticCritic:
 
         original_text = input_blueprint.original_text
 
+        # PARAGRAPH MODE: Use proposition-based evaluation
+        if is_paragraph and propositions:
+            return self._evaluate_paragraph_mode(
+                generated_text, original_text, propositions, author_style_vector
+            )
+
+        # SENTENCE MODE: Continue with existing sentence-level logic
         # HARD GATE: Semantic Similarity Check (Phase 3)
         # This replaces manual word-count and fragment checks with embedding-based validation
         similarity = None
         if self.semantic_model and original_text:
             similarity = self._calculate_semantic_similarity(original_text, generated_text)
-            # Hard floor: 0.75 (below this is likely hallucination)
-            if similarity < 0.75:
+            # Hard floor: 0.65 (below this is likely hallucination)
+            # Lowered from 0.75 to allow style transfer with semantic variation
+            if similarity < 0.65:
                 return {
                     "pass": False,
                     "recall_score": 0.0,
                     "precision_score": 0.0,
                     "fluency_score": 0.0,
                     "score": 0.0,
-                    "feedback": f"CRITICAL: Semantic similarity too low ({similarity:.2f} < 0.75). Generated text does not preserve meaning from original."
+                    "feedback": f"CRITICAL: Semantic similarity too low ({similarity:.2f} < 0.65). Generated text does not preserve meaning from original."
                 }
-            # Grace zone: 0.70-0.75 - will check recall/fluency later for override
+            # Grace zone: 0.65-0.75 - will check recall/fluency later for override
             # 0.75-0.85 is acceptable for style transfer
 
         # Fallback checks (only if semantic model unavailable)
@@ -538,17 +558,21 @@ class SemanticCritic:
             if not llm_meaning_preserved and llm_confidence > 0.7:
                 passes = False
 
-            # LOGIC VETO: Check if explanation indicates logic/meaning issues
-            # Keywords that indicate logical problems: conditional relationship, implies, logic mismatch, contradicts
-            explanation_lower = llm_explanation.lower()
-            logic_keywords = ['conditional relationship', 'implies', 'logic mismatch', 'contradicts',
-                            'contradiction', 'logical error', 'meaning shift', 'incorrectly implies',
-                            'adds condition', 'changes meaning', 'logical inconsistency']
-            if any(keyword in explanation_lower for keyword in logic_keywords):
-                logic_fail = True
+            # LOGIC VETO: Use specialized logic verification with rhetorical context
+            # Infer skeleton_type from skeleton if not provided
+            inferred_skeleton_type = skeleton_type
+            if not inferred_skeleton_type and skeleton:
+                inferred_skeleton_type = self._infer_skeleton_type(skeleton, generated_text)
+
+            logic_fail, logic_reason = self._verify_logic(
+                original_text, generated_text, inferred_skeleton_type or "DECLARATIVE"
+            )
+            if logic_fail:
                 # HARD CAP: Force score to 0.45 if logic is wrong, regardless of Recall
                 final_score = min(final_score, 0.45)
                 passes = False
+                # Store logic reason for feedback
+                llm_explanation = logic_reason  # Override with logic reason
 
         feedback_parts = []
         if recall_score < 0.7:
@@ -558,7 +582,9 @@ class SemanticCritic:
         if not llm_meaning_preserved and llm_confidence > 0.7:
             feedback_parts.append(f"LLM Verification: {llm_explanation}")
         if logic_fail:
-            feedback_parts.append(f"LOGIC VETO: {llm_explanation}")
+            # Use logic reason from _verify_logic (stored in llm_explanation if logic failed)
+            logic_reason = llm_explanation if logic_fail and llm_explanation else "Logic verification failed"
+            feedback_parts.append(f"LOGIC VETO: {logic_reason}")
 
         return {
             "pass": passes,
@@ -637,6 +663,137 @@ Respond with JSON:
         except Exception as e:
             # Handle errors gracefully - don't block evaluation
             return True, 0.5, f"LLM verification unavailable: {str(e)}"
+
+    def _infer_skeleton_type(self, skeleton: str, generated_text: str) -> str:
+        """Infer skeleton type from skeleton pattern and generated text.
+
+        Args:
+            skeleton: Skeleton template string
+            generated_text: Generated text to check
+
+        Returns:
+            Skeleton type: "RHETORICAL_QUESTION", "CONDITIONAL", or "DECLARATIVE"
+        """
+        skeleton_lower = skeleton.lower()
+        text_lower = generated_text.lower()
+
+        # Check for rhetorical question patterns
+        if "?" in skeleton or "?" in generated_text:
+            # Check if it's actually a question
+            if generated_text.strip().endswith("?") or any(q in skeleton_lower for q in ["how", "why", "what", "when", "where", "who"]):
+                return "RHETORICAL_QUESTION"
+
+        # Check for conditional patterns
+        if any(cond in skeleton_lower for cond in ["if", "when", "unless", "provided that", "in case"]):
+            return "CONDITIONAL"
+
+        # Default to declarative
+        return "DECLARATIVE"
+
+    def _verify_logic(
+        self,
+        original_text: str,
+        generated_text: str,
+        skeleton_type: str = "DECLARATIVE"
+    ) -> Tuple[bool, str]:
+        """Verify logic preservation with rhetorical context awareness.
+
+        Uses specialized prompt that explicitly permits authorized rhetorical transformations.
+
+        Args:
+            original_text: Original input text
+            generated_text: Generated text to verify
+            skeleton_type: Type of skeleton structure (RHETORICAL_QUESTION, CONDITIONAL, DECLARATIVE)
+
+        Returns:
+            True if logic fails (should reject), False if logic is preserved
+        """
+        if not self.llm_provider:
+            return False  # No LLM available, don't block on logic
+
+        LOGIC_VERIFICATION_PROMPT = """
+You are a strict Logic Validator. Your job is to check if the Generated Text preserves the **Truth Value** and **Causality** of the Original Text.
+
+### INPUTS
+Original: "{original_text}"
+Generated: "{generated_text}"
+Target Rhetorical Structure: {skeleton_type}
+
+### RULES
+1. **Ignore Stylistic Wrappers:**
+   - If the Target Structure is 'RHETORICAL_QUESTION', the output MUST be a question. This is NOT a meaning shift.
+   - If the Target Structure is 'CONDITIONAL' (e.g., "If X, then Y"), checking for conditions is expected.
+
+2. **Focus on Truth & Causality:**
+   - **FAIL** if the causality is reversed (e.g., "Fire causes smoke" -> "Smoke causes fire").
+   - **FAIL** if the truth is denied (e.g., "It is finite" -> "It is infinite").
+   - **FAIL** if a *universal* truth becomes *contingent* on a new, unrelated condition (e.g., "Humans die" -> "Humans die ONLY if it rains").
+
+3. **PASS** if the core message remains true, even if wrapped in complex syntax.
+
+### OUTPUT
+Return JSON:
+{{
+    "logic_fail": boolean,  // True only if truth/causality is broken
+    "reason": "string"      // Explanation
+}}
+"""
+
+        try:
+            prompt = LOGIC_VERIFICATION_PROMPT.format(
+                original_text=original_text,
+                generated_text=generated_text,
+                skeleton_type=skeleton_type
+            )
+
+            response = self.llm_provider.call(
+                system_prompt="You are a precision logic validator. Output ONLY valid JSON.",
+                user_prompt=prompt,
+                model_type="critic",
+                require_json=True,
+                temperature=0.2,
+                max_tokens=200
+            )
+
+            # Parse JSON response
+            import json
+            try:
+                result = json.loads(response)
+            except json.JSONDecodeError:
+                # Try to extract JSON from response
+                json_match = re.search(r'\{[^}]+\}', response, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    # Fallback: assume logic preserved if parsing fails
+                    return False
+
+            logic_fail = result.get("logic_fail", False)
+            reason = result.get("reason", "")
+            reason_lower = reason.lower()
+
+            # WHITELIST LOGIC: Override false positives for authorized transformations
+            if logic_fail:
+                # Whitelist Rhetorical Questions
+                if skeleton_type == "RHETORICAL_QUESTION" and "?" in generated_text:
+                    if any(keyword in reason_lower for keyword in ["question", "asks", "interrogative", "query"]):
+                        # OVERRIDE: This is an authorized transformation
+                        return False, reason
+
+                # Whitelist Conditional Formatting (e.g., "It is true that...", "If we consider...")
+                if skeleton_type == "CONDITIONAL":
+                    if "conditional relationship" in reason_lower and any(keyword in reason_lower for keyword in ["wrapper", "format", "structure", "framing"]):
+                        # If the LLM flagged a "wrapper" clause, ignore it
+                        return False, reason
+                    if "adds condition" in reason_lower and "context" in reason_lower:
+                        # If condition is contextual framing, allow it
+                        return False, reason
+
+            return logic_fail, reason
+
+        except Exception as e:
+            # If verification fails, don't block (assume logic preserved)
+            return False, f"Logic verification unavailable: {str(e)}"
 
     def _check_adherence(self, generated_text: str, skeleton: str) -> Tuple[float, str]:
         """Check if generated text adheres to skeleton structure (Gate 1).
@@ -1099,4 +1256,216 @@ Respond with JSON:
             return False, " | ".join(feedback_parts)
 
         return True, ""
+
+    def _check_proposition_recall(self, generated_text: str, propositions: List[str]) -> Tuple[float, Dict]:
+        """Check proposition recall by comparing each proposition against generated sentences.
+
+        CRITICAL: Do NOT compare proposition vector against whole paragraph vector (too much noise).
+        Instead, split paragraph into sentences and find the Maximum Similarity for each proposition.
+
+        Args:
+            generated_text: Generated paragraph text.
+            propositions: List of atomic proposition strings.
+
+        Returns:
+            Tuple of (recall_score: float, details_dict: Dict).
+        """
+        if not propositions:
+            return 1.0, {"preserved": [], "missing": [], "scores": {}}
+
+        if not self.semantic_model:
+            # Fallback: simple keyword matching
+            preserved = []
+            missing = []
+            for prop in propositions:
+                # Simple check: if proposition keywords appear in generated text
+                prop_words = set(prop.lower().split())
+                gen_words = set(generated_text.lower().split())
+                if prop_words.intersection(gen_words):
+                    preserved.append(prop)
+                else:
+                    missing.append(prop)
+            recall = len(preserved) / len(propositions) if propositions else 0.0
+            return recall, {"preserved": preserved, "missing": missing, "scores": {}}
+
+        # Split generated paragraph into sentences
+        try:
+            from nltk.tokenize import sent_tokenize
+            generated_sentences = sent_tokenize(generated_text)
+        except Exception:
+            # Fallback: simple sentence splitting
+            generated_sentences = re.split(r'[.!?]+\s+', generated_text)
+            generated_sentences = [s.strip() for s in generated_sentences if s.strip()]
+
+        if not generated_sentences:
+            return 0.0, {"preserved": [], "missing": propositions, "scores": {}}
+
+        # For each proposition, find max similarity across all sentences
+        preserved = []
+        missing = []
+        scores = {}
+        threshold = 0.45  # Proposition is "present" if max similarity > 0.45
+        # Lowered from 0.65 to account for stylistic variation - semantically equivalent
+        # but differently worded text can have similarity ~0.5, which is still valid
+
+        for prop in propositions:
+            max_similarity = 0.0
+            best_sentence = None
+
+            # Calculate similarity against each generated sentence
+            prop_embedding = self.semantic_model.encode(prop, convert_to_tensor=True)
+            for sent in generated_sentences:
+                sent_embedding = self.semantic_model.encode(sent, convert_to_tensor=True)
+                if util:
+                    similarity = util.cos_sim(prop_embedding, sent_embedding).item()
+                else:
+                    import torch
+                    similarity = torch.nn.functional.cosine_similarity(
+                        prop_embedding, sent_embedding, dim=0
+                    ).item()
+                if similarity > max_similarity:
+                    max_similarity = similarity
+                    best_sentence = sent
+
+            scores[prop] = max_similarity
+            if max_similarity > threshold:
+                preserved.append(prop)
+            else:
+                missing.append(prop)
+
+        recall = len(preserved) / len(propositions) if propositions else 0.0
+        return recall, {"preserved": preserved, "missing": missing, "scores": scores}
+
+    def _check_style_alignment(
+        self,
+        generated_text: str,
+        author_style_vector: Optional[np.ndarray] = None
+    ) -> Tuple[float, Dict]:
+        """Check style alignment between generated text and author style.
+
+        REUSE EXISTING INFRASTRUCTURE: Uses get_style_vector from style_metrics.py
+        or author_style_vector from Atlas.
+
+        Args:
+            generated_text: Generated paragraph text.
+            author_style_vector: Optional pre-computed author style vector.
+
+        Returns:
+            Tuple of (style_score: float, details_dict: Dict).
+        """
+        try:
+            from src.analyzer.style_metrics import get_style_vector
+        except ImportError:
+            # Fallback if style_metrics not available
+            return 0.5, {"similarity": 0.5, "avg_sentence_length": 0, "staccato_penalty": 0.0}
+
+        # Get style vector for generated text
+        generated_style_vector = get_style_vector(generated_text)
+
+        # Calculate style similarity
+        style_similarity = 0.5  # Default if no author vector
+        if author_style_vector is not None and NUMPY_AVAILABLE and np is not None:
+            # Calculate cosine similarity
+            dot_product = np.dot(generated_style_vector, author_style_vector)
+            norm_gen = np.linalg.norm(generated_style_vector)
+            norm_author = np.linalg.norm(author_style_vector)
+            if norm_gen > 0 and norm_author > 0:
+                style_similarity = dot_product / (norm_gen * norm_author)
+                style_similarity = max(0.0, min(1.0, style_similarity))  # Clamp to [0, 1]
+
+        # Check sentence length distribution (punish "staccato" output)
+        try:
+            from nltk.tokenize import sent_tokenize
+            sentences = sent_tokenize(generated_text)
+        except Exception:
+            sentences = re.split(r'[.!?]+\s+', generated_text)
+            sentences = [s.strip() for s in sentences if s.strip()]
+
+        avg_sentence_length = 0.0
+        staccato_penalty = 0.0
+        if sentences:
+            word_counts = [len(s.split()) for s in sentences]
+            avg_sentence_length = sum(word_counts) / len(word_counts) if word_counts else 0.0
+            # Penalize if average < 15 words (too short/staccato)
+            if avg_sentence_length < 15:
+                staccato_penalty = (15 - avg_sentence_length) / 15.0  # Penalty 0-1
+                style_similarity = max(0.0, style_similarity - staccato_penalty * 0.3)
+
+        # Final style score combines similarity and sentence length
+        style_score = style_similarity * (1.0 - staccato_penalty * 0.2)
+
+        return style_score, {
+            "similarity": style_similarity,
+            "avg_sentence_length": avg_sentence_length,
+            "staccato_penalty": staccato_penalty
+        }
+
+    def _evaluate_paragraph_mode(
+        self,
+        generated_text: str,
+        original_text: str,
+        propositions: List[str],
+        author_style_vector: Optional[np.ndarray] = None
+    ) -> Dict[str, any]:
+        """Evaluate paragraph in paragraph mode using proposition recall and style alignment.
+
+        Args:
+            generated_text: Generated paragraph text.
+            original_text: Original input text.
+            propositions: List of atomic propositions extracted from original.
+            author_style_vector: Optional author style vector.
+
+        Returns:
+            Dict with evaluation results (same format as sentence mode).
+        """
+        # Load paragraph fusion config
+        with open(self.config_path, 'r') as f:
+            config = json.load(f)
+        paragraph_config = config.get("paragraph_fusion", {})
+        proposition_recall_threshold = paragraph_config.get("proposition_recall_threshold", 0.8)
+        meaning_weight = paragraph_config.get("meaning_weight", 0.6)
+        style_weight = paragraph_config.get("style_alignment_weight", 0.4)
+
+        # Metric 1: Proposition Recall
+        proposition_recall, recall_details = self._check_proposition_recall(generated_text, propositions)
+
+        # Metric 2: Style Alignment
+        style_alignment, style_details = self._check_style_alignment(generated_text, author_style_vector)
+
+        # Final score: (Meaning * 0.6) + (Style * 0.4)
+        final_score = (proposition_recall * meaning_weight) + (style_alignment * style_weight)
+
+        # Pass threshold: proposition_recall > 0.8
+        passes = proposition_recall >= proposition_recall_threshold
+
+        # Build feedback
+        feedback_parts = []
+        if proposition_recall < proposition_recall_threshold:
+            missing = recall_details.get("missing", [])
+            if missing:
+                feedback_parts.append(
+                    f"CRITICAL: Missing propositions ({len(missing)}/{len(propositions)}): {', '.join(missing[:3])}"
+                )
+            else:
+                feedback_parts.append(
+                    f"CRITICAL: Proposition recall too low ({proposition_recall:.2f} < {proposition_recall_threshold})"
+                )
+
+        if style_alignment < 0.7:
+            feedback_parts.append(
+                f"Style alignment low ({style_alignment:.2f}). Average sentence length: {style_details.get('avg_sentence_length', 0):.1f} words."
+            )
+
+        return {
+            "pass": passes,
+            "proposition_recall": proposition_recall,
+            "style_alignment": style_alignment,
+            "recall_score": proposition_recall,  # For compatibility
+            "precision_score": 1.0,  # Not used in paragraph mode
+            "adherence_score": 1.0,  # Not used in paragraph mode
+            "score": final_score,
+            "feedback": " ".join(feedback_parts) if feedback_parts else "Passed paragraph validation.",
+            "recall_details": recall_details,
+            "style_details": style_details
+        }
 

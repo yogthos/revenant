@@ -6,6 +6,8 @@ few-shot examples from a rhetorically-indexed style atlas.
 
 import json
 import re
+import time
+import requests
 from pathlib import Path
 from typing import List, Tuple, Dict, Optional
 from src.ingestion.blueprint import SemanticBlueprint
@@ -19,6 +21,8 @@ from src.generator.mutation_operators import (
     get_operator, OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH, OP_DYNAMIC_STYLE, OP_STRUCTURAL_CLONE
 )
 from src.analyzer.structuralizer import Structuralizer
+from src.analysis.semantic_analyzer import PropositionExtractor
+from src.generator.mutation_operators import PARAGRAPH_FUSION_PROMPT
 
 
 def _load_prompt_template(template_name: str) -> str:
@@ -85,6 +89,10 @@ class StyleTranslator:
         self.soft_scorer = SoftScorer(config_path=config_path)
         # Initialize structuralizer for JIT structural templating
         self.structuralizer = Structuralizer(config_path=config_path)
+        # Initialize proposition extractor for paragraph fusion
+        self.proposition_extractor = PropositionExtractor(config_path=config_path)
+        # Load paragraph fusion config
+        self.paragraph_fusion_config = self.config.get("paragraph_fusion", {})
 
     def _get_nlp(self):
         """Get or load spaCy model for noun extraction."""
@@ -172,24 +180,46 @@ class StyleTranslator:
     def _extract_multiple_skeletons(
         self,
         examples: List[str],
-        blueprint: SemanticBlueprint
+        blueprint: SemanticBlueprint,
+        verbose: bool = False
     ) -> List[Tuple[str, str]]:
-        """Extract skeletons from multiple examples with complexity filtering and adaptation.
+        """Extract skeletons with length filtering and deduplication.
+
+        Implements "Wide Net, Strict Filter" strategy:
+        1. Pre-filter by length (0.5x to 2.5x) before skeleton extraction
+        2. Extract skeletons and apply complexity gate
+        3. Deduplicate similar skeletons (preserving ChromaDB relevance order)
+        4. Return top 5 distinct skeletons
 
         Args:
-            examples: List of example sentences from ChromaDB.
+            examples: List of example sentences from ChromaDB (already sorted by relevance).
             blueprint: Semantic blueprint with original text.
+            verbose: Whether to print debug information.
 
         Returns:
-            List of (skeleton, source_example) tuples (top 3 surviving after filtering/adaptation).
+            List of (skeleton, source_example) tuples (top 5 distinct skeletons).
         """
         if not examples:
             return []
 
         input_len = len(blueprint.original_text.split())
-        compatible_skeletons = []
 
+        # Step 1: Length Filter (Pre-filter before skeleton extraction)
+        # This saves token costs by filtering before expensive skeleton extraction
+        length_filtered = []
         for example in examples:
+            example_len = len(example.split())
+
+            # Filter: 0.5x to 2.5x length (stricter than complexity gate)
+            if 0.5 * input_len <= example_len <= 2.5 * input_len:
+                length_filtered.append(example)
+
+        if verbose:
+            print(f"    Length filter: {len(length_filtered)}/{len(examples)} examples passed (0.5x-2.5x length range)")
+
+        # Step 2: Extract skeletons from length-filtered examples
+        skeleton_candidates = []
+        for example in length_filtered:
             try:
                 # Pass input text for skeleton pruning (if single sentence, truncate to first sentence)
                 skeleton = self.structuralizer.extract_skeleton(example, input_text=blueprint.original_text)
@@ -198,29 +228,88 @@ class StyleTranslator:
 
                 skeleton_slots = self.structuralizer.count_skeleton_slots(skeleton)
 
-                # Complexity gate: reject if mold is vastly too big or too small
+                # Complexity gate: 0.5x to 3.0x slots
                 if 0.5 * input_len <= skeleton_slots <= 3.0 * input_len:
-                    compatible_skeletons.append((skeleton, example))
+                    skeleton_candidates.append((skeleton, example, skeleton_slots))
                 elif skeleton_slots > input_len * 2:
                     # Too long: try to compress it
                     adapted_skeleton = self.structuralizer.adapt_skeleton(skeleton, input_len)
                     adapted_slots = self.structuralizer.count_skeleton_slots(adapted_skeleton)
                     # Check if adaptation helped
                     if 0.5 * input_len <= adapted_slots <= 3.0 * input_len:
-                        compatible_skeletons.append((adapted_skeleton, example))
+                        skeleton_candidates.append((adapted_skeleton, example, adapted_slots))
                 elif skeleton_slots < input_len * 0.5:
                     # Too short: try to expand it
                     adapted_skeleton = self.structuralizer.adapt_skeleton(skeleton, input_len)
                     adapted_slots = self.structuralizer.count_skeleton_slots(adapted_skeleton)
                     # Check if adaptation helped
                     if 0.5 * input_len <= adapted_slots <= 3.0 * input_len:
-                        compatible_skeletons.append((adapted_skeleton, example))
+                        skeleton_candidates.append((adapted_skeleton, example, adapted_slots))
             except Exception:
                 # Skip if skeleton extraction/adaptation fails
                 continue
 
-        # Return top 3 surviving skeletons (or all if fewer than 3)
-        return compatible_skeletons[:3]
+        if verbose:
+            print(f"    Complexity gate: {len(skeleton_candidates)} skeletons passed (0.5x-3.0x slots)")
+
+        # Step 3: Deduplication - Remove similar skeletons (preserving order)
+        # Process in order to preserve ChromaDB relevance ranking
+        unique_skeletons = []
+        for skeleton, example, slots in skeleton_candidates:
+            is_duplicate = False
+            for existing_skeleton, _, _ in unique_skeletons:
+                similarity = self._skeleton_similarity(skeleton, existing_skeleton)
+                if similarity > 0.9:  # >90% similar
+                    is_duplicate = True
+                    if verbose:
+                        print(f"    Deduplication: Skipping duplicate skeleton (similarity: {similarity:.2f})")
+                    break
+
+            if not is_duplicate:
+                unique_skeletons.append((skeleton, example, slots))
+
+        # Step 4: Preserve ChromaDB relevance ranking and return Top 5
+        # DO NOT re-sort by length - the examples list is already sorted by relevance from ChromaDB
+        # Re-sorting by length would destroy the rhetorical fit signal
+        # Just take the first 5 unique skeletons that survived all filters
+
+        if verbose:
+            print(f"    Deduplication: {len(unique_skeletons)} unique skeletons from {len(skeleton_candidates)} candidates")
+            print(f"    Selection: Returning top {min(5, len(unique_skeletons))} distinct skeletons (preserving ChromaDB relevance order)")
+
+        # Return top 5 distinct skeletons (preserving ChromaDB relevance order)
+        return [(skeleton, example) for skeleton, example, _ in unique_skeletons[:5]]
+
+    def _skeleton_similarity(self, skeleton1: str, skeleton2: str) -> float:
+        """Calculate similarity between two skeletons.
+
+        Uses Jaccard similarity on normalized token sets.
+
+        Args:
+            skeleton1: First skeleton string.
+            skeleton2: Second skeleton string.
+
+        Returns:
+            Similarity score 0.0-1.0 (1.0 = identical).
+        """
+        # Normalize skeletons (remove whitespace differences)
+        s1_norm = re.sub(r'\s+', ' ', skeleton1.strip())
+        s2_norm = re.sub(r'\s+', ' ', skeleton2.strip())
+
+        if s1_norm == s2_norm:
+            return 1.0
+
+        # Calculate Jaccard similarity on tokens
+        tokens1 = set(s1_norm.split())
+        tokens2 = set(s2_norm.split())
+
+        if not tokens1 or not tokens2:
+            return 0.0
+
+        intersection = len(tokens1 & tokens2)
+        union = len(tokens1 | tokens2)
+
+        return intersection / union if union > 0 else 0.0
 
     def _calculate_skeleton_adherence(self, candidate: str, skeleton: str) -> float:
         """Calculate skeleton adherence score using anchor word overlap.
@@ -318,6 +407,629 @@ class StyleTranslator:
 
         style_density = style_word_count / len(candidate_tokens)
         return style_density
+
+    def _generate_batch(
+        self,
+        skeleton: str,
+        blueprint: SemanticBlueprint,
+        author_name: str,
+        style_dna: str,
+        rhetorical_type: RhetoricalType,
+        style_lexicon: Optional[List[str]] = None,
+        batch_size: int = 20,
+        verbose: bool = False
+    ) -> List[str]:
+        """Generate batch of variants in a single API call.
+
+        Args:
+            skeleton: Structural skeleton template
+            blueprint: Semantic blueprint with meaning
+            style_lexicon: List of style words to prioritize
+            batch_size: Number of variants to generate (default 20)
+            verbose: Whether to print debug information
+
+        Returns:
+            List of generated variant strings
+        """
+        from src.generator.mutation_operators import BATCH_GENERATION_PROMPT
+
+        # Format prompt with blueprint data
+        subjects_list = blueprint.get_subjects()[:5] if blueprint.get_subjects() else []
+        verbs_list = blueprint.get_verbs()[:5] if blueprint.get_verbs() else []
+        objects_list = blueprint.get_objects()[:5] if blueprint.get_objects() else []
+
+        subjects = ", ".join(subjects_list) if subjects_list else "None"
+        verbs = ", ".join(verbs_list) if verbs_list else "None"
+        objects = ", ".join(objects_list) if objects_list else "None"
+        lexicon_text = ", ".join(style_lexicon[:20]) if style_lexicon else "None"
+
+        # Get primary subject and verb for anchoring and mapping
+        primary_subject = subjects_list[0] if subjects_list else "None"
+        primary_verb = verbs_list[0] if verbs_list else "None"
+
+        # Build keyword checklist from core keywords
+        core_keywords = list(blueprint.core_keywords)[:10] if blueprint.core_keywords else []
+        keywords_text = ", ".join(core_keywords) if core_keywords else "None"
+
+        # TASK 3: Subject Anchoring - Pre-fill first [NP] slot with input subject
+        anchored_skeleton = skeleton
+        if primary_subject != "None" and "[NP]" in skeleton:
+            # Replace first [NP] with the actual subject (bolded for emphasis)
+            anchored_skeleton = skeleton.replace("[NP]", f"**{primary_subject}**", 1)
+            if verbose:
+                print(f"    🔒 Subject anchor: Injected '{primary_subject}' into first [NP] slot")
+                print(f"    📐 Original skeleton: {skeleton[:80]}...")
+                print(f"    📐 Anchored skeleton: {anchored_skeleton[:80]}...")
+
+        prompt = BATCH_GENERATION_PROMPT.format(
+            subjects=subjects,
+            verbs=verbs,
+            objects=objects,
+            original_text=blueprint.original_text,
+            skeleton=anchored_skeleton,  # Use anchored skeleton
+            style_lexicon=lexicon_text,
+            keywords=keywords_text,
+            subject=primary_subject,
+            verb=primary_verb
+        )
+
+        if verbose:
+            print(f"    📋 Keyword checklist: {keywords_text}")
+            print(f"    🗺️  Concept mapping: Subject '{primary_subject}' -> [NP], Verb '{primary_verb}' -> [VP]")
+
+        # Call LLM with JSON mode enabled (high temperature for diversity)
+        # Add retry logic with exponential backoff for timeout errors
+        import time
+        max_retries = 3
+        retry_delay = 2  # Start with 2 seconds
+
+        for attempt in range(max_retries):
+            try:
+                if verbose:
+                    if attempt > 0:
+                        print(f"    🔄 Retry attempt {attempt + 1}/{max_retries} (after {retry_delay}s delay)")
+                    else:
+                        print(f"    📤 Calling LLM for batch generation (batch_size={batch_size}, temp=0.8)")
+
+                response = self.llm_provider.call(
+                    system_prompt="You are a precision batch generator. Output ONLY valid JSON.",
+                    user_prompt=prompt,
+                    model_type="editor",
+                    require_json=True,
+                    temperature=0.8,  # High temp for diversity
+                    max_tokens=self.translator_config.get("max_tokens", 500)
+                )
+
+                if verbose:
+                    print(f"    📥 Received response ({len(response)} chars)")
+
+                # Parse JSON response
+                candidates = json.loads(response)
+                if isinstance(candidates, list):
+                    # Filter out empty strings and validate
+                    candidates = [c.strip() for c in candidates if c and c.strip()]
+                    if verbose:
+                        print(f"    ✅ Parsed {len(candidates)} candidates from JSON")
+                    return candidates[:batch_size]  # Ensure we don't exceed batch_size
+                else:
+                    if verbose:
+                        print(f"    ⚠ Batch generation returned non-list, attempting extraction")
+                    return self._extract_json_list(response)
+
+            except json.JSONDecodeError as e:
+                if verbose:
+                    print(f"    ⚠ JSON decode error: {e}, attempting extraction")
+                    print(f"    📝 Response preview: {response[:200] if 'response' in locals() else 'N/A'}...")
+                # Fallback: try to extract JSON from response
+                if 'response' in locals():
+                    extracted = self._extract_json_list(response)
+                    if verbose:
+                        print(f"    {'✅' if extracted else '✗'} Extracted {len(extracted)} candidates from text")
+                    return extracted
+                return []
+
+            except (RuntimeError, requests.exceptions.RequestException, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                error_str = str(e)
+                is_timeout = "timeout" in error_str.lower() or "timed out" in error_str.lower() or "Read timed out" in error_str
+
+                if attempt < max_retries - 1 and is_timeout:
+                    # Retry on timeout with exponential backoff
+                    if verbose:
+                        print(f"    ⚠ Timeout error (attempt {attempt + 1}/{max_retries}): {error_str[:100]}...")
+                        print(f"    ⏳ Waiting {retry_delay}s before retry...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    # Final attempt failed or non-timeout error - try smaller batches
+                    if verbose:
+                        print(f"    ⚠ Batch generation failed after {attempt + 1} attempts: {error_str[:100]}...")
+                        if is_timeout:
+                            print(f"    🔄 Falling back to smaller batch generation...")
+
+                    # Fallback: Generate smaller batches
+                    return self._generate_batch_fallback(
+                        skeleton, blueprint, author_name, style_dna, rhetorical_type,
+                        style_lexicon, batch_size, verbose, primary_subject, primary_verb,
+                        subjects, verbs, objects, keywords_text, lexicon_text
+                    )
+
+            except Exception as e:
+                if verbose:
+                    print(f"    ✗ Batch generation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                # Try fallback on any other error
+                if attempt == max_retries - 1:
+                    return self._generate_batch_fallback(
+                        skeleton, blueprint, author_name, style_dna, rhetorical_type,
+                        style_lexicon, batch_size, verbose, primary_subject, primary_verb,
+                        subjects, verbs, objects, keywords_text, lexicon_text
+                    )
+                continue
+
+        # All retries exhausted
+        if verbose:
+            print(f"    ✗ All retry attempts exhausted")
+        return []
+
+    def _extract_json_list(self, text: str) -> List[str]:
+        """Extract JSON list from text that may contain extra content.
+
+        Tries to find JSON array pattern in the response.
+
+        Args:
+            text: Text that may contain a JSON array
+
+        Returns:
+            List of strings extracted from JSON array, or empty list if extraction fails
+        """
+        # Try to find JSON array pattern
+        json_match = re.search(r'\[.*\]', text, re.DOTALL)
+        if json_match:
+            try:
+                candidates = json.loads(json_match.group())
+                if isinstance(candidates, list):
+                    return [c.strip() for c in candidates if c and c.strip()]
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: return empty list
+        return []
+
+    def _generate_batch_fallback(
+        self,
+        skeleton: str,
+        blueprint: SemanticBlueprint,
+        author_name: str,
+        style_dna: str,
+        rhetorical_type: RhetoricalType,
+        style_lexicon: Optional[List[str]],
+        batch_size: int,
+        verbose: bool,
+        primary_subject: str,
+        primary_verb: str,
+        subjects: str,
+        verbs: str,
+        objects: str,
+        keywords_text: str,
+        lexicon_text: str
+    ) -> List[str]:
+        """Fallback: Generate smaller batches if full batch times out.
+
+        Generates batches of 5 candidates at a time until we reach batch_size.
+        """
+        from src.generator.mutation_operators import BATCH_GENERATION_PROMPT
+
+        if verbose:
+            print(f"    🔄 Fallback: Generating in smaller batches of 5...")
+
+        all_candidates = []
+        chunk_size = 5
+        num_chunks = (batch_size + chunk_size - 1) // chunk_size  # Ceiling division
+
+        # Update prompt for smaller batch
+        fallback_prompt_template = BATCH_GENERATION_PROMPT.replace("20 distinct variations", f"{chunk_size} distinct variations")
+        fallback_prompt_template = fallback_prompt_template.replace(
+            "- **Candidates 1-5", f"- **Candidates 1-{chunk_size}"
+        )
+        # Remove the other candidate category instructions for smaller batches
+        fallback_prompt_template = re.sub(
+            r'- \*\*Candidates \d+-\d+.*?\n',
+            '',
+            fallback_prompt_template
+        )
+
+        # Subject anchoring
+        anchored_skeleton = skeleton
+        if primary_subject != "None" and "[NP]" in skeleton:
+            anchored_skeleton = skeleton.replace("[NP]", f"**{primary_subject}**", 1)
+
+        prompt = fallback_prompt_template.format(
+            subjects=subjects,
+            verbs=verbs,
+            objects=objects,
+            original_text=blueprint.original_text,
+            skeleton=anchored_skeleton,
+            style_lexicon=lexicon_text,
+            keywords=keywords_text,
+            subject=primary_subject,
+            verb=primary_verb
+        )
+
+        for chunk_idx in range(num_chunks):
+            try:
+                if verbose:
+                    print(f"      📦 Generating chunk {chunk_idx + 1}/{num_chunks} ({chunk_size} candidates)...")
+
+                response = self.llm_provider.call(
+                    system_prompt="You are a precision batch generator. Output ONLY valid JSON.",
+                    user_prompt=prompt,
+                    model_type="editor",
+                    require_json=True,
+                    temperature=0.8,
+                    max_tokens=self.translator_config.get("max_tokens", 300)  # Smaller for chunk
+                )
+
+                candidates = json.loads(response)
+                if isinstance(candidates, list):
+                    candidates = [c.strip() for c in candidates if c and c.strip()]
+                    all_candidates.extend(candidates)
+                    if verbose:
+                        print(f"      ✅ Chunk {chunk_idx + 1}: Got {len(candidates)} candidates")
+                else:
+                    extracted = self._extract_json_list(response)
+                    all_candidates.extend(extracted)
+                    if verbose:
+                        print(f"      ✅ Chunk {chunk_idx + 1}: Extracted {len(extracted)} candidates")
+
+                # Stop if we have enough
+                if len(all_candidates) >= batch_size:
+                    break
+
+                # Small delay between chunks to avoid rate limiting
+                if chunk_idx < num_chunks - 1:
+                    time.sleep(1)
+
+            except Exception as e:
+                if verbose:
+                    print(f"      ⚠ Chunk {chunk_idx + 1} failed: {e}")
+                # Continue with next chunk
+                continue
+
+        if verbose:
+            print(f"    ✅ Fallback complete: Generated {len(all_candidates)} total candidates")
+
+        return all_candidates[:batch_size]
+
+    def _run_arena(
+        self,
+        candidates: List[Dict[str, any]],  # List of {"text": str, "skeleton": str, ...}
+        blueprint: SemanticBlueprint,
+        style_dna_dict: Optional[Dict[str, any]] = None,
+        verbose: bool = False
+    ) -> List[Dict[str, any]]:
+        """Evaluate all candidates and return survivors.
+
+        Filters:
+        1. Structure Filter: Adherence to skeleton (kill if < 0.7)
+        2. Logic Filter: Logic failure check (kill if logic_fail=True)
+        3. Meaning Filter: Keyword presence (kill if < 50%)
+
+        Returns:
+            Top K survivors sorted by style score
+        """
+        from src.validator.semantic_critic import SemanticCritic
+
+        # Load config
+        evolutionary_config = self.config.get("evolutionary", {})
+        top_k = evolutionary_config.get("top_k_parents", 5)
+        min_keyword_presence = evolutionary_config.get("min_keyword_presence", 0.5)
+
+        # Extract style lexicon
+        style_lexicon = None
+        if style_dna_dict and isinstance(style_dna_dict, dict):
+            style_lexicon = style_dna_dict.get("lexicon")
+
+        # Initialize critic
+        critic = SemanticCritic(config_path=self.config_path)
+
+        survivors = []
+
+        if verbose:
+            print(f"  🏟️  Arena: Evaluating {len(candidates)} candidates")
+            print(f"    📐 Skeleton structure: {candidates[0].get('skeleton', 'N/A')[:100] if candidates else 'N/A'}...")
+            print(f"    🎯 Target keywords: {', '.join(list(blueprint.core_keywords)[:5]) if blueprint.core_keywords else 'None'}")
+
+        for idx, candidate_data in enumerate(candidates):
+            candidate_text = candidate_data.get("text", "")
+            skeleton = candidate_data.get("skeleton", "")
+
+            if not candidate_text or not candidate_text.strip():
+                if verbose:
+                    print(f"    [{idx+1}/{len(candidates)}] ✗ Empty candidate, skipping")
+                continue
+
+            if verbose:
+                print(f"    [{idx+1}/{len(candidates)}] Evaluating: {candidate_text[:60]}...")
+
+            # Filter 1: Structure Filter (Adherence Check)
+            adherence_score = self._calculate_skeleton_adherence(candidate_text, skeleton)
+            if adherence_score < 0.7:
+                if verbose:
+                    print(f"      ✗ Structure filter FAILED: Adherence {adherence_score:.2f} < 0.7")
+                    print(f"         📐 Skeleton: {skeleton[:80]}...")
+                    print(f"         📝 Candidate: {candidate_text[:80]}...")
+                continue
+            else:
+                if verbose:
+                    print(f"      ✓ Structure filter PASSED: Adherence {adherence_score:.2f}")
+
+            # Filter 2 & 3: Logic Filter and Meaning Filter (both use critic evaluation)
+            # Infer skeleton type from skeleton pattern for logic verification
+            skeleton_type = None
+            if skeleton:
+                skeleton_lower = skeleton.lower()
+                if "?" in skeleton or candidate_text.strip().endswith("?"):
+                    skeleton_type = "RHETORICAL_QUESTION"
+                elif any(cond in skeleton_lower for cond in ["if", "when", "unless", "provided that"]):
+                    skeleton_type = "CONDITIONAL"
+                else:
+                    skeleton_type = "DECLARATIVE"
+
+            try:
+                critic_result = critic.evaluate(
+                    candidate_text,
+                    blueprint,
+                    allowed_style_words=style_lexicon,
+                    skeleton=skeleton,
+                    skeleton_type=skeleton_type
+                )
+
+                # Filter 2: Logic Filter (Logic Failure Check)
+                if critic_result.get("logic_fail", False):
+                    if verbose:
+                        print(f"      ✗ Logic filter FAILED: Logic failure detected")
+                        print(f"         💬 Feedback: {critic_result.get('feedback', 'N/A')[:100]}...")
+                    continue
+                else:
+                    if verbose:
+                        print(f"      ✓ Logic filter PASSED")
+
+                # Filter 3: Meaning Filter (Keyword Presence Check with Synonym Awareness)
+                recall_score = critic_result.get("recall_score", 0.0)
+                semantic_similarity = None
+
+                # TASK 2: Check semantic similarity if recall is low
+                if recall_score < min_keyword_presence:
+                    # Calculate semantic similarity as fallback
+                    try:
+                        # Use the critic's semantic model if available
+                        if hasattr(critic, 'semantic_model') and critic.semantic_model:
+                            semantic_similarity = critic._calculate_semantic_similarity(
+                                blueprint.original_text, candidate_text
+                            )
+                            if verbose:
+                                print(f"      ⚠ Low recall ({recall_score:.2f}), checking semantic similarity: {semantic_similarity:.2f}")
+
+                            # If semantic similarity is high (>0.85), allow through (synonyms used)
+                            if semantic_similarity and semantic_similarity > 0.85:
+                                if verbose:
+                                    print(f"      ✓ Meaning filter PASSED (synonym bridge): Recall {recall_score:.2f} < {min_keyword_presence}, but semantic similarity {semantic_similarity:.2f} > 0.85")
+                            else:
+                                if verbose:
+                                    print(f"      ✗ Meaning filter FAILED: Recall {recall_score:.2f} < {min_keyword_presence} AND semantic similarity {semantic_similarity:.2f if semantic_similarity else 'N/A'} <= 0.85")
+                                    print(f"         📝 Original: {blueprint.original_text[:80]}...")
+                                    print(f"         📝 Candidate: {candidate_text[:80]}...")
+                                    print(f"         💬 Feedback: {critic_result.get('feedback', 'N/A')[:100]}...")
+                                continue
+                        else:
+                            # No semantic model, reject on low recall
+                            if verbose:
+                                print(f"      ✗ Meaning filter FAILED: Recall {recall_score:.2f} < {min_keyword_presence} (no semantic model for synonym check)")
+                                print(f"         📝 Original: {blueprint.original_text[:80]}...")
+                                print(f"         📝 Candidate: {candidate_text[:80]}...")
+                                print(f"         💬 Feedback: {critic_result.get('feedback', 'N/A')[:100]}...")
+                            continue
+                    except Exception as e:
+                        if verbose:
+                            print(f"      ⚠ Semantic similarity check failed: {e}, rejecting on recall alone")
+                            import traceback
+                            traceback.print_exc()
+                        if verbose:
+                            print(f"      ✗ Meaning filter FAILED: Recall {recall_score:.2f} < {min_keyword_presence}")
+                            print(f"         📝 Original: {blueprint.original_text[:80]}...")
+                            print(f"         📝 Candidate: {candidate_text[:80]}...")
+                        continue
+                else:
+                    if verbose:
+                        print(f"      ✓ Meaning filter PASSED: Recall {recall_score:.2f} >= {min_keyword_presence}")
+
+            except Exception as e:
+                if verbose:
+                    print(f"      ⚠ Critic evaluation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+                # Reject candidate if evaluation fails
+                continue
+
+            # Calculate style density for ranking
+            style_density = self._calculate_style_density(candidate_text, style_lexicon)
+
+            # Candidate passed all filters - add to survivors
+            if verbose:
+                print(f"      ✅ CANDIDATE SURVIVED ALL FILTERS")
+                print(f"         📊 Scores: Adherence {adherence_score:.2f}, Recall {recall_score:.2f}, Style {style_density:.2f}, Overall {critic_result.get('score', 0.0):.2f}")
+
+            survivors.append({
+                "text": candidate_text,
+                "skeleton": skeleton,
+                "source_example": candidate_data.get("source_example", ""),
+                "adherence_score": adherence_score,
+                "recall_score": recall_score,
+                "style_density": style_density,
+                "score": critic_result.get("score", 0.0),
+                "semantic_similarity": semantic_similarity,
+                "critic_result": critic_result
+            })
+
+        # Sort survivors by style_density (descending) and return Top K
+        survivors.sort(key=lambda x: x["style_density"], reverse=True)
+
+        if verbose:
+            print(f"  🏟️  Arena Results: {len(survivors)} survivors from {len(candidates)} candidates")
+            if survivors:
+                print(f"    🏆 Top {min(3, len(survivors))} survivors:")
+                for i, surv in enumerate(survivors[:3]):
+                    print(f"      {i+1}. Style: {surv['style_density']:.2f}, Recall: {surv['recall_score']:.2f}, Score: {surv['score']:.2f}")
+                    print(f"         Text: {surv['text'][:80]}...")
+            else:
+                print(f"    ⚠ No survivors - all candidates failed filters")
+
+        return survivors[:top_k]
+
+    def _breed_children(
+        self,
+        parents: List[Dict[str, any]],  # Top 5 parents from arena
+        blueprint: SemanticBlueprint,
+        author_name: str,
+        style_dna: str,
+        rhetorical_type: RhetoricalType,
+        style_lexicon: Optional[List[str]] = None,
+        num_children: int = 10,
+        verbose: bool = False
+    ) -> List[str]:
+        """Breed children from parents to fix specific defects.
+
+        Analyzes each parent's weaknesses:
+        - Parent A: Great style but missing keywords
+        - Parent B: Perfect keywords but boring style
+
+        Generates children that combine strengths.
+
+        Args:
+            parents: List of parent candidates with evaluation data
+            blueprint: Original semantic blueprint
+            author_name: Target author name
+            style_dna: Style DNA description
+            rhetorical_type: Rhetorical mode
+            style_lexicon: Optional list of style words
+            num_children: Number of children to generate (default 10)
+            verbose: Whether to print debug information
+
+        Returns:
+            List of generated child strings
+        """
+        if not parents or len(parents) < 2:
+            if verbose:
+                print(f"    ⚠ Breeding requires at least 2 parents, got {len(parents)}")
+            return []
+
+        # Analyze parents to identify "Delta" (specific defects)
+        parent_deltas = []
+        for i, parent in enumerate(parents[:3]):  # Analyze top 3 parents
+            text = parent.get("text", "")
+            critic_result = parent.get("critic_result", {})
+            recall_score = parent.get("recall_score", 0.0)
+            style_density = parent.get("style_density", 0.0)
+            logic_fail = critic_result.get("logic_fail", False)
+
+            deltas = []
+            if recall_score < 0.8:
+                # Missing keywords - extract missing ones from blueprint
+                missing_keywords = []
+                blueprint_keywords = list(blueprint.core_keywords)[:5]
+                text_lower = text.lower()
+                for keyword in blueprint_keywords:
+                    if keyword.lower() not in text_lower:
+                        missing_keywords.append(keyword)
+                if missing_keywords:
+                    deltas.append(f"Missing keywords: {', '.join(missing_keywords[:3])}")
+
+            if style_density < 0.1:
+                deltas.append("Boring style, needs jargon")
+
+            if logic_fail:
+                deltas.append("Logic contradiction detected")
+
+            parent_deltas.append({
+                "text": text,
+                "deltas": deltas,
+                "strengths": []
+            })
+
+            # Identify strengths
+            if style_density > 0.2:
+                parent_deltas[-1]["strengths"].append("Great style")
+            if recall_score > 0.9:
+                parent_deltas[-1]["strengths"].append("Perfect keywords")
+            if parent.get("adherence_score", 0.0) > 0.9:
+                parent_deltas[-1]["strengths"].append("Strong structure")
+
+        # Build breeding prompt
+        parent_descriptions = []
+        for i, parent_data in enumerate(parent_deltas):
+            deltas_text = ", ".join(parent_data["deltas"]) if parent_data["deltas"] else "No major defects"
+            strengths_text = ", ".join(parent_data["strengths"]) if parent_data["strengths"] else "No major strengths"
+            parent_descriptions.append(
+                f"Parent {chr(65+i)}: \"{parent_data['text']}\"\n"
+                f"  Strengths: {strengths_text}\n"
+                f"  Defects: {deltas_text}"
+            )
+
+        breeding_prompt = f"""You are a master literary breeder. Your task is to generate children that combine the strengths of multiple parent sentences while fixing their specific defects.
+
+### PARENTS TO BREED:
+{chr(10).join(parent_descriptions)}
+
+### TASK
+Generate {num_children} children that:
+1. Combine the strengths of the parents (e.g., Parent A's style + Parent B's keywords)
+2. Fix the specific defects identified (e.g., add missing keywords, inject jargon, fix logic)
+3. Preserve the core meaning: "{blueprint.original_text}"
+
+### STYLE PALETTE
+Vocabulary to prioritize: {', '.join(style_lexicon[:20]) if style_lexicon else 'None'}
+
+### OUTPUT FORMAT
+Output PURE JSON. A single list of strings:
+[
+  "Child 1 text...",
+  "Child 2 text...",
+  ...
+  "Child {num_children} text..."
+]
+"""
+
+        # Generate children using batch generation approach
+        try:
+            response = self.llm_provider.call(
+                system_prompt="You are a precision breeding generator. Output ONLY valid JSON.",
+                user_prompt=breeding_prompt,
+                model_type="editor",
+                require_json=True,
+                temperature=0.7,  # Moderate temperature for focused breeding
+                max_tokens=self.translator_config.get("max_tokens", 500)
+            )
+
+            # Parse JSON response
+            children = json.loads(response)
+            if isinstance(children, list):
+                children = [c.strip() for c in children if c and c.strip()]
+                return children[:num_children]
+            else:
+                if verbose:
+                    print(f"    ⚠ Breeding returned non-list, attempting extraction")
+                return self._extract_json_list(response)[:num_children]
+
+        except json.JSONDecodeError as e:
+            if verbose:
+                print(f"    ⚠ Breeding JSON decode error: {e}, attempting extraction")
+            return self._extract_json_list(response)[:num_children]
+        except Exception as e:
+            if verbose:
+                print(f"    ✗ Breeding failed: {e}")
+            return []
 
     def _evaluate_template_candidate(
         self,
@@ -492,8 +1204,8 @@ class StyleTranslator:
         if verbose:
             print(f"  Parallel Template Evolution: Processing {len(candidate_examples)} examples")
 
-        # Extract multiple skeletons with complexity filtering
-        compatible_skeletons = self._extract_multiple_skeletons(candidate_examples, blueprint)
+        # Extract multiple skeletons with complexity filtering and deduplication
+        compatible_skeletons = self._extract_multiple_skeletons(candidate_examples, blueprint, verbose=verbose)
 
         if verbose:
             print(f"  Skeletons extracted: {len(compatible_skeletons)} compatible (after complexity filtering)")
@@ -502,165 +1214,134 @@ class StyleTranslator:
             if verbose:
                 print(f"  No compatible skeletons found, falling back to standard generation")
         else:
-            # Phase 2: Style-Infused Generation
-            all_candidates = []
-            structural_operator = get_operator(OP_STRUCTURAL_CLONE)
+            # Phase 2: Mass Generation (Evolutionary Architecture)
+            evolutionary_config = self.config.get("evolutionary", {})
+            batch_size = evolutionary_config.get("batch_size", 20)
+            max_generations = evolutionary_config.get("max_generations", 3)
+            convergence_threshold = evolutionary_config.get("convergence_threshold", 0.95)
+            top_k_parents = evolutionary_config.get("top_k_parents", 5)
+            breeding_children = evolutionary_config.get("breeding_children", 10)
 
             # Extract style lexicon from style_dna_dict
             style_lexicon = None
             if style_dna_dict and isinstance(style_dna_dict, dict):
                 style_lexicon = style_dna_dict.get("lexicon")
 
+            all_candidates = []
             for skeleton, source_example in compatible_skeletons:
                 if verbose:
-                    print(f"  Generating {candidates_per_template} candidates for skeleton: {skeleton[:60]}...")
+                    print(f"  Generating batch of {batch_size} variants for skeleton: {skeleton[:60]}...")
 
-                # Generate multiple candidates per skeleton with temperature variation
-                temperatures = [0.7, 0.75, 0.8][:candidates_per_template]
-                for temp_idx, temp in enumerate(temperatures):
-                    try:
-                        candidate = structural_operator.generate(
-                            current_draft="",
-                            blueprint=blueprint,
-                            author_name=author_name,
-                            style_dna=style_dna,
-                            rhetorical_type=rhetorical_type,
-                            llm_provider=self.llm_provider,
-                            temperature=temp,
-                            max_tokens=self.translator_config.get("max_tokens", 300),
-                            skeleton=skeleton,
-                            style_lexicon=style_lexicon
-                        )
+                try:
+                    # Generate batch of variants in single API call
+                    batch = self._generate_batch(
+                        skeleton=skeleton,
+                        blueprint=blueprint,
+                        author_name=author_name,
+                        style_dna=style_dna,
+                        rhetorical_type=rhetorical_type,
+                        style_lexicon=style_lexicon,
+                        batch_size=batch_size,
+                        verbose=verbose
+                    )
 
-                        if candidate and candidate.strip():
+                    # Filter out logic mismatch signals and add to candidates
+                    for variant in batch:
+                        if variant and variant.strip():
                             # ESCAPE HATCH: Check for logic mismatch signal
-                            if "SKIPPING: LOGIC_MISMATCH" in candidate.upper() or "LOGIC_MISMATCH" in candidate.upper():
+                            if "SKIPPING: LOGIC_MISMATCH" in variant.upper() or "LOGIC_MISMATCH" in variant.upper():
                                 if verbose:
-                                    print(f"    ⚠ Logic mismatch detected for skeleton, skipping this template")
-                                # Skip this candidate and continue to next skeleton
-                                continue
-
-                            # EXPANSION GATE: Reject candidates where word_count > 3 * input_word_count
-                            input_word_count = len(blueprint.original_text.split())
-                            candidate_word_count = len(candidate.split())
-                            if candidate_word_count > 3 * input_word_count:
-                                if verbose:
-                                    ratio = candidate_word_count / max(1, input_word_count)
-                                    print(f"    ✗ Candidate rejected: excessive expansion (Ratio: {ratio:.2f}, {candidate_word_count} words vs {input_word_count} input words)")
+                                    print(f"    ⚠ Logic mismatch detected for skeleton, skipping this variant")
                                 continue
 
                             all_candidates.append({
-                                "text": candidate,
+                                "text": variant,
                                 "skeleton": skeleton,
                                 "source_example": source_example
                             })
-                    except Exception as e:
-                        if verbose:
-                            print(f"    ✗ Candidate generation failed: {e}")
-                        continue
+                except Exception as e:
+                    if verbose:
+                        print(f"    ✗ Batch generation failed for skeleton: {e}")
+                    continue
 
             if verbose:
                 print(f"  Total candidates generated: {len(all_candidates)}")
 
-            # Phase 3: Composite Evaluation
-            evaluated_candidates = []
-            for candidate_data in all_candidates:
-                try:
-                    evaluation = self._evaluate_template_candidate(
-                        candidate=candidate_data["text"],
+            # Phase 3: The Arena (Batch Evaluation)
+            survivors = self._run_arena(
+                candidates=all_candidates,
+                blueprint=blueprint,
+                style_dna_dict=style_dna_dict,
+                verbose=verbose
+            )
+
+            # Phase 4: Convergence Check
+            best_survivor = survivors[0] if survivors else None
+            if best_survivor and best_survivor.get("score", 0.0) >= convergence_threshold:
+                if verbose:
+                    print(f"  ✓ Perfect match found (score: {best_survivor.get('score', 0.0):.2f} >= {convergence_threshold})")
+                best_text = self._restore_citations_and_quotes(best_survivor["text"], blueprint)
+                return best_text
+
+            # Phase 5: Evolutionary Feedback (if needed)
+            if best_survivor:
+                for generation in range(1, max_generations):
+                    if best_survivor.get("score", 0.0) >= convergence_threshold:
+                        break
+
+                    if verbose:
+                        print(f"  Generation {generation + 1}/{max_generations}: Best score {best_survivor.get('score', 0.0):.2f} < {convergence_threshold}, breeding children...")
+
+                    # Breed children from top parents
+                    top_parents = survivors[:top_k_parents]
+                    children = self._breed_children(
+                        parents=top_parents,
                         blueprint=blueprint,
-                        skeleton=candidate_data["skeleton"],
-                        style_dna=style_dna_dict
+                        author_name=author_name,
+                        style_dna=style_dna,
+                        rhetorical_type=rhetorical_type,
+                        style_lexicon=style_lexicon,
+                        num_children=breeding_children,
+                        verbose=verbose
                     )
 
-                    # Check if this is a rescue candidate (high adherence but low semantic)
-                    needs_repair = False
-                    if evaluation.get("adherence_score", 0.0) > 0.9 and evaluation.get("semantic_score", 0.0) < 0.6:
-                        needs_repair = True
+                    if not children:
                         if verbose:
-                            print(f"    ⚠ Rescue candidate detected (Adherence: {evaluation.get('adherence_score', 0.0):.2f}, Semantic: {evaluation.get('semantic_score', 0.0):.2f}) - marking for repair")
+                            print(f"    ⚠ No children generated, stopping evolution")
+                        break
 
-                    evaluated_candidates.append({
-                        "text": candidate_data["text"],
-                        "skeleton": candidate_data["skeleton"],
-                        "source_example": candidate_data["source_example"],
-                        "evaluation": evaluation,
-                        "needs_repair": needs_repair
-                    })
+                    # Evaluate children in arena
+                    child_candidates = [{
+                        "text": c,
+                        "skeleton": best_survivor["skeleton"],
+                        "source_example": best_survivor.get("source_example", "")
+                    } for c in children]
+                    child_survivors = self._run_arena(
+                        candidates=child_candidates,
+                        blueprint=blueprint,
+                        style_dna_dict=style_dna_dict,
+                        verbose=verbose
+                    )
 
-                    if verbose:
-                        eval_data = evaluation
-                        print(f"  Candidate: {candidate_data['text'][:60]}...")
-                        print(f"    Semantic: {eval_data['semantic_score']:.2f}, "
-                              f"Adherence: {eval_data['adherence_score']:.2f}, "
-                              f"Style: {eval_data['style_density']:.2f}, "
-                              f"Composite: {eval_data['composite_score']:.2f}, "
-                              f"Passed: {eval_data['passed_gates']}")
-                except Exception as e:
-                    if verbose:
-                        print(f"  ✗ Evaluation failed for candidate: {e}")
-                    continue
+                    # Update survivors (keep best from parents + children)
+                    all_survivors = survivors + child_survivors
+                    all_survivors.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+                    survivors = all_survivors[:top_k_parents]
+                    best_survivor = survivors[0] if survivors else None
 
-            # Phase 4: Selection
-            # Filter candidates that passed hard gates OR are rescue candidates
-            passed_candidates = [c for c in evaluated_candidates if c["evaluation"]["passed_gates"]]
-            rescue_candidates = [c for c in evaluated_candidates if c.get("needs_repair", False) and not c["evaluation"]["passed_gates"]]
+                    if not best_survivor:
+                        break
 
-            if passed_candidates:
-                # Sort by composite score (descending)
-                passed_candidates.sort(key=lambda x: x["evaluation"]["composite_score"], reverse=True)
-                best_candidate = passed_candidates[0]
-
+            # Final selection: Return best survivor or fallback
+            if best_survivor:
                 if verbose:
-                    print(f"  ✓ Best candidate selected (composite score: {best_candidate['evaluation']['composite_score']:.2f})")
-                    print(f"    Top 3 candidates:")
-                    for i, cand in enumerate(passed_candidates[:3]):
-                        print(f"      {i+1}. Score: {cand['evaluation']['composite_score']:.2f} - {cand['text'][:60]}...")
-
-                # Restore citations and quotes
-                best_text = self._restore_citations_and_quotes(best_candidate["text"], blueprint)
+                    print(f"  ✓ Final selection: Best survivor (score: {best_survivor.get('score', 0.0):.2f})")
+                best_text = self._restore_citations_and_quotes(best_survivor["text"], blueprint)
                 return best_text
-            elif rescue_candidates:
-                # Select best rescue candidate (highest adherence score)
-                rescue_candidates.sort(key=lambda x: x["evaluation"].get("adherence_score", 0.0), reverse=True)
-                best_rescue = rescue_candidates[0]
 
-                if verbose:
-                    print(f"  ⚠ No passed candidates, but found {len(rescue_candidates)} rescue candidate(s)")
-                    print(f"    Selected rescue candidate (Adherence: {best_rescue['evaluation'].get('adherence_score', 0.0):.2f}, Semantic: {best_rescue['evaluation'].get('semantic_score', 0.0):.2f})")
-                    print(f"    Text: {best_rescue['text'][:80]}...")
-                    print(f"    → Passing to evolution loop with semantic injection priority")
-
-                # Restore citations and quotes
-                rescue_text = self._restore_citations_and_quotes(best_rescue["text"], blueprint)
-
-                # Pass to evolution loop with semantic injection priority
-                # Evaluate the rescue candidate to get initial score
-                critic = SemanticCritic(config_path=self.config_path)
-                initial_result = critic.evaluate(rescue_text, blueprint, skeleton=best_rescue["skeleton"])
-                initial_score = initial_result.get("score", 0.0)
-                initial_feedback = initial_result.get("feedback", "")
-
-                # Evolve with semantic injection priority
-                evolved_text, evolved_score = self._evolve_text(
-                    initial_draft=rescue_text,
-                    blueprint=blueprint,
-                    author_name=author_name,
-                    style_dna=style_dna,
-                    rhetorical_type=rhetorical_type,
-                    initial_score=initial_score,
-                    initial_feedback=initial_feedback,
-                    critic=critic,
-                    verbose=verbose,
-                    style_dna_dict=style_dna_dict,
-                    examples=examples,
-                    force_semantic_injection=True  # Flag to prioritize semantic injection
-                )
-
-                return evolved_text
-            else:
-                if verbose:
-                    print(f"  ✗ All candidates failed hard gates, falling back to standard generation")
+        # Fallback: Standard generation if evolutionary architecture fails
+        if verbose:
+            print(f"  Falling back to standard generation")
 
         # Step 2: Standard generation (fallback if structural cloning fails or not applicable)
         # Style-Infused Fallback: Ensure we use style DNA even in fallback
@@ -1402,6 +2083,10 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         initial_eval = self.soft_scorer.evaluate_with_raw_score(best_draft, blueprint, style_lexicon=style_lexicon)
         best_raw_score = initial_eval.get("raw_score", best_score)
 
+        # Track logic failures in evolution loop (Initialize OUTSIDE loop)
+        logic_failure_count = 0
+        max_logic_failures = 3
+
         # Evolution loop
         for gen in range(max_generations):
             # Check if we've reached acceptance criteria (using Fluency Forgiveness)
@@ -1434,6 +2119,26 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                         print(f"    Forcing semantic injection for rescue candidate repair")
                 else:
                     operator_type = self._diagnose_draft(best_draft, blueprint, critic)
+
+                    # Check if we're stuck in logic failure loop
+                    # Evaluate current best draft to check for logic failure
+                    current_result = critic.evaluate(best_draft, blueprint, allowed_style_words=style_lexicon)
+                    if current_result.get("logic_fail", False):
+                        logic_failure_count += 1
+                        if logic_failure_count >= max_logic_failures:
+                            # CRITICAL: Force semantic injection to repair logic by re-inserting
+                            # missing causal words that restore original relationship
+                            operator_type = OP_SEMANTIC_INJECTION
+                            if verbose:
+                                print(f"    Forcing logic repair after {logic_failure_count} consecutive failures")
+                            # Note: Counter resets only when logic_fail becomes False (see below)
+                    else:
+                        # Reset counter only when logic failure is resolved
+                        if logic_failure_count > 0:
+                            if verbose:
+                                print(f"    Logic failure resolved, resetting counter")
+                            logic_failure_count = 0
+
                 # Use dynamic style if style lexicon is available and we're doing style polish
                 if style_lexicon and operator_type == OP_STYLE_POLISH:
                     operator_type = OP_DYNAMIC_STYLE  # Use OP_DYNAMIC_STYLE when style DNA is available
@@ -1705,12 +2410,16 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         result = critic.evaluate(draft, blueprint)
         recall = result.get("recall_score", 0.0)
         fluency = result.get("fluency_score", 1.0)  # Default to 1.0 if not present (fluency checks removed)
+        logic_fail = result.get("logic_fail", False)
 
         # Diagnosis logic:
+        # - If logic failure: Force semantic injection to fix meaning
         # - If recall < 1.0: Missing keywords → Semantic Injection
         # - Elif fluency < 0.8: Grammar issues → Grammar Repair (only if fluency_score available)
         # - Else: Style needs enhancement → Style Polish
-        if recall < 1.0:
+        if logic_fail:
+            return OP_SEMANTIC_INJECTION  # Force semantic injection to fix logic
+        elif recall < 1.0:
             return OP_SEMANTIC_INJECTION
         elif fluency is not None and fluency < 0.8:
             return OP_GRAMMAR_REPAIR
@@ -1867,4 +2576,138 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         # This is intentional - quotes cannot be automatically restored.
 
         return generated
+
+    def translate_paragraph(
+        self,
+        paragraph: str,
+        atlas,
+        author_name: str,
+        style_dna: Optional[Dict] = None,
+        verbose: bool = False
+    ) -> str:
+        """Translate a paragraph holistically using paragraph fusion.
+
+        Extracts atomic propositions from the paragraph, retrieves complex style examples,
+        and generates a single cohesive paragraph that combines all propositions in the
+        target author's style.
+
+        Args:
+            paragraph: Input paragraph text (multiple sentences).
+            atlas: StyleAtlas instance for retrieving examples.
+            author_name: Target author name.
+            style_dna: Optional pre-extracted style DNA dictionary.
+            verbose: Whether to print debug information.
+
+        Returns:
+            Generated paragraph in target style.
+        """
+        if not paragraph or not paragraph.strip():
+            return paragraph
+
+        # Step 1: Extract atomic propositions
+        if verbose:
+            print(f"  Extracting atomic propositions from paragraph...")
+        propositions = self.proposition_extractor.extract_atomic_propositions(paragraph)
+        if verbose:
+            print(f"  Extracted {len(propositions)} propositions: {propositions[:3]}...")
+
+        if not propositions:
+            # Fallback: use original paragraph
+            return paragraph
+
+        # Step 2: Retrieve complex/long style examples
+        # For paragraph fusion, we want LONG examples (ignore length mismatch filters)
+        complexity_min_length = self.paragraph_fusion_config.get("complexity_filter_min_length", 50)
+        num_examples = self.paragraph_fusion_config.get("num_style_examples", 5)
+
+        if verbose:
+            print(f"  Retrieving {num_examples} complex style examples (min length: {complexity_min_length} chars)...")
+
+        # Get examples using existing method (will use 4-tier fallback)
+        from src.atlas.rhetoric import RhetoricalType, RhetoricalClassifier
+        classifier = RhetoricalClassifier()
+        rhetorical_type = classifier.classify_heuristic(paragraph)
+
+        # Retrieve examples (get more than needed to filter by complexity)
+        raw_examples = atlas.get_examples_by_rhetoric(
+            rhetorical_type,
+            top_k=num_examples * 3,  # Get more to filter
+            author_name=author_name,
+            query_text=paragraph
+        )
+
+        if not raw_examples:
+            # Fallback: try any examples from author
+            raw_examples = atlas.get_examples_by_rhetoric(
+                RhetoricalType.OBSERVATION,
+                top_k=num_examples * 3,
+                author_name=author_name,
+                query_text=paragraph
+            )
+
+        # Filter by complexity (length) - we want LONG examples
+        complex_examples = []
+        for ex in raw_examples:
+            if len(ex) >= complexity_min_length:
+                complex_examples.append(ex)
+            if len(complex_examples) >= num_examples:
+                break
+
+        # If we don't have enough complex examples, use what we have
+        if not complex_examples:
+            complex_examples = raw_examples[:num_examples] if raw_examples else []
+
+        if verbose:
+            print(f"  Retrieved {len(complex_examples)} complex examples")
+
+        # Step 3: Extract style DNA if not provided
+        if not style_dna:
+            from src.analyzer.style_extractor import StyleExtractor
+            style_extractor = StyleExtractor(config_path=self.config_path)
+            style_dna = style_extractor.extract_style_dna(complex_examples)
+            if verbose:
+                print(f"  Extracted style DNA: {style_dna.get('tone', 'Unknown')} tone")
+
+        # Step 4: Format and call LLM with PARAGRAPH_FUSION_PROMPT
+        propositions_list = "\n".join([f"- {prop}" for prop in propositions])
+        style_examples_text = "\n\n".join([f"Example {i+1}: \"{ex}\"" for i, ex in enumerate(complex_examples[:3])])
+
+        prompt = PARAGRAPH_FUSION_PROMPT.format(
+            propositions_list=propositions_list,
+            style_examples=style_examples_text
+        )
+
+        if verbose:
+            print(f"  Generating paragraph fusion with {len(propositions)} propositions...")
+
+        try:
+            response = self.llm_provider.call(
+                system_prompt="You are a ghostwriter creating paragraphs in a specific style. Output ONLY valid JSON arrays.",
+                user_prompt=prompt,
+                model_type="editor",
+                require_json=True,
+                temperature=0.7,  # Moderate temperature for style variation
+                max_tokens=self.translator_config.get("max_tokens", 500)
+            )
+
+            # Parse JSON response
+            variations = self._extract_json_list(response)
+            num_variations = self.paragraph_fusion_config.get("num_variations", 5)
+            variations = variations[:num_variations]
+
+            if not variations:
+                if verbose:
+                    print(f"  ⚠ No variations generated, using fallback")
+                return paragraph  # Fallback to original
+
+            # Step 5: Return first variation (evaluation will be done by critic)
+            # TODO: In future, evaluate all variations and return best
+            if verbose:
+                print(f"  Generated {len(variations)} variations, using first")
+            return variations[0]
+
+        except Exception as e:
+            if verbose:
+                print(f"  ✗ Paragraph fusion failed: {e}, using fallback")
+            return paragraph  # Fallback to original
 

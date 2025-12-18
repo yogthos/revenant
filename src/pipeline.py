@@ -19,6 +19,7 @@ from src.validator.semantic_critic import SemanticCritic
 from src.atlas.builder import StyleAtlas, load_atlas
 from src.atlas.style_registry import StyleRegistry
 from src.analyzer.style_extractor import StyleExtractor
+from src.analysis.semantic_analyzer import PropositionExtractor
 
 
 def _split_into_paragraphs(text: str) -> List[str]:
@@ -142,6 +143,7 @@ def process_text(
     translator = StyleTranslator(config_path=config_path)
     critic = SemanticCritic(config_path=config_path)
     style_extractor = StyleExtractor(config_path=config_path)
+    proposition_extractor = PropositionExtractor(config_path=config_path)
 
     # Split into paragraphs first
     paragraphs = _split_into_paragraphs(input_text)
@@ -182,6 +184,78 @@ def process_text(
             previous_paragraph_id = para_idx
             if verbose:
                 print(f"  Context reset (new paragraph)")
+
+        # Check if this is a multi-sentence paragraph (use paragraph fusion)
+        is_multi_sentence = len(sentences) > 1
+        min_sentences_for_fusion = 2
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+            paragraph_fusion_config = config.get("paragraph_fusion", {})
+            if paragraph_fusion_config.get("enabled", True):
+                min_sentences_for_fusion = paragraph_fusion_config.get("min_sentences_for_fusion", 2)
+        except Exception:
+            pass
+
+        # Use paragraph fusion if enabled and paragraph has multiple sentences
+        if is_multi_sentence and len(sentences) >= min_sentences_for_fusion:
+            if verbose:
+                print(f"  Using paragraph fusion mode ({len(sentences)} sentences)")
+
+            # Extract style DNA from examples
+            style_dna_dict = None
+            try:
+                # Get examples for style extraction
+                examples = atlas.get_examples_by_rhetoric(
+                    RhetoricalType.OBSERVATION,
+                    top_k=5,
+                    author_name=author_name,
+                    query_text=paragraph
+                )
+                if examples:
+                    style_dna_dict = style_extractor.extract_style_dna(examples)
+            except Exception:
+                pass
+
+            # Translate paragraph holistically
+            try:
+                generated_paragraph = translator.translate_paragraph(
+                    paragraph,
+                    atlas,
+                    author_name,
+                    style_dna=style_dna_dict,
+                    verbose=verbose
+                )
+
+                # Evaluate with paragraph mode
+                propositions = proposition_extractor.extract_atomic_propositions(paragraph)
+                critic_result = critic.evaluate(
+                    generated_paragraph,
+                    extractor.extract(paragraph),
+                    propositions=propositions,
+                    is_paragraph=True,
+                    author_style_vector=None  # TODO: Get from atlas if available
+                )
+
+                if verbose:
+                    print(f"  Paragraph fusion result: pass={critic_result.get('pass', False)}, "
+                          f"score={critic_result.get('score', 0.0):.2f}, "
+                          f"proposition_recall={critic_result.get('proposition_recall', 0.0):.2f}")
+
+                # Use generated paragraph if it passes, otherwise fall back to sentence-by-sentence
+                if critic_result.get('pass', False):
+                    generated_paragraphs.append(generated_paragraph)
+                    if write_callback:
+                        write_callback(generated_paragraph, is_new_paragraph=(para_idx == 0))
+                    continue  # Skip sentence-by-sentence processing
+                else:
+                    if verbose:
+                        print(f"  Paragraph fusion failed, falling back to sentence-by-sentence")
+                    # Fall through to sentence-by-sentence processing
+            except Exception as e:
+                if verbose:
+                    print(f"  Paragraph fusion error: {e}, falling back to sentence-by-sentence")
+                # Fall through to sentence-by-sentence processing
 
         generated_sentences = []
 
@@ -248,9 +322,10 @@ def process_text(
 
             # Step 3: Retrieve examples (exclude previously used ones)
             # Pass sentence as query_text for length window filtering
+            # Fetch 15 examples to provide wide net for filtering
             examples = atlas.get_examples_by_rhetoric(
                 rhetorical_type,
-                top_k=3,
+                top_k=15,
                 author_name=author_name,
                 exclude=list(used_examples),
                 query_text=sentence
@@ -259,7 +334,7 @@ def process_text(
                 # Fallback to any examples from same author
                 examples = atlas.get_examples_by_rhetoric(
                     RhetoricalType.OBSERVATION,
-                    top_k=3,
+                    top_k=15,
                     author_name=author_name,
                     exclude=list(used_examples),
                     query_text=sentence
