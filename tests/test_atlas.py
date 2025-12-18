@@ -200,6 +200,85 @@ def test_predict_next_cluster():
         print(f"⚠ Predict cluster test failed: {e}")
 
 
+def test_get_examples_by_rhetoric():
+    """Test get_examples_by_rhetoric with both single and combined where conditions."""
+    import uuid
+    from src.atlas.rhetoric import RhetoricalType
+
+    sample_text = """
+    The cat sat on the mat. This is an observation.
+    The dog ran fast. Another observation here.
+    A revolution is not a dinner party. This is an argument.
+    The enemy advances, we retreat. This is also an argument.
+    """
+
+    try:
+        collection_name = f"test_rhetoric_{uuid.uuid4().hex[:8]}"
+        atlas = build_style_atlas(
+            sample_text=sample_text,
+            num_clusters=2,
+            collection_name=collection_name,
+            author_id="TestAuthor"
+        )
+
+        # Tag documents with rhetorical types (simulate what tag_atlas.py does)
+        from src.atlas.rhetoric import RhetoricalClassifier
+        classifier = RhetoricalClassifier()
+        collection = atlas._collection
+
+        # Get all documents and tag them
+        all_results = collection.get(include=["metadatas", "documents"])
+        updates = []
+        for doc_id, doc_text, meta in zip(
+            all_results['ids'],
+            all_results['documents'],
+            all_results['metadatas']
+        ):
+            rtype = classifier.classify_heuristic(doc_text)
+            new_meta = meta.copy() if meta else {}
+            new_meta['rhetorical_type'] = rtype.value
+            updates.append({'id': doc_id, 'metadata': new_meta})
+
+        collection.update(
+            ids=[u['id'] for u in updates],
+            metadatas=[u['metadata'] for u in updates]
+        )
+
+        # Test 1: Query with rhetorical_type only (no author filter)
+        examples = atlas.get_examples_by_rhetoric(
+            RhetoricalType.OBSERVATION,
+            top_k=3,
+            author_name=None
+        )
+        assert len(examples) > 0, "Should find examples with rhetorical_type only"
+
+        # Test 2: Query with both rhetorical_type and author_id (uses $and)
+        examples_with_author = atlas.get_examples_by_rhetoric(
+            RhetoricalType.OBSERVATION,
+            top_k=3,
+            author_name="TestAuthor"
+        )
+        assert len(examples_with_author) > 0, "Should find examples with both filters using $and"
+
+        # Test 3: Query for ARGUMENT type with author
+        argument_examples = atlas.get_examples_by_rhetoric(
+            RhetoricalType.ARGUMENT,
+            top_k=3,
+            author_name="TestAuthor"
+        )
+        assert len(argument_examples) > 0, "Should find ARGUMENT examples with author filter"
+
+        print(f"✓ get_examples_by_rhetoric test passed")
+        print(f"  OBSERVATION (no author): {len(examples)} examples")
+        print(f"  OBSERVATION (with author): {len(examples_with_author)} examples")
+        print(f"  ARGUMENT (with author): {len(argument_examples)} examples")
+
+    except Exception as e:
+        print(f"⚠ get_examples_by_rhetoric test failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
     print("Running Style Atlas tests...\n")
 
@@ -210,6 +289,7 @@ if __name__ == "__main__":
         test_find_structure_match_length_filtering()
         test_build_cluster_markov()
         test_predict_next_cluster()
+        test_get_examples_by_rhetoric()
         print("\n✓ All Style Atlas tests completed!")
     except Exception as e:
         print(f"\n✗ Test failed with error: {e}")

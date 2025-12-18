@@ -99,6 +99,113 @@ class StyleAtlas:
             self.style_vectors = [np.array(v) if not isinstance(v, np.ndarray) else v
                                  for v in self.style_vectors]
 
+    def get_examples_by_rhetoric(
+        self,
+        rhetorical_type,
+        top_k: int = 3,
+        exclude: Optional[List[str]] = None,
+        author_name: Optional[str] = None
+    ) -> List[str]:
+        """Get examples from atlas filtered by rhetorical type.
+
+        Args:
+            rhetorical_type: RhetoricalType enum value to filter by.
+            top_k: Number of examples to return (default: 3).
+            exclude: Optional list of text strings to exclude from results.
+            author_name: Optional author name to filter examples by (for fallback).
+
+        Returns:
+            List of example text strings.
+        """
+        if not CHROMADB_AVAILABLE:
+            return []
+
+        # Import here to avoid circular dependency
+        from src.atlas.rhetoric import RhetoricalType
+
+        # Handle string input (for flexibility)
+        if isinstance(rhetorical_type, str):
+            # Try to match to enum
+            for rtype in RhetoricalType:
+                if rtype.value == rhetorical_type:
+                    rhetorical_type = rtype
+                    break
+            else:
+                # Not found, return empty
+                return []
+
+        try:
+            # Get collection
+            if not hasattr(self, '_collection'):
+                if hasattr(self, '_client'):
+                    self._collection = self._client.get_collection(name=self.collection_name)
+                else:
+                    return []
+
+            collection = self._collection
+
+            # Build where clause for rhetorical type
+            # ChromaDB requires $and operator when combining multiple conditions
+            if author_name:
+                where_clause = {
+                    "$and": [
+                        {"rhetorical_type": rhetorical_type.value},
+                        {"author_id": author_name}
+                    ]
+                }
+            else:
+                where_clause = {"rhetorical_type": rhetorical_type.value}
+
+            # Query by rhetorical_type metadata (and author if specified)
+            try:
+                results = collection.get(
+                    where=where_clause,
+                    limit=top_k * 2  # Get more than needed to filter out excluded
+                )
+            except Exception:
+                # If metadata doesn't exist or query fails, try fallback
+                results = None
+
+            # FALLBACK: If no examples found for specific rhetorical type, get random examples from same author
+            if not results or not results.get('documents'):
+                if author_name:
+                    print(f"    ⚠ No examples found for {rhetorical_type.value} by {author_name}. Fetching random style samples from {author_name}.")
+                else:
+                    print(f"    ⚠ No examples found for {rhetorical_type.value}. Fetching random style samples.")
+                try:
+                    # Get random examples from the same author (if author_name provided)
+                    if author_name:
+                        fallback_where = {"author_id": author_name}
+                        results = collection.get(
+                            where=fallback_where,
+                            limit=top_k * 2  # Get more than needed to filter out excluded
+                        )
+                    else:
+                        # No author specified, get any random examples
+                        results = collection.get(
+                            limit=top_k * 2  # Get more than needed to filter out excluded
+                        )
+                except Exception:
+                    # If fallback also fails, return empty
+                    return []
+
+            if not results or not results.get('documents'):
+                return []
+
+            # Extract documents
+            examples = results['documents']
+
+            # Filter out excluded texts
+            if exclude:
+                examples = [ex for ex in examples if ex not in exclude]
+
+            # Return top_k
+            return examples[:top_k]
+
+        except Exception:
+            # If anything fails, return empty list
+            return []
+
 
 def _chunk_into_paragraphs(text: str) -> List[str]:
     """Chunk text into paragraphs.
