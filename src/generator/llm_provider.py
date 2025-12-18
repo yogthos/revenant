@@ -1,7 +1,7 @@
 """Unified LLM provider interface for all supported providers.
 
 This module provides a consistent API for interacting with different LLM providers
-(DeepSeek, Ollama, GLM) through a single class interface.
+(DeepSeek, Ollama, GLM, Gemini) through a single class interface.
 """
 
 import json
@@ -10,7 +10,7 @@ from typing import Dict, Optional
 
 
 class LLMProvider:
-    """Unified interface for LLM providers (DeepSeek, Ollama, GLM)."""
+    """Unified interface for LLM providers (DeepSeek, Ollama, GLM, Gemini)."""
 
     def __init__(self, config_path: str = "config.json", provider: Optional[str] = None):
         """Initialize LLM provider from config.
@@ -69,6 +69,25 @@ class LLMProvider:
                     "GLM API URL not found in config. Please set 'glm.api_url' in config.json"
                 )
 
+        elif self.provider == "gemini":
+            gemini_config = self.config.get("gemini", {})
+            self.api_key = gemini_config.get("api_key", "").strip() if gemini_config.get("api_key") else ""
+            self.api_url = gemini_config.get("api_url", "").strip() if gemini_config.get("api_url") else ""
+            self.editor_model = gemini_config.get("editor_model", "gemini-3-flash-preview")
+            self.critic_model = gemini_config.get("critic_model", self.editor_model)
+            self.thinking_level = gemini_config.get("thinkingLevel", "MEDIUM")
+            self.include_thoughts = gemini_config.get("includeThoughts", False)
+
+            if not self.api_key:
+                raise ValueError(
+                    "Gemini API key not found in config. Please set 'gemini.api_key' in config.json. "
+                    "Get your API key at https://aistudio.google.com/app/apikey"
+                )
+            if not self.api_url:
+                raise ValueError(
+                    "Gemini API URL not found in config. Please set 'gemini.api_url' in config.json"
+                )
+
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
 
@@ -79,7 +98,8 @@ class LLMProvider:
         model_type: str = "editor",
         require_json: bool = False,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None
     ) -> str:
         """Call LLM API with unified interface.
 
@@ -90,6 +110,7 @@ class LLMProvider:
             require_json: If True, request JSON format (for critic). If False, plain text.
             temperature: Optional temperature override. Default: provider-specific.
             max_tokens: Optional max_tokens override. Default: provider-specific.
+            top_p: Optional top_p override. Default: provider-specific.
 
         Returns:
             LLM response text.
@@ -98,15 +119,19 @@ class LLMProvider:
 
         if self.provider == "deepseek":
             return self._call_deepseek_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
             )
         elif self.provider == "ollama":
             return self._call_ollama_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
             )
         elif self.provider == "glm":
             return self._call_glm_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
+            )
+        elif self.provider == "gemini":
+            return self._call_gemini_api(
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
             )
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
@@ -118,7 +143,8 @@ class LLMProvider:
         model: str,
         require_json: bool,
         temperature: Optional[float],
-        max_tokens: Optional[int]
+        max_tokens: Optional[int],
+        top_p: Optional[float] = None
     ) -> str:
         """Call DeepSeek API."""
         headers = {
@@ -134,6 +160,9 @@ class LLMProvider:
             ],
             "temperature": temperature if temperature is not None else 0.3,
         }
+
+        if top_p is not None:
+            payload["top_p"] = top_p
 
         # Only add JSON format requirement for critic evaluation
         if require_json:
@@ -168,7 +197,8 @@ class LLMProvider:
         model: str,
         require_json: bool,
         temperature: Optional[float],
-        max_tokens: Optional[int]
+        max_tokens: Optional[int],
+        top_p: Optional[float] = None
     ) -> str:
         """Call Ollama API."""
         # Ollama uses /api/chat endpoint
@@ -193,12 +223,14 @@ class LLMProvider:
             "keep_alive": self.keep_alive
         }
 
-        # Add options for temperature and max tokens
+        # Add options for temperature, max tokens, and top_p
         options = {}
         if temperature is not None:
             options["temperature"] = temperature
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        if top_p is not None:
+            options["top_p"] = top_p
         if require_json:
             data["format"] = "json"  # Request JSON format for Ollama
         if options:
@@ -236,7 +268,8 @@ class LLMProvider:
         model: str,
         require_json: bool,
         temperature: Optional[float],
-        max_tokens: Optional[int]
+        max_tokens: Optional[int],
+        top_p: Optional[float] = None
     ) -> str:
         """Call GLM (Zhipu AI) API."""
         headers = {
@@ -252,6 +285,9 @@ class LLMProvider:
             ],
             "temperature": temperature if temperature is not None else 0.3,
         }
+
+        if top_p is not None:
+            payload["top_p"] = top_p
 
         # Only add JSON format requirement for critic evaluation
         if require_json:
@@ -273,4 +309,112 @@ class LLMProvider:
             raise
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"GLM API request failed: {e}")
+
+    def _call_gemini_api(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        model: str,
+        require_json: bool,
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+        top_p: Optional[float] = None
+    ) -> str:
+        """Call Google Gemini API."""
+        # Construct full URL with API key
+        # API URL format: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}
+        # Note: Model is embedded in the URL path, so we use the URL from config as-is
+        # If model parameter differs from URL, we could substitute it, but for now we use URL as-is
+        if "?key=" in self.api_url:
+            # URL already has ?key=, just append the key
+            api_url = self.api_url + self.api_key
+        elif "key=" in self.api_url:
+            # URL already has key parameter (maybe with value), replace it
+            import re
+            api_url = re.sub(r'key=[^&]*', f'key={self.api_key}', self.api_url)
+        else:
+            # URL doesn't have key parameter, add it
+            separator = "&" if "?" in self.api_url else "?"
+            api_url = f"{self.api_url}{separator}key={self.api_key}"
+
+        # Combine system and user prompts for Gemini (Gemini doesn't have separate system/user roles in the same way)
+        # Gemini uses a single "contents" array, but we can put system prompt as first message
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}" if system_prompt else user_prompt
+
+        payload = {
+            "contents": [{
+                "parts": [{"text": combined_prompt}]
+            }],
+            "generationConfig": {
+                "temperature": temperature if temperature is not None else 0.3,
+            }
+        }
+
+        if top_p is not None:
+            payload["generationConfig"]["top_p"] = top_p
+
+        # Add thinking config if available
+        if hasattr(self, 'thinking_level') and hasattr(self, 'include_thoughts'):
+            payload["generationConfig"]["thinkingConfig"] = {
+                "includeThoughts": self.include_thoughts,
+                "thinkingLevel": self.thinking_level
+            }
+
+        # Add max_tokens if provided (Gemini uses maxOutputTokens)
+        if max_tokens is not None:
+            payload["generationConfig"]["maxOutputTokens"] = max_tokens
+
+        # For JSON format requests (critic), add format instruction
+        if require_json:
+            # Gemini doesn't have a direct JSON mode, so we add instruction to prompt
+            payload["contents"][0]["parts"][0]["text"] = combined_prompt + "\n\nIMPORTANT: You must respond with valid JSON only. No additional text or explanation."
+
+        headers = {
+            "Content-Type": "application/json"
+        }
+
+        try:
+            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+
+            result = response.json()
+
+            # Extract text from Gemini response structure
+            # Response format: candidates[0].content.parts[0].text
+            if "candidates" in result and len(result["candidates"]) > 0:
+                candidate = result["candidates"][0]
+
+                # Check for finish reason (might indicate error)
+                finish_reason = candidate.get("finishReason", "")
+                if finish_reason and finish_reason != "STOP":
+                    # Handle non-STOP finish reasons (e.g., MAX_TOKENS, SAFETY)
+                    if finish_reason == "MAX_TOKENS":
+                        print(f"    ⚠ Warning: Gemini response truncated (MAX_TOKENS). Consider increasing max_tokens.")
+                    elif finish_reason == "SAFETY":
+                        raise RuntimeError(f"Gemini API blocked content due to safety filters. Finish reason: {finish_reason}")
+                    elif finish_reason == "RECITATION":
+                        raise RuntimeError(f"Gemini API blocked content due to recitation detection. Finish reason: {finish_reason}")
+                    else:
+                        print(f"    ⚠ Warning: Gemini finish reason: {finish_reason}")
+
+                if "content" in candidate and "parts" in candidate["content"]:
+                    if len(candidate["content"]["parts"]) > 0:
+                        text = candidate["content"]["parts"][0].get("text", "")
+                        if text:
+                            return text.strip()
+                        else:
+                            raise RuntimeError(f"Gemini API returned empty text. Finish reason: {finish_reason}")
+
+            # Fallback: try to find text anywhere in response
+            raise RuntimeError(f"Gemini API response format unexpected. Response: {result}")
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 400:
+                error_detail = e.response.text
+                raise RuntimeError(f"Gemini API 400 Bad Request: {error_detail}. Check model name '{model}' and request format.")
+            elif e.response.status_code == 401:
+                raise RuntimeError(f"Gemini API 401 Unauthorized: Invalid API key. Check 'gemini.api_key' in config.json.")
+            raise
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Gemini API request failed: {e}")
 

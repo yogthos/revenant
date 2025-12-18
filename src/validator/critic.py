@@ -432,6 +432,225 @@ def is_grammatically_coherent(text: str) -> bool:
     return True
 
 
+def is_text_complete(text: str) -> bool:
+    """Checks for truncation and mid-sentence artifacts."""
+    if not text: return False
+    text = text.strip()
+
+    # 1. Must end in terminal punctuation
+    if text[-1] not in ".!?\"'":
+        return False
+
+    # 2. Must not end in a cliffhanger word
+    last_word = text.split()[-1].lower().strip(".,!?;:()[]{}'\"")
+    if last_word in ["and", "or", "but", "the", "a", "of", "in", "to", "with"]:
+        return False
+
+    # 3. Check internal consistency
+    # (If a sentence starts but doesn't end properly before the next capital)
+    sentences = re.split(r'[.!?]+\s+', text)
+    for s in sentences[:-1]: # Check all but last
+        if len(s.split()) < 3: continue # Skip short fragments
+        if not s[0].isupper(): return False # Mid-stream break
+
+    return True
+
+
+def check_repetition(text: str, max_bigram_repeats: int = 3, max_sentence_start_repeats: int = 2) -> Optional[Dict[str, any]]:
+    """Check for excessive word repetition in text.
+
+    Args:
+        text: Text to check for repetition.
+        max_bigram_repeats: Maximum allowed bigram repetitions (default: 3).
+        max_sentence_start_repeats: Maximum consecutive sentences starting with same word (default: 2).
+
+    Returns:
+        None if no repetition issues, or failure dict with feedback if repetition detected.
+    """
+    if not text:
+        return None
+
+    words = text.split()
+    sentences = re.split(r'[.!?]+\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    # Check 1: Bigram repetition
+    if len(words) > 5:
+        from collections import Counter
+        bigrams = [f"{words[i].lower()} {words[i+1].lower()}" for i in range(len(words)-1)]
+        bigram_counts = Counter(bigrams)
+        max_bigram_count = max(bigram_counts.values()) if bigram_counts else 0
+        if max_bigram_count > max_bigram_repeats:
+            repeated_bigram = max(bigram_counts.items(), key=lambda x: x[1])[0]
+            return {
+                "pass": False,
+                "feedback": f"CRITICAL: Text contains excessive repetition. The phrase '{repeated_bigram}' appears {max_bigram_count} times. Reduce repetition for natural flow.",
+                "score": 0.0,
+                "primary_failure_type": "structure"
+            }
+
+    # Check 2: Sentence-start repetition (enhanced)
+    if len(sentences) >= 3:
+        first_words = []
+        for sentence in sentences:
+            sentence_words = sentence.split()
+            if sentence_words:
+                first_word = sentence_words[0].lower().strip(".,!?;:()[]{}'\"")
+                # Exclude common sentence starters that are acceptable
+                if first_word not in ["the", "a", "an"]:
+                    first_words.append(first_word)
+
+        # Check if >2 sentences start with the same word (excluding "The", "A")
+        if len(first_words) >= 3:
+            from collections import Counter
+            starter_counts = Counter(first_words)
+            max_starter_count = max(starter_counts.values()) if starter_counts else 0
+            if max_starter_count > 2:
+                repeated_starter = max(starter_counts.items(), key=lambda x: x[1])[0]
+                return {
+                    "pass": False,
+                    "feedback": f"CRITICAL: Text contains repetitive sentence starts. The word '{repeated_starter}' appears at the start of {max_starter_count} sentences. Vary sentence openings for natural flow.",
+                    "score": 0.0,
+                    "primary_failure_type": "structure"
+                }
+
+    return None
+
+
+def check_critical_nouns_coverage(
+    generated_text: str,
+    original_text: str,
+    coverage_threshold: float = 0.9
+) -> Optional[Dict[str, any]]:
+    """Check that generated text preserves critical nouns from original.
+
+    Uses strict noun preservation with 90% threshold. Proper nouns and abstract
+    nouns must be preserved exactly (or via WordNet synonyms).
+
+    Args:
+        generated_text: Generated text to check.
+        original_text: Original input text.
+        coverage_threshold: Minimum noun coverage ratio (default: 0.9).
+
+    Returns:
+        None if coverage is acceptable, or failure dict if too many nouns missing.
+    """
+    if not generated_text or not original_text:
+        return None
+
+    from src.ingestion.semantic import extract_critical_nouns, get_wordnet_synonyms
+
+    original_nouns = extract_critical_nouns(original_text)
+    generated_nouns = extract_critical_nouns(generated_text)
+
+    if not original_nouns:
+        return None  # No nouns to check
+
+    # Build sets of noun lemmas by type
+    original_proper = {noun for noun, ntype in original_nouns if ntype == "PROPER"}
+    original_abstract = {noun for noun, ntype in original_nouns if ntype == "ABSTRACT"}
+    original_all = {noun for noun, _ in original_nouns}
+
+    generated_all = {noun for noun, _ in generated_nouns}
+
+    # Check 1: All proper nouns must be present (100% requirement)
+    missing_proper = []
+    for proper_noun in original_proper:
+        proper_synonyms = get_wordnet_synonyms(proper_noun)
+        if not (proper_synonyms & generated_all):
+            missing_proper.append(proper_noun)
+
+    if missing_proper:
+        return {
+            "pass": False,
+            "feedback": f"CRITICAL: Generated text is missing proper nouns: {', '.join(missing_proper)}. Proper nouns must be preserved exactly.",
+            "score": 0.0,
+            "primary_failure_type": "meaning"
+        }
+
+    # Check 2: Critical abstract nouns must be present
+    critical_abstract = {"experience", "finitude", "paradox", "universe", "cosmos", "information", "structure", "hierarchy"}
+    missing_critical = []
+    for abstract_noun in original_abstract:
+        if abstract_noun in critical_abstract:
+            abstract_synonyms = get_wordnet_synonyms(abstract_noun)
+            if not (abstract_synonyms & generated_all):
+                missing_critical.append(abstract_noun)
+
+    if missing_critical:
+        return {
+            "pass": False,
+            "feedback": f"CRITICAL: Generated text is missing critical abstract nouns: {', '.join(missing_critical)}. These concepts must be preserved.",
+            "score": 0.0,
+            "primary_failure_type": "meaning"
+        }
+
+    # Check 3: Overall noun coverage (90% threshold)
+    covered_nouns = set()
+    for orig_noun, _ in original_nouns:
+        orig_synonyms = get_wordnet_synonyms(orig_noun)
+        if orig_synonyms & generated_all:
+            covered_nouns.add(orig_noun)
+
+    coverage_ratio = len(covered_nouns) / len(original_nouns) if original_nouns else 1.0
+
+    if coverage_ratio < coverage_threshold:
+        missing_nouns = original_all - {noun for noun, _ in generated_nouns if noun in original_all}
+        return {
+            "pass": False,
+            "feedback": f"CRITICAL: Generated text is missing critical nouns. Coverage: {coverage_ratio:.1%} (required: {coverage_threshold:.1%}). Missing: {', '.join(list(missing_nouns)[:5])}. Preserve ALL nouns from original text.",
+            "score": 0.0,
+            "primary_failure_type": "meaning"
+        }
+
+    return None
+
+
+def check_keyword_coverage(
+    generated_text: str,
+    original_text: str,
+    coverage_threshold: float = 0.7
+) -> Optional[Dict[str, any]]:
+    """Check that generated text preserves key concepts from original.
+
+    Uses keyword/lemma extraction to verify concept preservation.
+
+    Args:
+        generated_text: Generated text to check.
+        original_text: Original input text.
+        coverage_threshold: Minimum keyword coverage ratio (default: 0.7).
+
+    Returns:
+        None if coverage is acceptable, or failure dict if too many keywords missing.
+    """
+    if not generated_text or not original_text:
+        return None
+
+    from src.ingestion.semantic import extract_keywords
+
+    original_keywords = set(extract_keywords(original_text))
+    generated_keywords = set(extract_keywords(generated_text))
+
+    if not original_keywords:
+        return None  # No keywords to check
+
+    # Calculate coverage: how many original keywords appear in generated
+    covered_keywords = original_keywords & generated_keywords
+    coverage_ratio = len(covered_keywords) / len(original_keywords)
+
+    if coverage_ratio < coverage_threshold:
+        missing_keywords = original_keywords - generated_keywords
+        missing_list = list(missing_keywords)[:10]  # Show up to 10 missing keywords
+        return {
+            "pass": False,
+            "feedback": f"CRITICAL: Generated text is missing key concepts. Coverage: {coverage_ratio:.1%} (required: {coverage_threshold:.1%}). Missing keywords: {', '.join(missing_list)}. Preserve ALL concepts from original text.",
+            "score": 0.0,
+            "primary_failure_type": "meaning"
+        }
+
+    return None
+
+
 def check_semantic_similarity(generated: str, original: str, threshold: float = 0.6) -> bool:
     """Verifies that the generated text vector is close to the original text vector.
 
@@ -1522,6 +1741,10 @@ def generate_with_critic(
         # Phase 2: Critique
         eval_structure = current_structure if current_structure else structure_match
 
+        # Initialize score to ensure it's always set
+        score = 0.0
+        critic_result = None
+
         # HARD GATE 1: Check grammatical coherence (word salad detection)
         # This catches word salad like "The Human View of Discrete Levels Scale..."
         if not is_grammatically_coherent(current_text):
@@ -1533,21 +1756,63 @@ def generate_with_critic(
                 "primary_failure_type": "grammar"
             }
             score = 0.0
-        # HARD GATE 2: Check semantic similarity (meaning preservation)
-        # Lower threshold to 0.5 for style transfer context (style changes can legitimately lower similarity)
-        elif content_unit.original_text and not check_semantic_similarity(current_text, content_unit.original_text, threshold=0.5):
-            print("    ⚠ FAIL: Semantic similarity too low (Meaning lost).")
+        # HARD GATE 1.5: Check text completeness (before repetition check)
+        elif not is_text_complete(current_text):
+            print("    ⚠ FAIL: Text is incomplete (missing terminal punctuation, ends with conjunction, or contains artifacts).")
             critic_result = {
                 "pass": False,
-                "feedback": "CRITICAL: Generated text has lost the original meaning. Preserve all concepts, facts, and information from the original text.",
+                "feedback": "CRITICAL: Generated text is incomplete. The text must end with proper punctuation, not end with a conjunction or preposition, and not contain metadata artifacts. Complete the thought.",
                 "score": 0.0,
-                "primary_failure_type": "meaning"
+                "primary_failure_type": "grammar"
             }
             score = 0.0
-        # HARD GATE 3: Check length before LLM evaluation
+        # HARD GATE 2: Check for repetition (before semantic similarity)
+        elif check_repetition(current_text):
+            repetition_result = check_repetition(current_text)
+            print("    ⚠ FAIL: Text contains excessive repetition.")
+            critic_result = repetition_result
+            score = repetition_result.get("score", 0.0)
+        # HARD GATE 2.25: Check critical nouns coverage (strict noun preservation)
+        elif content_unit.original_text:
+            critical_nouns_result = check_critical_nouns_coverage(
+                current_text,
+                content_unit.original_text,
+                coverage_threshold=0.9
+            )
+            if critical_nouns_result:
+                print("    ⚠ FAIL: Critical nouns coverage too low (nouns missing).")
+                critic_result = critical_nouns_result
+                score = critical_nouns_result.get("score", 0.0)
+            # HARD GATE 2.5: Check keyword coverage (concept verification)
+                keyword_coverage_result = check_keyword_coverage(
+                    current_text,
+                    content_unit.original_text,
+                    coverage_threshold=0.85  # Increased from 0.7 to 0.85 for stricter concept preservation
+                )
+                if keyword_coverage_result:
+                    print("    ⚠ FAIL: Keyword coverage too low (concepts missing).")
+                    critic_result = keyword_coverage_result
+                    score = keyword_coverage_result.get("score", 0.0)
+                # HARD GATE 3: Check semantic similarity (meaning preservation)
+                # Increased threshold from 0.5 to 0.65 for stricter meaning preservation
+                elif not check_semantic_similarity(current_text, content_unit.original_text, threshold=0.65):
+                    print("    ⚠ FAIL: Semantic similarity too low (Meaning lost).")
+                    critic_result = {
+                        "pass": False,
+                        "feedback": "CRITICAL: Generated text has lost the original meaning. Preserve all concepts, facts, and information from the original text.",
+                        "score": 0.0,
+                        "primary_failure_type": "meaning"
+                    }
+                    score = 0.0
+                # If keyword coverage and semantic similarity both pass, continue to LLM evaluation below
+                # (score is already initialized to 0.0, will be set by LLM critic)
+
+        # HARD GATE 4: Check length before LLM evaluation
         # FIX: Length gate now compares generated_text to input_text (content preservation)
         # Not to structure_match (which may be very different in length)
-        else:
+        # Only proceed to LLM evaluation if we haven't already failed a hard gate
+        if critic_result is None:
+            # We passed all hard gates (or there was no original_text to check), proceed to LLM evaluation
             from src.utils import calculate_length_ratio
 
             # Calculate length ratio between structure match and original input (for critic leniency)

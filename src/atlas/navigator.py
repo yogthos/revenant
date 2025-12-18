@@ -59,6 +59,24 @@ def is_valid_structural_template(text: str) -> bool:
     if any(lower_text.startswith(pattern) for pattern in navigation_patterns):
         return False
 
+    # 1. Reject Dialogue Starts (The "Parrot" Triggers)
+    # These patterns cause the generator to copy phrases instead of adapting structure
+    dialogue_patterns = [
+        r'^(And|But|So|Then) [a-z]',  # Sentence starting with conjunction + lowercase (fragment)
+        r'^If you (could|can|see)',
+        r'^Then came',
+        r'^"?[A-Z][a-z]+:',  # Name: Dialogue (e.g., "August:", "John:")
+        r'^Concerning',
+        r'^What (if|about)',
+    ]
+    for pattern in dialogue_patterns:
+        if re.match(pattern, text, re.IGNORECASE):
+            return False
+
+    # 2. Reject Incomplete Sentences (Must end in punctuation)
+    if text.strip() and text.strip()[-1] not in ".!?\"'":
+        return False
+
     # Try to load spaCy (optional)
     nlp = None
     try:
@@ -109,6 +127,43 @@ def is_valid_structural_template(text: str) -> bool:
         # Increased from 5 to 6 to be more strict
         if len(words) < 6:
             return False
+
+    # 6. Repetition Check: Reject templates with high word repetition
+    # Check for low entropy (repetitive phrases like "Therefore, it is. Therefore, we go.")
+    if len(words) > 5:
+        from collections import Counter
+        bigrams = [f"{words[i].lower()} {words[i+1].lower()}" for i in range(len(words)-1)]
+        bigram_counts = Counter(bigrams)
+        # If any bigram appears >3 times in a short text, it's repetitive
+        max_bigram_count = max(bigram_counts.values()) if bigram_counts else 0
+        if max_bigram_count > 3:
+            return False
+
+    # 2. Metadata/Navigation Rejection
+    lower = text.lower()
+    bad_keywords = ["chapter", "section", "part", "index", "bibliography", "return to", "continued on"]
+    if any(k in lower for k in bad_keywords):
+        if len(words) < 12: # Strict on short lines with these words
+            return False
+
+    # 3. "Dotty" Line Rejection (Table of Contents)
+    if text.count('.') > 3 and "..." not in text:
+        return False
+
+    # 7. Completeness Check: Verify Subject + Verb + Object structure (if spaCy available)
+    if nlp:
+        try:
+            doc = nlp(text)
+            # Check for subject and object (in addition to verb check above)
+            has_subject = any(token.dep_ in ["nsubj", "nsubjpass"] for token in doc)
+            has_object = any(token.dep_ in ["dobj", "pobj", "attr"] for token in doc)
+            # For complete sentences, we should have at least subject and verb
+            # Object is optional (intransitive verbs don't need objects)
+            if not has_subject:
+                return False
+        except Exception:
+            # If spaCy processing fails, fall through (already checked verb above)
+            pass
 
     return True
 
@@ -539,6 +594,20 @@ def retrieve_window_match(
         # This triggers fallback to find_structure_match
         if not valid_skeletons:
             return None
+
+        # FILTER: Check for sentence-start repetition in window
+        # If 3 consecutive sentences start with the same word, discard the window
+        if len(valid_skeletons) >= 3:
+            first_words = []
+            for skeleton in valid_skeletons[:3]:
+                skeleton_words = skeleton.split()
+                if skeleton_words:
+                    first_words.append(skeleton_words[0].lower())
+
+            # Check if all 3 start with the same word
+            if len(set(first_words)) == 1:
+                # All sentences start with same word - reject window
+                return None
 
         # The Zipper: Map valid skeletons to input sentences
         # If input has N sentences and window has M valid skeletons, map 1:1 up to min(N, M)

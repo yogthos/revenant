@@ -41,6 +41,14 @@ DO NOT simplify the structure. If the reference has multiple clauses, dashes, or
 
 ---
 
+### REPETITION CONSTRAINTS (CRITICAL)
+- Do NOT use transition words like "therefore", "concerning", "thus", "hence" more than once in the entire output
+- Vary sentence openings - do not start multiple sentences with the same word
+- If the Structural Reference uses a transition word, you may use it ONCE, but do not repeat it
+- Prefer natural sentence flow over repetitive patterns
+
+---
+
 ### LENGTH CONSTRAINT (CRITICAL)
 - Input Word Count: {input_word_count} words
 - Target Output Count: ~{target_word_count} words
@@ -54,9 +62,30 @@ DO NOT simplify the structure. If the reference has multiple clauses, dashes, or
 "{input_text}"
 
 ### TASK
-Rewrite the 'Input Text' using the EXACT rhythm, structure, and punctuation pattern of the 'Structural Reference' and the vocabulary tone of the 'Situational Reference'.
+Rewrite the 'Input Text' using the rhythm, structure, and punctuation pattern of the 'Structural Reference' and the vocabulary tone of the 'Situational Reference'.
 
-STRUCTURE MATCHING REQUIREMENTS (MOST CRITICAL):
+### PRIORITY DIRECTIVES (NON-NEGOTIABLE - IN ORDER)
+1. **PRESERVE MEANING (Top Priority):**
+   - The output MUST contain every fact, concept, and detail from the Input Text
+   - Do not drop information to fit a rhyme or rhythm
+   - If Input contains N distinct facts, output must contain all N facts
+   - Structure should adapt to fit ALL content, not the other way around
+
+2. **ADAPT STRUCTURE (Second Priority):**
+   - Use the **STRUCTURAL REFERENCE** as a blueprint for syntax and punctuation
+   - MIMIC the sentence length, clause arrangement, and punctuation style (e.g., dashes, colons)
+   - **CRITICAL: DO NOT COPY WORDS** - Do not use the actual words from the Structural Reference
+   - Examples of FORBIDDEN copying:
+     * If reference says "If you could see", do NOT use "If you could see" in output
+     * If reference says "Then came", do NOT use "Then came" in output
+     * If reference says "Concerning", do NOT use "Concerning" in output
+   - Use the reference's *shape* (syntax, punctuation, rhythm), not its *content* (words)
+
+3. **VOCABULARY (Third Priority):**
+   - Use the **SITUATIONAL REFERENCE** (if provided) for word choice inspiration
+   - Incorporate characteristic author words from vocabulary list if available
+
+STRUCTURE MATCHING REQUIREMENTS:
 - Match the exact punctuation pattern from the Structural Reference (commas, dashes, semicolons, parentheses, asterisks)
 - Match the clause count and complexity (simple, compound, complex)
 - Match the voice (active vs passive)

@@ -27,6 +27,7 @@ except ImportError:
     Settings = None
 
 from src.analyzer.style_metrics import get_style_vector
+import math
 
 
 def clear_chromadb_collection(
@@ -86,6 +87,9 @@ class StyleAtlas:
 
     author_style_dna: Optional[Dict[str, str]] = None
     """Mapping from author name to Style DNA string."""
+
+    top_vocab: Optional[Dict[str, List[str]]] = None
+    """Mapping from author name to list of top 50 characteristic words."""
 
     def __post_init__(self):
         """Ensure numpy arrays are properly typed."""
@@ -165,6 +169,105 @@ def _chunk_into_windows(sentences: List[str], window_size: int = 3, stride: int 
         })
 
     return windows
+
+
+def extract_characteristic_vocabulary(
+    paragraphs: List[str],
+    author_name: str,
+    top_k: int = 50
+) -> List[str]:
+    """Extract top characteristic words for an author using frequency analysis.
+
+    Extracts nouns, verbs, and adjectives from paragraphs, calculates their
+    frequency, and returns the top_k most characteristic words (lemmas).
+
+    Args:
+        paragraphs: List of paragraph texts from the author.
+        author_name: Name of the author (for logging).
+        top_k: Number of top words to return (default: 50).
+
+    Returns:
+        List of top characteristic words (lemmas, lowercase, no duplicates).
+    """
+    if not paragraphs:
+        return []
+
+    # Try to use spaCy for better lemmatization
+    nlp = None
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+    except (ImportError, OSError):
+        pass  # Fallback to NLTK
+
+    word_frequencies = {}
+    all_text = " ".join(paragraphs)
+
+    if nlp:
+        # Use spaCy for lemmatization
+        try:
+            doc = nlp(all_text)
+            for token in doc:
+                # Extract nouns, verbs, and adjectives (content words)
+                if token.pos_ in ['NOUN', 'VERB', 'ADJ'] and not token.is_stop:
+                    lemma = token.lemma_.lower()
+                    if lemma and len(lemma) > 2:  # Filter very short words
+                        word_frequencies[lemma] = word_frequencies.get(lemma, 0) + 1
+        except Exception:
+            # If spaCy processing fails, fall through to NLTK
+            nlp = None
+
+    if not nlp:
+        # Fallback to NLTK
+        try:
+            from nltk.tokenize import word_tokenize
+            from nltk.tag import pos_tag
+            from nltk.stem import WordNetLemmatizer
+            from nltk.corpus import stopwords
+
+            try:
+                stop_words = set(stopwords.words('english'))
+            except LookupError:
+                import nltk
+                nltk.download('stopwords', quiet=True)
+                stop_words = set(stopwords.words('english'))
+
+            lemmatizer = WordNetLemmatizer()
+            tokens = word_tokenize(all_text.lower())
+            pos_tags = pos_tag(tokens)
+
+            for word, pos in pos_tags:
+                if pos.startswith(('NN', 'VB', 'JJ')):  # Nouns, verbs, adjectives
+                    if word.lower() not in stop_words and len(word) > 2:
+                        # Lemmatize based on POS
+                        if pos.startswith('NN'):
+                            lemma = lemmatizer.lemmatize(word, pos='n')
+                        elif pos.startswith('VB'):
+                            lemma = lemmatizer.lemmatize(word, pos='v')
+                        else:
+                            lemma = lemmatizer.lemmatize(word, pos='a')
+
+                        if lemma and len(lemma) > 2:
+                            word_frequencies[lemma] = word_frequencies.get(lemma, 0) + 1
+        except (ImportError, LookupError):
+            # If NLTK is not available, use simple word frequency
+            words = all_text.lower().split()
+            from collections import Counter
+            word_counts = Counter(words)
+            # Filter out very short words and common stop words
+            stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can'}
+            for word, count in word_counts.items():
+                if word not in stop_words and len(word) > 2:
+                    word_frequencies[word] = count
+
+    # Sort by frequency and return top_k
+    sorted_words = sorted(word_frequencies.items(), key=lambda x: x[1], reverse=True)
+    top_words = [word for word, _ in sorted_words[:top_k]]
+
+    if top_words:
+        print(f"  Extracted {len(top_words)} characteristic words for {author_name}")
+
+    return top_words
 
 
 def build_style_atlas(
@@ -447,6 +550,19 @@ def build_style_atlas(
                 print(f"  ⚠ Warning: Failed to generate Style DNA for {author_id}: {e}")
                 print(f"  Continuing without Style DNA injection.")
 
+    # Extract characteristic vocabulary for the author
+    if author_id:
+        try:
+            print(f"  Extracting characteristic vocabulary for {author_id}...")
+            vocab = extract_characteristic_vocabulary(paragraphs, author_id, top_k=50)
+            if vocab:
+                if atlas.top_vocab is None:
+                    atlas.top_vocab = {}
+                atlas.top_vocab[author_id] = vocab
+        except Exception as e:
+            print(f"  ⚠ Warning: Failed to extract vocabulary for {author_id}: {e}")
+            print(f"  Continuing without vocabulary injection.")
+
     return atlas
 
 
@@ -464,7 +580,8 @@ def save_atlas(atlas: StyleAtlas, filepath: str):
         'cluster_centers': atlas.cluster_centers.tolist(),
         'style_vectors': [v.tolist() for v in atlas.style_vectors],
         'num_clusters': atlas.num_clusters,
-        'author_style_dna': atlas.author_style_dna or {}
+        'author_style_dna': atlas.author_style_dna or {},
+        'top_vocab': atlas.top_vocab or {}
     }
 
     with open(filepath, 'w') as f:
@@ -494,7 +611,8 @@ def load_atlas(
         cluster_centers=np.array(data['cluster_centers']),
         style_vectors=[np.array(v) for v in data['style_vectors']],
         num_clusters=data['num_clusters'],
-        author_style_dna=data.get('author_style_dna', {})
+        author_style_dna=data.get('author_style_dna', {}),
+        top_vocab=data.get('top_vocab', {})
     )
 
     if not CHROMADB_AVAILABLE:

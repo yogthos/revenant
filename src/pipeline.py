@@ -442,8 +442,13 @@ def process_text(
                         )
                     else:
                         # Single-author mode: vocabulary comes from situation matches
-                        # Global vocabulary injection is optional (can be empty)
+                        # ALSO: Extract global vocabulary from atlas if available
                         global_vocab_list = []
+                        if atlas and hasattr(atlas, 'top_vocab') and atlas.top_vocab:
+                            # Get author name from config or blend_authors
+                            author_name = blend_authors[0] if blend_authors else None
+                            if author_name and author_name in atlas.top_vocab:
+                                global_vocab_list = atlas.top_vocab[author_name]
 
                     # Calculate adaptive threshold based on structure match quality
                     # If structure match is very different from input, lower the threshold

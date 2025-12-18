@@ -352,9 +352,18 @@ To authentically write as {self.author_name}, you must adhere to these rules:
 
         # Build constraint instruction based on mode
         if constraint_mode == "STRICT":
-            constraint_instruction = "CRITICAL: You must mimic the Structural Reference's syntax, punctuation, and sentence structure EXACTLY."
+            constraint_instruction = """CRITICAL: Use the Structural Reference as a SYNTAX BLUEPRINT, not a word source.
+    - Match the sentence structure pattern (simple, compound, complex)
+    - Match the punctuation style (commas, dashes, semicolons)
+    - Match the rhythm and pacing
+    - **DO NOT COPY WORDS**: Do not use phrases like "If you could see", "Then came", "Concerning" from the reference
+    - **DO NOT REPEAT**: Avoid using transition words like "therefore", "concerning", "thus" more than once
+    - Adapt the structure to fit ALL content from Input Text
+    - Preserve natural English flow - do not create stilted or unnatural phrasing"""
         elif constraint_mode == "LOOSE":
-            constraint_instruction = "GUIDANCE: Use the Structural Reference as a rhythm guide, but prioritize Meaning. You may expand or contract the structure to fit the content. You may change punctuation if necessary for grammar."
+            constraint_instruction = """GUIDANCE: Prioritize meaning. Use the Structural Reference only for rhythm.
+- Write natural, grammatical English.
+- Do not copy strange punctuation (like ' . ') from the reference."""
         else:  # SAFETY
             constraint_instruction = "INSTRUCTION: Ignore the Structural Reference. Rewrite the input content clearly using the target author's vocabulary and general style. Preserve all meaning."
 
@@ -411,7 +420,7 @@ Observe their specific word choices and tone in this snippet:
         # Build vocabulary block
         vocab_block = ""
         if global_vocab_list and len(global_vocab_list) > 0:
-            sample_size = min(10, len(global_vocab_list))
+            sample_size = min(20, len(global_vocab_list))  # Increased from 10 to 20
             flavor_words = ", ".join(random.sample(global_vocab_list, sample_size))
             vocab_block = f"""### VOCABULARY INSPIRATION
 1. PRIMARY SOURCE: Use words from the 'Situational Reference' above.
@@ -419,6 +428,19 @@ Observe their specific word choices and tone in this snippet:
    [{flavor_words}]
 
 """
+
+        # Add author format instruction
+        author_format_instruction = ""
+        if self.author_name:
+            # Determine format based on author (Mao = speech/essay, Hemingway = narrative, etc.)
+            author_lower = self.author_name.lower()
+            if "mao" in author_lower:
+                author_format_instruction = "\n\n### AUTHOR FORMAT\nRewrite this as if it were a speech or essay by the target author. The style should be didactic and authoritative, suitable for political or philosophical discourse."
+            # Add more author-specific format instructions as needed
+
+        # Append format instruction to vocab_block if present
+        if author_format_instruction:
+            vocab_block += author_format_instruction
 
         # Calculate word counts
         input_word_count = len(input_text.split())
@@ -465,9 +487,18 @@ Observe their specific word choices and tone in this snippet:
         """
         # Build constraint instruction based on mode
         if constraint_mode == "STRICT":
-            constraint_instruction = "CRITICAL: You must mimic the bridge template's syntax, punctuation, and sentence structure EXACTLY."
+            constraint_instruction = """CRITICAL: Use the bridge template as a SYNTAX BLUEPRINT, not a word source.
+    - Match the sentence structure pattern (simple, compound, complex)
+    - Match the punctuation style (commas, dashes, semicolons)
+    - Match the rhythm and pacing
+    - **DO NOT COPY WORDS**: Do not use phrases from the bridge template verbatim
+    - Adapt the structure to fit ALL content from Input Text
+    - Prioritize grammatical flow and natural phrasing.
+    - Match the rhythm and punctuation pattern of the template
+    - If the template forces an awkward sentence, smooth it out while maintaining the structural style
+    - Preserve natural English flow - do not create stilted or unnatural phrasing"""
         elif constraint_mode == "LOOSE":
-            constraint_instruction = "GUIDANCE: Use the bridge template as a rhythm guide, but prioritize Meaning. You may expand or contract the structure to fit the content. You may change punctuation if necessary for grammar."
+            constraint_instruction = "GUIDANCE: Use the bridge template as a rhythm guide, but prioritize Meaning. You may expand or contract the structure to fit the content. You may change punctuation if necessary for grammar. Prioritize natural, flowing prose over exact structural mimicry."
         else:  # SAFETY
             constraint_instruction = "INSTRUCTION: Ignore the bridge template's syntax. Rewrite the input content clearly using the blended author vocabulary and general style. Preserve all meaning."
 

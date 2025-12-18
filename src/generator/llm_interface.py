@@ -14,6 +14,31 @@ from src.generator.llm_provider import LLMProvider
 from src.analyzer.style_metrics import get_style_vector
 
 
+def clean_generated_text(text: str) -> str:
+    """Deterministic cleanup of common LLM artifacts."""
+    if not text: return ""
+
+    # 1. Fix Punctuation Spacing (" . " -> ". ")
+    text = re.sub(r'\s+([.,!?;:])', r'\1', text)
+
+    # 2. Fix Multiple Periods (".." -> ".") excluding ellipses
+    text = re.sub(r'\.{2,}', '...', text)
+    text = re.sub(r'\.\.\.(?!\.)', '...', text) # Ensure consistent ellipses
+
+    # 3. Capitalization (Start of sentence)
+    def capitalize_match(m):
+        return f"{m.group(1)}{m.group(2).upper()}"
+    text = re.sub(r'(^|[.!?]\s+)([a-z])', capitalize_match, text)
+
+    # 4. Strip Metadata Artifacts (e.g., "Chapter 1")
+    text = re.sub(r'(?i)\b(chapter|section|part)\s+([0-9]+|[ivx]+)\b', '', text)
+
+    # 5. Remove "Output:" prefixes
+    text = re.sub(r'^(output|response|rewritten):\s*', '', text, flags=re.IGNORECASE)
+
+    return text.strip()
+
+
 def generate_sentence(
     content_unit: ContentUnit,
     structure_match: str,
@@ -150,14 +175,20 @@ def generate_sentence(
         if "words" in hint.lower() and ("delete" in hint.lower() or "expand" in hint.lower() or "add" in hint.lower()):
             user_prompt += "\n\nCRITICAL: The length constraint above is a hard requirement. You MUST follow the exact word count instruction."
 
+    # Calculate adaptive max_tokens based on input length
+    # Allow 3-4x input length for style transfer (structure adaptation needs space)
+    input_word_count = len(content_unit.original_text.split())
+    adaptive_max_tokens = max(300, input_word_count * 4)  # Minimum 300, scale with input
+
     # Call LLM API
     generated_text = llm.call(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         model_type="editor",
         require_json=False,
-        temperature=0.1,  # Very low temperature for precise structure matching
-        max_tokens=200
+        temperature=0.6,  # Increased from 0.3 to allow creative adaptation
+        max_tokens=adaptive_max_tokens,  # Use adaptive value instead of fixed 200
+        top_p=0.9  # Add top_p parameter for tighter grammar control
     )
 
     # Parse CoT response if hint was provided (retry mode)
@@ -177,6 +208,9 @@ def generate_sentence(
                 text_cleaned = re.sub(r'^TEXT:\s*', '', last_part, flags=re.IGNORECASE).strip()
                 if text_cleaned:
                     generated_text = text_cleaned
+
+    # Clean generated text to fix common LLM artifacts
+    generated_text = clean_generated_text(generated_text)
 
     return generated_text
 

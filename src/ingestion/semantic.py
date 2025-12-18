@@ -6,7 +6,7 @@ and sentiment polarity.
 """
 
 import nltk
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Set
 from src.models import ContentUnit
 
 # Download required NLTK data
@@ -246,6 +246,179 @@ def _detect_sentiment(sentence: str) -> str:
             return 'Negative'
         else:
             return 'Neutral'
+
+
+def extract_keywords(text: str) -> List[str]:
+    """Extract keywords (noun/verb lemmas) from text using spaCy or NLTK.
+
+    Args:
+        text: Text to extract keywords from.
+
+    Returns:
+        List of keyword lemmas (lowercase, no duplicates).
+    """
+    if not text:
+        return []
+
+    # Try to use spaCy for better lemmatization
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+        doc = nlp(text)
+        keywords = []
+        for token in doc:
+            # Extract nouns and verbs as keywords
+            if token.pos_ in ['NOUN', 'VERB'] and not token.is_stop:
+                lemma = token.lemma_.lower()
+                if lemma and len(lemma) > 2:  # Filter very short words
+                    keywords.append(lemma)
+        return list(set(keywords))  # Remove duplicates
+    except (ImportError, OSError):
+        # Fallback: use NLTK
+        try:
+            from nltk.tokenize import word_tokenize
+            from nltk.tag import pos_tag
+            from nltk.stem import WordNetLemmatizer
+            from nltk.corpus import stopwords
+
+            try:
+                stop_words = set(stopwords.words('english'))
+            except LookupError:
+                nltk.download('stopwords', quiet=True)
+                stop_words = set(stopwords.words('english'))
+
+            lemmatizer = WordNetLemmatizer()
+            tokens = word_tokenize(text.lower())
+            pos_tags = pos_tag(tokens)
+            keywords = []
+            for word, pos in pos_tags:
+                if pos.startswith(('NN', 'VB')):  # Nouns and verbs
+                    if word.lower() not in stop_words and len(word) > 2:
+                        # Lemmatize based on POS
+                        if pos.startswith('NN'):
+                            lemma = lemmatizer.lemmatize(word, pos='n')
+                        else:
+                            lemma = lemmatizer.lemmatize(word, pos='v')
+                        if lemma and len(lemma) > 2:
+                            keywords.append(lemma)
+            return list(set(keywords))  # Remove duplicates
+        except (ImportError, LookupError):
+            # If NLTK is not available, return empty list
+            return []
+
+
+def get_wordnet_synonyms(word: str) -> Set[str]:
+    """Get WordNet synonyms for a word (for flexible matching).
+
+    Args:
+        word: Word to get synonyms for.
+
+    Returns:
+        Set of synonym lemmas (including the word itself).
+    """
+    try:
+        from nltk.corpus import wordnet as wn
+        synonyms = set([word.lower()])
+        for syn in wn.synsets(word.lower()):
+            for lemma in syn.lemmas():
+                synonyms.add(lemma.name().lower().replace('_', ' '))
+        return synonyms
+    except (ImportError, LookupError):
+        # Try to download wordnet if not available
+        try:
+            nltk.download('wordnet', quiet=True)
+            from nltk.corpus import wordnet as wn
+            synonyms = set([word.lower()])
+            for syn in wn.synsets(word.lower()):
+                for lemma in syn.lemmas():
+                    synonyms.add(lemma.name().lower().replace('_', ' '))
+            return synonyms
+        except (ImportError, LookupError):
+            return {word.lower()}
+
+
+def extract_critical_nouns(text: str) -> List[Tuple[str, str]]:
+    """Extract critical nouns from text with their types.
+
+    Returns list of (noun_lemma, noun_type) tuples where noun_type is:
+    - "PROPER": Proper noun (capitalized, mid-sentence)
+    - "ABSTRACT": Abstract/concept noun (e.g., "finitude", "experience", "paradox")
+    - "CONCRETE": Concrete noun (e.g., "bottle", "room", "star")
+
+    Args:
+        text: Text to extract nouns from.
+
+    Returns:
+        List of (noun_lemma, noun_type) tuples.
+    """
+    if not text:
+        return []
+
+    # Try to use spaCy for better noun extraction
+    try:
+        import spacy
+        nlp = spacy.load("en_core_web_sm")
+        doc = nlp(text)
+        critical_nouns = []
+
+        for token in doc:
+            if token.pos_ == 'NOUN' and not token.is_stop:
+                lemma = token.lemma_.lower()
+                if lemma and len(lemma) > 2:
+                    # Determine noun type
+                    noun_type = "CONCRETE"
+                    # Check if proper noun (capitalized mid-sentence)
+                    if token.is_upper or (token.text[0].isupper() and token.i > 0):
+                        # Capitalized mid-sentence = proper noun
+                        noun_type = "PROPER"
+                    elif lemma in ["experience", "finitude", "paradox", "concept", "theory", "model", "cycle", "reality", "universe", "cosmos", "information", "structure", "hierarchy", "pattern", "complexity"]:
+                        # Abstract/concept nouns
+                        noun_type = "ABSTRACT"
+
+                    critical_nouns.append((lemma, noun_type))
+
+        return list(set(critical_nouns))  # Remove duplicates
+    except (ImportError, OSError):
+        # Fallback: use NLTK
+        try:
+            from nltk.tokenize import word_tokenize
+            from nltk.tag import pos_tag
+            from nltk.stem import WordNetLemmatizer
+            from nltk.corpus import stopwords
+
+            try:
+                stop_words = set(stopwords.words('english'))
+            except LookupError:
+                nltk.download('stopwords', quiet=True)
+                stop_words = set(stopwords.words('english'))
+
+            lemmatizer = WordNetLemmatizer()
+            tokens = word_tokenize(text)
+            pos_tags = pos_tag(tokens)
+            critical_nouns = []
+
+            abstract_nouns = {"experience", "finitude", "paradox", "concept", "theory", "model", "cycle", "reality", "universe", "cosmos", "information", "structure", "hierarchy", "pattern", "complexity"}
+
+            for idx, (word, pos) in enumerate(pos_tags):
+                if pos.startswith('NN') and word.lower() not in stop_words:
+                    if len(word) > 2:
+                        # Lemmatize
+                        lemma = lemmatizer.lemmatize(word.lower(), pos='n')
+                        if lemma and len(lemma) > 2:
+                            # Determine noun type
+                            noun_type = "CONCRETE"
+                            # Check if proper noun (NNP or capitalized mid-sentence)
+                            if pos == 'NNP' or (word[0].isupper() and idx > 0):
+                                noun_type = "PROPER"
+                            elif lemma in abstract_nouns:
+                                noun_type = "ABSTRACT"
+
+                            critical_nouns.append((lemma, noun_type))
+
+            return list(set(critical_nouns))  # Remove duplicates
+        except (ImportError, LookupError):
+            # If NLTK is not available, return empty list
+            return []
 
 
 def extract_meaning(input_text: str) -> List[ContentUnit]:
