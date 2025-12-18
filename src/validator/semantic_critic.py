@@ -692,13 +692,37 @@ class SemanticCritic:
 
             if precision_ratio < self.precision_threshold:
                 hallucinated = [heavy_words[i] for i, score in enumerate(max_scores) if score.item() < self.similarity_threshold]
-                # Filter out allowed style words (whitelist)
+                # Filter out allowed style words (whitelist) and conceptually related words
                 if allowed_style_words:
                     style_words_set = {w.lower().strip() for w in allowed_style_words}
+                    # Direct match filter
                     hallucinated = [w for w in hallucinated if w.lower() not in style_words_set]
+
+                    # Embedding similarity check: if word is similar to any style word (> 0.8), also ignore it
+                    # This allows 'existence' even if lexicon only has 'reality'
+                    if self.semantic_model and hallucinated:
+                        try:
+                            # Encode hallucinated words and style words
+                            hallucinated_vecs = self.semantic_model.encode(hallucinated, convert_to_tensor=True)
+                            style_vecs = self.semantic_model.encode(list(style_words_set), convert_to_tensor=True)
+
+                            # Calculate similarity matrix
+                            similarity_matrix = util.cos_sim(hallucinated_vecs, style_vecs)
+                            max_similarities, _ = torch.max(similarity_matrix, dim=1)
+
+                            # Filter out words that are similar to style words (> 0.8 similarity)
+                            filtered_hallucinated = [
+                                hallucinated[i] for i, sim in enumerate(max_similarities)
+                                if sim.item() <= 0.8  # Only keep if NOT similar to style words
+                            ]
+                            hallucinated = filtered_hallucinated
+                        except Exception:
+                            # If embedding check fails, continue with direct match filter only
+                            pass
+
                 if hallucinated:
                     return precision_ratio, f"CRITICAL: Hallucinated concepts: {', '.join(hallucinated[:5])}. Remove concepts not in input."
-                # If all "hallucinated" words are actually style words, precision is acceptable
+                # If all "hallucinated" words are actually style words or conceptually related, precision is acceptable
                 return 1.0, ""
 
             return precision_ratio, ""

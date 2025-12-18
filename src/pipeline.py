@@ -247,11 +247,13 @@ def process_text(
                 print(f"  Rhetorical Type: {rhetorical_type.value}")
 
             # Step 3: Retrieve examples (exclude previously used ones)
+            # Pass sentence as query_text for length window filtering
             examples = atlas.get_examples_by_rhetoric(
                 rhetorical_type,
                 top_k=3,
                 author_name=author_name,
-                exclude=list(used_examples)
+                exclude=list(used_examples),
+                query_text=sentence
             )
             if not examples:
                 # Fallback to any examples from same author
@@ -259,7 +261,8 @@ def process_text(
                     RhetoricalType.OBSERVATION,
                     top_k=3,
                     author_name=author_name,
-                    exclude=list(used_examples)
+                    exclude=list(used_examples),
+                    query_text=sentence
                 )
                 if not examples:
                     # Ultimate fallback: empty examples (translator will handle it)
@@ -304,7 +307,8 @@ def process_text(
                     author_name=author_name,
                     style_dna=style_dna,
                     rhetorical_type=rhetorical_type,
-                    examples=examples
+                    examples=examples,
+                    verbose=verbose
                 )
 
                 if verbose:
@@ -335,7 +339,8 @@ def process_text(
                             initial_feedback=result["feedback"],
                             critic=critic,
                             verbose=verbose,
-                            style_dna_dict=style_dna_dict
+                            style_dna_dict=style_dna_dict,
+                            examples=examples
                         )
 
                         # Re-evaluate evolved draft

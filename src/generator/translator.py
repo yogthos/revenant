@@ -15,8 +15,9 @@ from src.generator.llm_interface import clean_generated_text
 from src.critic.judge import LLMJudge
 from src.critic.scorer import SoftScorer
 from src.generator.mutation_operators import (
-    get_operator, OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH, OP_DYNAMIC_STYLE
+    get_operator, OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH, OP_DYNAMIC_STYLE, OP_STRUCTURAL_CLONE
 )
+from src.analyzer.structuralizer import Structuralizer
 
 
 def _load_prompt_template(template_name: str) -> str:
@@ -81,6 +82,8 @@ class StyleTranslator:
         self._nlp_cache = None
         # Initialize soft scorer for fitness-based evolution
         self.soft_scorer = SoftScorer(config_path=config_path)
+        # Initialize structuralizer for JIT structural templating
+        self.structuralizer = Structuralizer(config_path=config_path)
 
     def _get_nlp(self):
         """Get or load spaCy model for noun extraction."""
@@ -165,13 +168,244 @@ class StyleTranslator:
 
         return False
 
+    def _extract_multiple_skeletons(
+        self,
+        examples: List[str],
+        blueprint: SemanticBlueprint
+    ) -> List[Tuple[str, str]]:
+        """Extract skeletons from multiple examples with complexity filtering and adaptation.
+
+        Args:
+            examples: List of example sentences from ChromaDB.
+            blueprint: Semantic blueprint with original text.
+
+        Returns:
+            List of (skeleton, source_example) tuples (top 3 surviving after filtering/adaptation).
+        """
+        if not examples:
+            return []
+
+        input_len = len(blueprint.original_text.split())
+        compatible_skeletons = []
+
+        for example in examples:
+            try:
+                skeleton = self.structuralizer.extract_skeleton(example)
+                if not skeleton:
+                    continue
+
+                skeleton_slots = self.structuralizer.count_skeleton_slots(skeleton)
+
+                # Complexity gate: reject if mold is vastly too big or too small
+                if 0.5 * input_len <= skeleton_slots <= 3.0 * input_len:
+                    compatible_skeletons.append((skeleton, example))
+                elif skeleton_slots > input_len * 2:
+                    # Too long: try to compress it
+                    adapted_skeleton = self.structuralizer.adapt_skeleton(skeleton, input_len)
+                    adapted_slots = self.structuralizer.count_skeleton_slots(adapted_skeleton)
+                    # Check if adaptation helped
+                    if 0.5 * input_len <= adapted_slots <= 3.0 * input_len:
+                        compatible_skeletons.append((adapted_skeleton, example))
+                elif skeleton_slots < input_len * 0.5:
+                    # Too short: try to expand it
+                    adapted_skeleton = self.structuralizer.adapt_skeleton(skeleton, input_len)
+                    adapted_slots = self.structuralizer.count_skeleton_slots(adapted_skeleton)
+                    # Check if adaptation helped
+                    if 0.5 * input_len <= adapted_slots <= 3.0 * input_len:
+                        compatible_skeletons.append((adapted_skeleton, example))
+            except Exception:
+                # Skip if skeleton extraction/adaptation fails
+                continue
+
+        # Return top 3 surviving skeletons (or all if fewer than 3)
+        return compatible_skeletons[:3]
+
+    def _calculate_skeleton_adherence(self, candidate: str, skeleton: str) -> float:
+        """Calculate skeleton adherence score using anchor word overlap.
+
+        Extracts function words (anchor words) from skeleton and checks
+        what percentage appear in candidate in roughly the same order.
+
+        Args:
+            candidate: Generated candidate text.
+            skeleton: Skeleton template with placeholders.
+
+        Returns:
+            Adherence score 0.0-1.0 (matched_anchors / total_anchors).
+        """
+        if not candidate or not skeleton:
+            return 0.0
+
+        # Function words (anchor words) that should be preserved
+        # These are structural words that appear in the skeleton
+        function_words = {
+            'the', 'a', 'an', 'of', 'in', 'on', 'at', 'to', 'for', 'with', 'by',
+            'and', 'or', 'but', 'if', 'then', 'when', 'where', 'while', 'as',
+            'from', 'into', 'onto', 'upon', 'over', 'under', 'above', 'below',
+            'through', 'during', 'before', 'after', 'since', 'until', 'about',
+            'against', 'between', 'among', 'within', 'without', 'across',
+            'that', 'this', 'these', 'those', 'which', 'who', 'whom', 'whose',
+            'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+            'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might',
+            'must', 'can', 'not', 'no', 'nor', 'so', 'than', 'too', 'very', 'more',
+            'most', 'some', 'any', 'all', 'each', 'every', 'both', 'either', 'neither'
+        }
+
+        # Extract anchor words from skeleton (non-placeholder words)
+        # First, remove placeholders [NP], [VP], [ADJ] from skeleton
+        skeleton_clean = re.sub(r'\[NP\]|\[VP\]|\[ADJ\]', '', skeleton, flags=re.IGNORECASE)
+        skeleton_tokens = re.findall(r'\b\w+\b', skeleton_clean.lower())
+        anchor_words = []
+        anchor_positions = []
+
+        for i, token in enumerate(skeleton_tokens):
+            # Include function words
+            if token in function_words:
+                anchor_words.append(token)
+                anchor_positions.append(i)
+
+        if not anchor_words:
+            # No anchor words found, return neutral score
+            return 0.5
+
+        # Extract tokens from candidate
+        candidate_tokens = re.findall(r'\b\w+\b', candidate.lower())
+
+        # Count matched anchors (with position tolerance ±2)
+        matched_count = 0
+        candidate_idx = 0
+
+        for anchor_idx, anchor_word in enumerate(anchor_words):
+            # Search for anchor word in candidate within position tolerance
+            skeleton_pos = anchor_positions[anchor_idx]
+            search_start = max(0, candidate_idx - 2)
+            search_end = min(len(candidate_tokens), candidate_idx + 10)
+
+            for i in range(search_start, search_end):
+                if candidate_tokens[i] == anchor_word:
+                    matched_count += 1
+                    candidate_idx = i + 1  # Move forward
+                    break
+
+        adherence_score = matched_count / len(anchor_words) if anchor_words else 0.0
+        return adherence_score
+
+    def _calculate_style_density(self, candidate: str, style_lexicon: Optional[List[str]]) -> float:
+        """Calculate style density score (ratio of style lexicon words in candidate).
+
+        Args:
+            candidate: Generated candidate text.
+            style_lexicon: Optional list of style words to check for.
+
+        Returns:
+            Style density score 0.0-1.0 (count(output_words in lexicon) / total_words).
+        """
+        if not candidate or not style_lexicon:
+            return 0.0
+
+        # Tokenize candidate
+        candidate_tokens = re.findall(r'\b\w+\b', candidate.lower())
+        if not candidate_tokens:
+            return 0.0
+
+        # Create set of style lexicon words (lowercase)
+        style_words_set = {word.lower().strip() for word in style_lexicon}
+
+        # Count style words in candidate
+        style_word_count = sum(1 for token in candidate_tokens if token in style_words_set)
+
+        style_density = style_word_count / len(candidate_tokens)
+        return style_density
+
+    def _evaluate_template_candidate(
+        self,
+        candidate: str,
+        blueprint: SemanticBlueprint,
+        skeleton: str,
+        style_dna: Optional[Dict[str, any]] = None
+    ) -> Dict[str, any]:
+        """Evaluate template candidate using composite scoring.
+
+        Calculates semantic score, structural adherence score, and style density score.
+        Applies hard gates (reject if semantic < 0.7 or adherence < 0.7).
+
+        Args:
+            candidate: Generated candidate text.
+            blueprint: Original semantic blueprint.
+            skeleton: Skeleton template used for generation.
+            style_dna: Optional style DNA dictionary with lexicon.
+
+        Returns:
+            Dictionary with scores and pass status:
+            {
+                "semantic_score": float,
+                "adherence_score": float,
+                "style_density": float,
+                "composite_score": float,
+                "passed_gates": bool
+            }
+        """
+        from src.validator.semantic_critic import SemanticCritic
+
+        # Load weights from config
+        weights = self.config.get("weights", {})
+        semantic_weight = weights.get("semantic", 0.4)
+        adherence_weight = weights.get("structure_adherence", 0.3)
+        style_weight = weights.get("style_density", 0.3)
+
+        # Load thresholds from config
+        template_config = self.translator_config.get("template_evolution", {})
+        semantic_threshold = template_config.get("semantic_threshold", 0.7)
+        adherence_threshold = template_config.get("adherence_threshold", 0.7)
+
+        # Extract style lexicon
+        style_lexicon = None
+        if style_dna and isinstance(style_dna, dict):
+            style_lexicon = style_dna.get("lexicon")
+
+        # 1. Semantic Score (40% weight)
+        critic = SemanticCritic(config_path=self.config_path)
+        semantic_result = self.soft_scorer.evaluate_with_raw_score(
+            candidate, blueprint, style_lexicon=style_lexicon
+        )
+        semantic_score = semantic_result.get("raw_score", semantic_result.get("score", 0.0))
+
+        # 2. Structural Adherence Score (30% weight)
+        adherence_score = self._calculate_skeleton_adherence(candidate, skeleton)
+
+        # 3. Style Density Score (30% weight)
+        style_density = self._calculate_style_density(candidate, style_lexicon)
+
+        # Hard gates: reject if semantic or adherence below threshold
+        passed_gates = (semantic_score >= semantic_threshold and
+                       adherence_score >= adherence_threshold)
+
+        # Calculate composite score
+        if not passed_gates:
+            composite_score = 0.0
+        else:
+            composite_score = (
+                semantic_score * semantic_weight +
+                adherence_score * adherence_weight +
+                style_density * style_weight
+            )
+
+        return {
+            "semantic_score": semantic_score,
+            "adherence_score": adherence_score,
+            "style_density": style_density,
+            "composite_score": composite_score,
+            "passed_gates": passed_gates
+        }
+
     def translate(
         self,
         blueprint: SemanticBlueprint,
         author_name: str,
         style_dna: str,
         rhetorical_type: RhetoricalType,
-        examples: List[str]  # 3 examples from atlas
+        examples: List[str],  # 3 examples from atlas
+        verbose: bool = False
     ) -> str:
         """Translate blueprint into styled text.
 
@@ -189,6 +423,140 @@ class StyleTranslator:
             # Fallback if no examples provided
             examples = ["Example text in the target style."]
 
+        # Extract style_dna_dict from examples if available
+        style_dna_dict = None
+        try:
+            from src.analyzer.style_extractor import StyleExtractor
+            style_extractor = StyleExtractor(config_path=self.config_path)
+            if examples:
+                style_dna_dict = style_extractor.extract_style_dna(examples)
+        except Exception:
+            style_dna_dict = None
+
+        # Phase 1: Smart Skeleton Selection (Pre-Filter)
+        template_config = self.translator_config.get("template_evolution", {})
+        num_examples = template_config.get("num_examples", 5)
+        candidates_per_template = template_config.get("candidates_per_template", 2)
+
+        # Retrieve top N examples (request more to have options after filtering)
+        if len(examples) < num_examples:
+            # Use all available examples
+            candidate_examples = examples
+        else:
+            # Use top N examples
+            candidate_examples = examples[:num_examples]
+
+        if verbose:
+            print(f"  Parallel Template Evolution: Processing {len(candidate_examples)} examples")
+
+        # Extract multiple skeletons with complexity filtering
+        compatible_skeletons = self._extract_multiple_skeletons(candidate_examples, blueprint)
+
+        if verbose:
+            print(f"  Skeletons extracted: {len(compatible_skeletons)} compatible (after complexity filtering)")
+
+        if not compatible_skeletons:
+            if verbose:
+                print(f"  No compatible skeletons found, falling back to standard generation")
+        else:
+            # Phase 2: Style-Infused Generation
+            all_candidates = []
+            structural_operator = get_operator(OP_STRUCTURAL_CLONE)
+
+            # Extract style lexicon from style_dna_dict
+            style_lexicon = None
+            if style_dna_dict and isinstance(style_dna_dict, dict):
+                style_lexicon = style_dna_dict.get("lexicon")
+
+            for skeleton, source_example in compatible_skeletons:
+                if verbose:
+                    print(f"  Generating {candidates_per_template} candidates for skeleton: {skeleton[:60]}...")
+
+                # Generate multiple candidates per skeleton with temperature variation
+                temperatures = [0.7, 0.75, 0.8][:candidates_per_template]
+                for temp_idx, temp in enumerate(temperatures):
+                    try:
+                        candidate = structural_operator.generate(
+                            current_draft="",
+                            blueprint=blueprint,
+                            author_name=author_name,
+                            style_dna=style_dna,
+                            rhetorical_type=rhetorical_type,
+                            llm_provider=self.llm_provider,
+                            temperature=temp,
+                            max_tokens=self.translator_config.get("max_tokens", 300),
+                            skeleton=skeleton,
+                            style_lexicon=style_lexicon
+                        )
+
+                        if candidate and candidate.strip():
+                            all_candidates.append({
+                                "text": candidate,
+                                "skeleton": skeleton,
+                                "source_example": source_example
+                            })
+                    except Exception as e:
+                        if verbose:
+                            print(f"    ✗ Candidate generation failed: {e}")
+                        continue
+
+            if verbose:
+                print(f"  Total candidates generated: {len(all_candidates)}")
+
+            # Phase 3: Composite Evaluation
+            evaluated_candidates = []
+            for candidate_data in all_candidates:
+                try:
+                    evaluation = self._evaluate_template_candidate(
+                        candidate=candidate_data["text"],
+                        blueprint=blueprint,
+                        skeleton=candidate_data["skeleton"],
+                        style_dna=style_dna_dict
+                    )
+
+                    evaluated_candidates.append({
+                        "text": candidate_data["text"],
+                        "skeleton": candidate_data["skeleton"],
+                        "source_example": candidate_data["source_example"],
+                        "evaluation": evaluation
+                    })
+
+                    if verbose:
+                        eval_data = evaluation
+                        print(f"  Candidate: {candidate_data['text'][:60]}...")
+                        print(f"    Semantic: {eval_data['semantic_score']:.2f}, "
+                              f"Adherence: {eval_data['adherence_score']:.2f}, "
+                              f"Style: {eval_data['style_density']:.2f}, "
+                              f"Composite: {eval_data['composite_score']:.2f}, "
+                              f"Passed: {eval_data['passed_gates']}")
+                except Exception as e:
+                    if verbose:
+                        print(f"  ✗ Evaluation failed for candidate: {e}")
+                    continue
+
+            # Phase 4: Selection
+            # Filter candidates that passed hard gates
+            passed_candidates = [c for c in evaluated_candidates if c["evaluation"]["passed_gates"]]
+
+            if passed_candidates:
+                # Sort by composite score (descending)
+                passed_candidates.sort(key=lambda x: x["evaluation"]["composite_score"], reverse=True)
+                best_candidate = passed_candidates[0]
+
+                if verbose:
+                    print(f"  ✓ Best candidate selected (composite score: {best_candidate['evaluation']['composite_score']:.2f})")
+                    print(f"    Top 3 candidates:")
+                    for i, cand in enumerate(passed_candidates[:3]):
+                        print(f"      {i+1}. Score: {cand['evaluation']['composite_score']:.2f} - {cand['text'][:60]}...")
+
+                # Restore citations and quotes
+                best_text = self._restore_citations_and_quotes(best_candidate["text"], blueprint)
+                return best_text
+            else:
+                if verbose:
+                    print(f"  ✗ All candidates failed hard gates, falling back to standard generation")
+
+        # Step 2: Standard generation (fallback if structural cloning fails or not applicable)
         prompt = self._build_prompt(blueprint, author_name, style_dna, rhetorical_type, examples)
 
         system_prompt_template = _load_prompt_template("translator_system.md")
@@ -809,7 +1177,8 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         initial_feedback: str,
         critic: 'SemanticCritic',
         verbose: bool = False,
-        style_dna_dict: Optional[Dict[str, any]] = None
+        style_dna_dict: Optional[Dict[str, any]] = None,
+        examples: Optional[List[str]] = None
     ) -> Tuple[str, float]:
         """Evolve text using population-based beam search with tournament selection.
 
@@ -883,13 +1252,17 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         style_lexicon = None
         style_structure = None
         style_tone = None
+        rag_example = None
         if style_dna_dict:
             style_lexicon = style_dna_dict.get("lexicon", [])
             style_structure = style_dna_dict.get("structure")
             style_tone = style_dna_dict.get("tone")
+        # Get top RAG example for stylistic repair
+        if examples and len(examples) > 0:
+            rag_example = examples[0]
 
-        # Get initial raw_score for fitness-based evolution
-        initial_eval = self.soft_scorer.evaluate_with_raw_score(best_draft, blueprint)
+        # Get initial raw_score for fitness-based evolution (with style lexicon for density bonus)
+        initial_eval = self.soft_scorer.evaluate_with_raw_score(best_draft, blueprint, style_lexicon=style_lexicon)
         best_raw_score = initial_eval.get("raw_score", best_score)
 
         # Evolution loop
@@ -937,7 +1310,8 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     verbose=verbose,
                     style_lexicon=style_lexicon,
                     style_structure=style_structure,
-                    style_tone=style_tone
+                    style_tone=style_tone,
+                    rag_example=rag_example
                 )
 
                 # Step C: Scoring - Get raw_score for all candidates
@@ -946,9 +1320,9 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     if not candidate_text or not candidate_text.strip():
                         continue
 
-                    # Get both critic evaluation and raw_score (with style whitelist)
+                    # Get both critic evaluation and raw_score (with style whitelist and density bonus)
                     candidate_result = critic.evaluate(candidate_text, blueprint, allowed_style_words=style_lexicon)
-                    candidate_eval = self.soft_scorer.evaluate_with_raw_score(candidate_text, blueprint)
+                    candidate_eval = self.soft_scorer.evaluate_with_raw_score(candidate_text, blueprint, style_lexicon=style_lexicon)
                     candidate_raw_score = candidate_eval.get("raw_score", candidate_result.get("score", 0.0))
 
                     scored_candidates.append({
@@ -1065,11 +1439,19 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                                 print("  DEBUG: Score is acceptable. Early exit.")
                             break
                         else:
-                            if verbose:
-                                print("  DEBUG: Score is low. Attempting 'Simplification Pivot'...")
-                            # Try one last radical simplification before giving up
-                            final_attempt = self._generate_simplification(best_draft, blueprint, author_name, style_dna, rhetorical_type, critic, verbose)
-                            return (final_attempt, best_score)
+                            # Never trade a good score (>= 0.5) for a potentially worse simplification
+                            # Only attempt simplification if best_score is truly bad (< 0.5)
+                            if best_score < 0.5:
+                                if verbose:
+                                    print("  DEBUG: Score is very low (< 0.5). Attempting 'Simplification Pivot'...")
+                                # Try one last radical simplification before giving up
+                                final_attempt = self._generate_simplification(best_draft, blueprint, author_name, style_dna, rhetorical_type, critic, verbose)
+                                return (final_attempt, best_score)
+                            else:
+                                # Return the best draft we have (B-grade is better than risking F-grade)
+                                if verbose:
+                                    print(f"  DEBUG: Returning best draft (score: {best_score:.2f}). Not risking simplification.")
+                                return (best_draft, best_score)
 
                     # Smart Patience: early exit if stuck at good enough score
                     if patience_counter >= patience_threshold and best_score >= patience_min_score:
@@ -1158,7 +1540,8 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         verbose: bool = False,
         style_lexicon: Optional[List[str]] = None,
         style_structure: Optional[str] = None,
-        style_tone: Optional[str] = None
+        style_tone: Optional[str] = None,
+        rag_example: Optional[str] = None
     ) -> List[Tuple[str, str]]:
         """Generate population using a specific mutation operator.
 
@@ -1201,6 +1584,11 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     generate_kwargs["style_structure"] = style_structure
                     if operator_type == OP_DYNAMIC_STYLE:
                         generate_kwargs["style_tone"] = style_tone
+
+                # Pass style_lexicon and rag_example to semantic injection for stylistic repair
+                if operator_type == OP_SEMANTIC_INJECTION:
+                    generate_kwargs["style_lexicon"] = style_lexicon
+                    generate_kwargs["rag_example"] = rag_example
 
                 candidate = operator.generate(**generate_kwargs)
 

@@ -105,18 +105,25 @@ class StyleAtlas:
         rhetorical_type,
         top_k: int = 3,
         exclude: Optional[List[str]] = None,
-        author_name: Optional[str] = None
+        author_name: Optional[str] = None,
+        query_text: Optional[str] = None
     ) -> List[str]:
-        """Get examples from atlas filtered by rhetorical type.
+        """Get examples from atlas using 4-Tier Fallback Strategy.
+
+        Tier 1: Perfect Match (Rhetorical Type + Length ±30%)
+        Tier 2: Length Match (Ignore Rhetorical Type, Match Length ±30%)
+        Tier 3: Type Match (Ignore Length, Match Rhetorical Type)
+        Tier 4: Desperate (Vector similarity, author only)
 
         Args:
             rhetorical_type: RhetoricalType enum value to filter by.
             top_k: Number of examples to return (default: 3).
             exclude: Optional list of text strings to exclude from results.
-            author_name: Optional author name to filter examples by (for fallback).
+            author_name: Optional author name to filter examples by.
+            query_text: Optional query text to calculate length window for filtering.
 
         Returns:
-            List of example text strings.
+            List of example text strings. Only returns empty if database is completely empty.
         """
         if not CHROMADB_AVAILABLE:
             return []
@@ -132,8 +139,8 @@ class StyleAtlas:
                     rhetorical_type = rtype
                     break
             else:
-                # Not found, return empty
-                return []
+                # Not found, try Tier 4 (desperate)
+                return self._tier4_vector_search(query_text, author_name, top_k, exclude)
 
         try:
             # Get collection
@@ -145,69 +152,149 @@ class StyleAtlas:
 
             collection = self._collection
 
-            # Build where clause for rhetorical type
-            # ChromaDB requires $and operator when combining multiple conditions
-            if author_name:
-                where_clause = {
-                    "$and": [
-                        {"rhetorical_type": rhetorical_type.value},
-                        {"author_id": author_name}
-                    ]
-                }
-            else:
-                where_clause = {"rhetorical_type": rhetorical_type.value}
+            # Calculate length window if query_text provided
+            min_length = None
+            max_length = None
+            if query_text:
+                input_length = len(query_text)
+                min_length = int(input_length * 0.7)
+                max_length = int(input_length * 1.3)
 
-            # Query by rhetorical_type metadata (and author if specified)
+            # TIER 1: Perfect Match - Rhetorical Type + Length ±30%
+            if query_text and min_length and max_length:
+                where_conditions = [
+                    {"rhetorical_type": rhetorical_type.value},
+                    {"text_length": {"$gte": min_length}},
+                    {"text_length": {"$lte": max_length}}
+                ]
+                if author_name:
+                    where_conditions.append({"author_id": author_name})
+
+                where_clause = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
+
+                try:
+                    results = collection.get(where=where_clause, limit=top_k * 2)
+                    if results and results.get('documents'):
+                        examples = self._filter_and_shuffle(results['documents'], exclude, top_k)
+                        if examples:
+                            return examples
+                except Exception:
+                    pass  # Fall through to Tier 2
+
+            # TIER 2: Length Match - Ignore Rhetorical Type, Match Length ±30%
+            # (Better to have the right rhythm than the right logic)
+            if query_text and min_length and max_length:
+                where_conditions = [
+                    {"text_length": {"$gte": min_length}},
+                    {"text_length": {"$lte": max_length}}
+                ]
+                if author_name:
+                    where_conditions.append({"author_id": author_name})
+
+                where_clause = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
+
+                try:
+                    results = collection.get(where=where_clause, limit=top_k * 2)
+                    if results and results.get('documents'):
+                        examples = self._filter_and_shuffle(results['documents'], exclude, top_k)
+                        if examples:
+                            return examples
+                except Exception:
+                    pass  # Fall through to Tier 3
+
+            # TIER 3: Type Match - Ignore Length, Match Rhetorical Type
+            # (Better to have the right logic than the right rhythm)
+            where_conditions = [{"rhetorical_type": rhetorical_type.value}]
+            if author_name:
+                where_conditions.append({"author_id": author_name})
+
+            where_clause = {"$and": where_conditions} if len(where_conditions) > 1 else where_conditions[0]
+
             try:
+                results = collection.get(where=where_clause, limit=top_k * 2)
+                if results and results.get('documents'):
+                    examples = self._filter_and_shuffle(results['documents'], exclude, top_k)
+                    if examples:
+                        return examples
+            except Exception:
+                pass  # Fall through to Tier 4
+
+            # TIER 4: Desperate - Vector similarity, author only
+            # Ignore everything, return top vector matches restricted ONLY by author
+            return self._tier4_vector_search(query_text, author_name, top_k, exclude)
+
+        except Exception as e:
+            # If anything fails, try Tier 4 as last resort
+            return self._tier4_vector_search(query_text, author_name, top_k, exclude)
+
+    def _filter_and_shuffle(self, documents: List[str], exclude: Optional[List[str]], top_k: int) -> List[str]:
+        """Filter out excluded texts and shuffle for variety."""
+        if exclude:
+            documents = [ex for ex in documents if ex not in exclude]
+        random.shuffle(documents)
+        return documents[:top_k]
+
+    def _tier4_vector_search(
+        self,
+        query_text: Optional[str],
+        author_name: Optional[str],
+        top_k: int,
+        exclude: Optional[List[str]]
+    ) -> List[str]:
+        """Tier 4: Vector similarity search restricted by author only.
+
+        Args:
+            query_text: Optional query text for semantic similarity.
+            author_name: Optional author name to filter by.
+            top_k: Number of results to return.
+            exclude: Optional list of texts to exclude.
+
+        Returns:
+            List of example text strings, or empty if database is empty.
+        """
+        try:
+            collection = self._collection
+
+            # Build where clause (author only)
+            where_clause = None
+            if author_name:
+                where_clause = {"author_id": author_name}
+
+            if query_text:
+                # Use vector similarity search
+                from sentence_transformers import SentenceTransformer
+                model = SentenceTransformer('all-MiniLM-L6-v2')
+                query_embedding = model.encode(query_text, normalize_embeddings=True)
+
+                results = collection.query(
+                    query_embeddings=[query_embedding.tolist()],
+                    n_results=top_k * 2,
+                    where=where_clause
+                )
+
+                if results and results.get('documents') and len(results['documents'][0]) > 0:
+                    examples = results['documents'][0]
+                    return self._filter_and_shuffle(examples, exclude, top_k)
+            else:
+                # No query text, just get random examples by author
                 results = collection.get(
                     where=where_clause,
-                    limit=top_k * 2  # Get more than needed to filter out excluded
+                    limit=top_k * 2
                 )
-            except Exception:
-                # If metadata doesn't exist or query fails, try fallback
-                results = None
+                if results and results.get('documents'):
+                    return self._filter_and_shuffle(results['documents'], exclude, top_k)
 
-            # FALLBACK: If no examples found for specific rhetorical type, get random examples from same author
-            if not results or not results.get('documents'):
-                if author_name:
-                    print(f"    ⚠ No examples found for {rhetorical_type.value} by {author_name}. Fetching random style samples from {author_name}.")
-                else:
-                    print(f"    ⚠ No examples found for {rhetorical_type.value}. Fetching random style samples.")
-                try:
-                    # Get random examples from the same author (if author_name provided)
-                    if author_name:
-                        fallback_where = {"author_id": author_name}
-                        results = collection.get(
-                            where=fallback_where,
-                            limit=top_k * 2  # Get more than needed to filter out excluded
-                        )
-                    else:
-                        # No author specified, get any random examples
-                        results = collection.get(
-                            limit=top_k * 2  # Get more than needed to filter out excluded
-                        )
-                except Exception:
-                    # If fallback also fails, return empty
-                    return []
-
-            if not results or not results.get('documents'):
-                return []
-
-            # Extract documents
-            examples = results['documents']
-
-            # Filter out excluded texts
-            if exclude:
-                examples = [ex for ex in examples if ex not in exclude]
-
-            # Randomize examples to ensure variety across calls
-            random.shuffle(examples)
-
-            # Return top_k
-            return examples[:top_k]
+            # If we get here, database might be empty
+            return []
 
         except Exception:
-            # If anything fails, return empty list
+            # Last resort: try to get ANY documents
+            try:
+                results = collection.get(limit=top_k)
+                if results and results.get('documents'):
+                    return self._filter_and_shuffle(results['documents'], exclude, top_k)
+            except Exception:
+                pass
             return []
 
 
@@ -517,6 +604,16 @@ def build_style_atlas(
             word_count = len(combined_text.split())
             sentence_count = len(window["skeletons"])
 
+        # Calculate text_length (character count) for length window filtering
+        text_length = len(combined_text)
+
+        # Classify rhetorical type for this window
+        # Use the first sentence in the window for classification (representative)
+        from src.atlas.rhetoric import RhetoricalClassifier
+        classifier = RhetoricalClassifier()
+        first_sentence = window["skeletons"][0] if window["skeletons"] else combined_text
+        rhetorical_type = classifier.classify_heuristic(first_sentence)
+
         # Store skeletons (individual sentences) as JSON string in metadata
         # ChromaDB doesn't support lists, so we'll store as JSON string
         import json
@@ -527,7 +624,9 @@ def build_style_atlas(
             "word_count": word_count,
             "sentence_count": sentence_count,
             "skeletons": skeletons_json,  # JSON string of sentence list
-            "avg_length": int(window["avg_length"])
+            "avg_length": int(window["avg_length"]),
+            "text_length": text_length,  # Character count for length window filtering
+            "rhetorical_type": rhetorical_type.value  # Rhetorical type classification
         }
 
         # Add author_id if provided

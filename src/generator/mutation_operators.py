@@ -52,10 +52,10 @@ class MutationOperator:
 
 
 class SemanticInjectionOperator(MutationOperator):
-    """Operator for inserting missing keywords (trigger: low recall).
+    """Operator for inserting missing keywords with style (trigger: low recall).
 
-    This operator focuses on adding missing concepts without changing
-    the style or rewriting valid parts.
+    This operator focuses on adding missing concepts while mimicking the
+    author's tone and vocabulary from RAG examples.
     """
 
     def generate(
@@ -68,12 +68,16 @@ class SemanticInjectionOperator(MutationOperator):
         llm_provider,
         temperature: float = 0.6,
         max_tokens: int = 300,
-        missing_keywords: Optional[List[str]] = None
+        missing_keywords: Optional[List[str]] = None,
+        style_lexicon: Optional[List[str]] = None,
+        rag_example: Optional[str] = None
     ) -> str:
-        """Insert missing keywords into the draft.
+        """Insert missing keywords into the draft using stylistic repair.
 
         Args:
             missing_keywords: List of keywords that are missing from the draft.
+            style_lexicon: List of style words to use when inserting keywords.
+            rag_example: Example text from RAG to mimic tone and vocabulary.
         """
         if missing_keywords is None:
             # Extract missing keywords by comparing blueprints
@@ -96,28 +100,59 @@ class SemanticInjectionOperator(MutationOperator):
         all_keywords = sorted(blueprint.core_keywords) if blueprint.core_keywords else []
         required_keywords_text = ", ".join(all_keywords) if all_keywords else "None"
 
-        system_prompt = f"""You are a precision mechanic working on text transformation.
-Your task is to INSERT missing keywords into a sentence using Chain-of-Thought reasoning.
-You must preserve the existing structure and only add the missing concepts."""
+        # Build style guidance section - ALWAYS style-infuse, even if no RAG example
+        style_guidance = ""
+        examples_text = ""
 
-        user_prompt = f"""### TASK: Semantic Injection
-**Goal:** Add missing keywords while maintaining perfect grammar.
+        if rag_example:
+            examples_text = f'"{rag_example}"'
+        elif style_lexicon and len(style_lexicon) > 0:
+            # Use first few style words as example context
+            examples_text = f'Examples using words like: {", ".join(style_lexicon[:5])}'
+
+        if style_lexicon:
+            lexicon_text = ", ".join(style_lexicon[:20])  # Show more words
+            style_guidance = f"""
+**STYLE REQUIREMENT (CRITICAL - DO NOT WRITE GENERIC ENGLISH):**
+- You are a specific author editor, NOT a generic corporate writer
+- Insert the missing concepts: {keywords_text}
+- TRANSFORM the sentence to sound like the author found in these examples: {examples_text}
+- USE this vocabulary if possible: {lexicon_text}
+- Do NOT write generic corporate English - be distinct and match the author's voice
+- The author has a distinctive style - mimic it precisely"""
+        elif rag_example:
+            style_guidance = f"""
+**STYLE REQUIREMENT (CRITICAL - DO NOT WRITE GENERIC ENGLISH):**
+- You are a specific author editor, NOT a generic corporate writer
+- Insert the missing concepts: {keywords_text}
+- TRANSFORM the sentence to sound like the author found in this example: {examples_text}
+- Do NOT write generic corporate English - be distinct and match the author's voice"""
+
+        system_prompt = f"""You are a specific author editor working on stylistic text transformation.
+Your task is to INSERT missing keywords into a sentence while transforming it to match the target author's distinctive voice.
+You must preserve the existing structure and add the missing concepts using the author's unique style - NOT generic English."""
+
+        user_prompt = f"""### TASK: Author-Specific Semantic Repair
+**Goal:** Insert missing keywords while transforming the sentence to match the target author's distinctive voice.
+
 **Original text:** "{blueprint.original_text}"
 **Current draft:** "{current_draft}"
 **Missing keywords that MUST be included:** {keywords_text}
-**ALL required keywords (do not delete any of these):** {required_keywords_text}
+**ALL required keywords (do not delete any of these):** {required_keywords_text}{style_guidance}
 
 ### INSTRUCTIONS
-1. **Step 1 (Reasoning):** Analyze the current draft and identify where the missing words logically belong. Consider grammatical structure and natural word order.
+1. **Step 1 (Reasoning):** Analyze the current draft and identify where the missing words logically belong. Study the style examples to understand the author's voice, vocabulary, and sentence structure.
 
-2. **Step 2 (Rough Draft):** Write a version that has ALL required keywords (it's okay if it's clunky or awkward). Ensure every keyword from the required list is present.
+2. **Step 2 (Rough Draft):** Write a version that has ALL required keywords. Ensure every keyword from the required list is present. Use the author's vocabulary and style to connect concepts naturally.
 
-3. **Step 3 (Polish):** Smooth out Step 2 into natural English while keeping ALL keywords. Fix any grammatical issues introduced in Step 2.
+3. **Step 3 (Polish):** Transform Step 2 to match the author's distinctive voice. Use the style vocabulary and examples as your guide. Do NOT write generic corporate English - be distinct.
 
 **CRITICAL:**
 - Ensure the final output contains **ALL** of these words: {required_keywords_text}
 - Do NOT delete existing valid keywords to make room for new ones
-- Do NOT change the style or rewrite valid parts unnecessarily
+- You MUST transform the sentence to match the author's voice - do NOT use generic English
+- If style vocabulary is provided, USE IT to connect concepts naturally
+- The output should sound like the specific author, not generic corporate writing
 
 **Output:** Return ONLY the final polished sentence from Step 3."""
 
@@ -394,18 +429,106 @@ Your task is to rewrite the sentence to match this author's distinctive voice us
             return current_draft
 
 
+class StructuralCloneOperator(MutationOperator):
+    """Operator for structural cloning using skeleton templates.
+
+    This operator forces generation to match the exact syntactic structure
+    of a RAG sample by injecting meaning into a pre-extracted skeleton.
+    """
+
+    def generate(
+        self,
+        current_draft: str,
+        blueprint: SemanticBlueprint,
+        author_name: str,
+        style_dna: str,
+        rhetorical_type: RhetoricalType,
+        llm_provider,
+        temperature: float = 0.6,
+        max_tokens: int = 300,
+        skeleton: Optional[str] = None,
+        style_lexicon: Optional[List[str]] = None
+    ) -> str:
+        """Generate text by injecting meaning into a structural skeleton.
+
+        Args:
+            skeleton: Structural skeleton template with [NP], [VP], [ADJ] placeholders.
+            style_lexicon: Optional list of style words to prioritize during generation.
+        """
+        if not skeleton:
+            # No skeleton provided, return current draft
+            return current_draft
+
+        system_prompt = f"""You are a precision structural clone generator. Your task is to inject the meaning of the original text into a specific sentence skeleton, matching the exact syntactic structure."""
+
+        # Build style instruction if lexicon is provided
+        style_instruction = ""
+        if style_lexicon:
+            # Limit to first 20 words for prompt size
+            lexicon_preview = ', '.join(style_lexicon[:20])
+            if len(style_lexicon) > 20:
+                lexicon_preview += f" (and {len(style_lexicon) - 20} more)"
+            style_instruction = f"""
+**STYLE VOCABULARY (Prioritize these words):**
+{lexicon_preview}
+
+When filling the [SLOTS], you MUST prioritize using words from this list where possible.
+This ensures the output matches the target author's voice.
+"""
+
+        user_prompt = f"""### TASK: Structural Cloning
+**Goal:** Inject the meaning of the Original Text into the Target Skeleton structure.
+
+**Original Text (meaning to convey):** "{blueprint.original_text}"
+
+**Target Skeleton (structure to match):** "{skeleton}"
+{style_instruction}
+### INSTRUCTIONS
+1. **Analyze:** Identify the core meaning and concepts in the Original Text.
+2. **Map:** Match each concept to a placeholder in the Skeleton:
+   - [NP] = Noun phrases (subjects, objects, concepts)
+   - [VP] = Verb phrases (actions, states)
+   - [ADJ] = Adjectives (descriptors, modifiers)
+3. **Fill:** Inject the meaning into the skeleton slots. You may expand definitions to fill complex slots, but do NOT change the core message.
+4. **Preserve:** Keep ALL connecting words, prepositions, conjunctions, and punctuation from the skeleton exactly as they are.
+
+**CRITICAL:**
+- You MUST use the exact structure of the skeleton
+- You MUST preserve all structural words (prepositions, conjunctions, articles)
+- You may expand concepts to fill slots, but preserve the original meaning
+- Do NOT simplify the skeleton structure
+- Do NOT change the core message of the original text
+
+**Output:** Return ONLY the final sentence with meaning injected into the skeleton structure."""
+
+        try:
+            mutated = llm_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            from src.generator.llm_interface import clean_generated_text
+            mutated = clean_generated_text(mutated)
+            mutated = mutated.strip()
+            return mutated if mutated else current_draft
+        except Exception:
+            return current_draft
+
+
 # Operator constants for easy reference
 OP_SEMANTIC_INJECTION = "semantic_injection"
 OP_GRAMMAR_REPAIR = "grammar_repair"
 OP_STYLE_POLISH = "style_polish"
 OP_DYNAMIC_STYLE = "dynamic_style"
+OP_STRUCTURAL_CLONE = "structural_clone"
 
 
 def get_operator(operator_type: str) -> MutationOperator:
     """Get a mutation operator by type.
 
     Args:
-        operator_type: One of OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH, OP_DYNAMIC_STYLE.
+        operator_type: One of OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH, OP_DYNAMIC_STYLE, OP_STRUCTURAL_CLONE.
 
     Returns:
         MutationOperator instance.
@@ -414,7 +537,8 @@ def get_operator(operator_type: str) -> MutationOperator:
         OP_SEMANTIC_INJECTION: SemanticInjectionOperator(),
         OP_GRAMMAR_REPAIR: GrammarRepairOperator(),
         OP_STYLE_POLISH: StylePolishOperator(),
-        OP_DYNAMIC_STYLE: DynamicStyleOperator()
+        OP_DYNAMIC_STYLE: DynamicStyleOperator(),
+        OP_STRUCTURAL_CLONE: StructuralCloneOperator()
     }
     return operators.get(operator_type, GrammarRepairOperator())  # Default fallback
 

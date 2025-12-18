@@ -4,7 +4,7 @@ This module provides a fitness function that calculates continuous raw_score
 for evolution guidance, separate from the binary pass/fail decision.
 """
 
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Optional, List
 from src.validator.semantic_critic import SemanticCritic
 from src.ingestion.blueprint import SemanticBlueprint
 
@@ -29,7 +29,8 @@ class SoftScorer:
     def calculate_raw_score(
         self,
         generated_text: str,
-        input_blueprint: SemanticBlueprint
+        input_blueprint: SemanticBlueprint,
+        style_lexicon: Optional[List[str]] = None
     ) -> Tuple[float, Dict[str, float]]:
         """Calculate raw fitness score for evolution guidance.
 
@@ -106,6 +107,27 @@ class SoftScorer:
             # Boost the score to at least 0.92 for near-perfect meaning and grammar
             raw_score = max(raw_score, 0.92)
 
+        # STYLE DENSITY BONUS: Reward using style words from the lexicon
+        # This incentivizes the generator to use author-specific vocabulary
+        if style_lexicon and generated_text:
+            from src.validator.semantic_critic import _get_significant_tokens
+            style_words_set = {w.lower().strip() for w in style_lexicon}
+            generated_tokens = _get_significant_tokens(generated_text)
+            used_style_words = [w for w in style_words_set if w in generated_tokens]
+
+            if used_style_words and generated_tokens:
+                # Calculate style density: ratio of style words to total words
+                style_density = len(used_style_words) / max(len(generated_tokens), 1)
+                # Add bonus: style_density * 0.2 (max 0.2 bonus for 100% style words)
+                style_bonus = style_density * 0.2
+                raw_score = min(1.0, raw_score + style_bonus)
+            else:
+                # BLANDNESS PENALTY: If style_lexicon is present but no style words are used,
+                # cap the score at 0.85 to force the loop to reject "perfect but boring" sentences
+                # This ensures evolution continues until it uses the author's vocabulary
+                if len(style_lexicon) > 0:
+                    raw_score = min(raw_score, 0.85)
+
         # Ensure raw_score is never zero (unless truly empty/broken)
         # Minimum score of 0.01 allows evolution to improve from very bad states
         if raw_score == 0.0 and generated_text and generated_text.strip():
@@ -125,7 +147,8 @@ class SoftScorer:
     def evaluate_with_raw_score(
         self,
         generated_text: str,
-        input_blueprint: SemanticBlueprint
+        input_blueprint: SemanticBlueprint,
+        style_lexicon: Optional[List[str]] = None
     ) -> Dict[str, any]:
         """Evaluate text and return both pass status and raw_score.
 
@@ -149,10 +172,10 @@ class SoftScorer:
             - score: float - Original weighted score from critic
         """
         # Get critic evaluation
-        critic_result = self.critic.evaluate(generated_text, input_blueprint)
+        critic_result = self.critic.evaluate(generated_text, input_blueprint, allowed_style_words=style_lexicon)
 
-        # Calculate raw_score
-        raw_score, metrics = self.calculate_raw_score(generated_text, input_blueprint)
+        # Calculate raw_score (with style lexicon for density bonus)
+        raw_score, metrics = self.calculate_raw_score(generated_text, input_blueprint, style_lexicon=style_lexicon)
 
         # Combine results
         return {
