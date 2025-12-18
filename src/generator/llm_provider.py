@@ -99,7 +99,8 @@ class LLMProvider:
         require_json: bool = False,
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None
+        top_p: Optional[float] = None,
+        timeout: Optional[int] = None
     ) -> str:
         """Call LLM API with unified interface.
 
@@ -111,6 +112,7 @@ class LLMProvider:
             temperature: Optional temperature override. Default: provider-specific.
             max_tokens: Optional max_tokens override. Default: provider-specific.
             top_p: Optional top_p override. Default: provider-specific.
+            timeout: Optional timeout in seconds. Default: provider-specific (30s for DeepSeek, 60s for Ollama/GLM).
 
         Returns:
             LLM response text.
@@ -119,19 +121,19 @@ class LLMProvider:
 
         if self.provider == "deepseek":
             return self._call_deepseek_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p, timeout
             )
         elif self.provider == "ollama":
             return self._call_ollama_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p, timeout
             )
         elif self.provider == "glm":
             return self._call_glm_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p, timeout
             )
         elif self.provider == "gemini":
             return self._call_gemini_api(
-                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p
+                system_prompt, user_prompt, model, require_json, temperature, max_tokens, top_p, timeout
             )
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
@@ -144,7 +146,8 @@ class LLMProvider:
         require_json: bool,
         temperature: Optional[float],
         max_tokens: Optional[int],
-        top_p: Optional[float] = None
+        top_p: Optional[float] = None,
+        timeout: Optional[int] = None
     ) -> str:
         """Call DeepSeek API."""
         headers = {
@@ -176,8 +179,11 @@ class LLMProvider:
         if model not in valid_deepseek_models:
             print(f"    ⚠ Warning: Model '{model}' may not be valid for DeepSeek API. Valid models: {valid_deepseek_models}")
 
+        # Use provided timeout or default to 30 seconds
+        api_timeout = timeout if timeout is not None else 30
+
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=api_timeout)
             response.raise_for_status()
 
             result = response.json()
@@ -198,7 +204,8 @@ class LLMProvider:
         require_json: bool,
         temperature: Optional[float],
         max_tokens: Optional[int],
-        top_p: Optional[float] = None
+        top_p: Optional[float] = None,
+        timeout: Optional[int] = None
     ) -> str:
         """Call Ollama API."""
         # Ollama uses /api/chat endpoint
@@ -236,8 +243,11 @@ class LLMProvider:
         if options:
             data["options"] = options
 
+        # Use provided timeout or default to 60 seconds for Ollama
+        api_timeout = timeout if timeout is not None else 60
+
         try:
-            response = requests.post(api_url, json=data, timeout=60)
+            response = requests.post(api_url, json=data, timeout=api_timeout)
             response.raise_for_status()
 
             result = response.json()
@@ -269,7 +279,8 @@ class LLMProvider:
         require_json: bool,
         temperature: Optional[float],
         max_tokens: Optional[int],
-        top_p: Optional[float] = None
+        top_p: Optional[float] = None,
+        timeout: Optional[int] = None
     ) -> str:
         """Call GLM (Zhipu AI) API."""
         headers = {
@@ -296,8 +307,11 @@ class LLMProvider:
             # For text generation/editing, add max_tokens instead
             payload["max_tokens"] = max_tokens if max_tokens is not None else 200
 
+        # Use provided timeout or default to 60 seconds for GLM
+        api_timeout = timeout if timeout is not None else 60
+
         try:
-            response = requests.post(self.api_url, headers=headers, json=payload, timeout=30)
+            response = requests.post(self.api_url, headers=headers, json=payload, timeout=api_timeout)
             response.raise_for_status()
 
             result = response.json()
@@ -318,7 +332,8 @@ class LLMProvider:
         require_json: bool,
         temperature: Optional[float],
         max_tokens: Optional[int],
-        top_p: Optional[float] = None
+        top_p: Optional[float] = None,
+        timeout: Optional[int] = None
     ) -> str:
         """Call Google Gemini API."""
         # Construct full URL with API key
@@ -374,7 +389,9 @@ class LLMProvider:
         }
 
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+            # Use provided timeout or default to 60 seconds for Gemini
+            api_timeout = timeout if timeout is not None else 60
+            response = requests.post(api_url, headers=headers, json=payload, timeout=api_timeout)
             response.raise_for_status()
 
             result = response.json()

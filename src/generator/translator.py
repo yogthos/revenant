@@ -93,6 +93,8 @@ class StyleTranslator:
         self.proposition_extractor = PropositionExtractor(config_path=config_path)
         # Load paragraph fusion config
         self.paragraph_fusion_config = self.config.get("paragraph_fusion", {})
+        # Load LLM provider config (for retry settings)
+        self.llm_provider_config = self.config.get("llm_provider", {})
 
     def _get_nlp(self):
         """Get or load spaCy model for noun extraction."""
@@ -480,8 +482,8 @@ class StyleTranslator:
         # Call LLM with JSON mode enabled (high temperature for diversity)
         # Add retry logic with exponential backoff for timeout errors
         import time
-        max_retries = 3
-        retry_delay = 2  # Start with 2 seconds
+        max_retries = self.llm_provider_config.get("max_retries", 3)
+        retry_delay = self.llm_provider_config.get("retry_delay", 2)  # Start delay in seconds
 
         for attempt in range(max_retries):
             try:
@@ -2712,7 +2714,11 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                 rhythm_map = extract_paragraph_rhythm(teacher_example)
 
                 if verbose:
-                    print(f"  Selected teacher example with {len(rhythm_map)} sentences (target: {target_sentences})")
+                    sentence_count = len(rhythm_map)
+                    mismatch = abs(sentence_count - target_sentences)
+                    print(f"  Selected teacher example with {sentence_count} sentences (target: {target_sentences})")
+                    if mismatch > 2:
+                        print(f"  ⚠ Warning: Large sentence count mismatch ({mismatch} sentences). Quality may be affected.")
                     if rhythm_map:
                         rhythm_summary = [f"{r['length']} {r['type']}" for r in rhythm_map[:3]]
                         print(f"  Rhythm map: {rhythm_summary}...")
@@ -2822,15 +2828,45 @@ These connectors match the author's style and help create flowing, complex sente
         if verbose:
             print(f"  Generating paragraph fusion with {len(propositions)} propositions...")
 
+        # Get timeout from config (default 60 seconds for paragraph fusion)
+        api_timeout = self.paragraph_fusion_config.get("api_timeout", 60)
+
+        # Add retry logic with exponential backoff for timeout errors
+        import time
+        import requests
+        max_retries = self.llm_provider_config.get("max_retries", 3)
+        retry_delay = self.llm_provider_config.get("retry_delay", 2)  # Start delay in seconds
+
+        response = None
+        for attempt in range(max_retries):
+            try:
+                response = self.llm_provider.call(
+                    system_prompt="You are a ghostwriter creating paragraphs in a specific style. Output ONLY valid JSON arrays.",
+                    user_prompt=prompt,
+                    model_type="editor",
+                    require_json=True,
+                    temperature=0.7,  # Moderate temperature for style variation
+                    max_tokens=self.translator_config.get("max_tokens", 500),
+                    timeout=api_timeout
+                )
+                break  # Success, exit retry loop
+            except (RuntimeError, requests.exceptions.RequestException, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                error_str = str(e)
+                is_timeout = "timeout" in error_str.lower() or "timed out" in error_str.lower() or "Read timed out" in error_str
+
+                if attempt < max_retries - 1 and is_timeout:
+                    # Retry on timeout with exponential backoff
+                    if verbose:
+                        print(f"  ⚠ Timeout error (attempt {attempt + 1}/{max_retries}): {error_str[:100]}...")
+                        print(f"  ⏳ Waiting {retry_delay}s before retry...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                    continue
+                else:
+                    # Final attempt failed or non-timeout error - re-raise
+                    raise
+
         try:
-            response = self.llm_provider.call(
-                system_prompt="You are a ghostwriter creating paragraphs in a specific style. Output ONLY valid JSON arrays.",
-                user_prompt=prompt,
-                model_type="editor",
-                require_json=True,
-                temperature=0.7,  # Moderate temperature for style variation
-                max_tokens=self.translator_config.get("max_tokens", 500)
-            )
 
             # Parse JSON response
             variations = self._extract_json_list(response)
@@ -3179,8 +3215,14 @@ Generate 3 new variations that include ALL facts from the checklist. Output as a
                 return final_text
 
         except Exception as e:
+            error_str = str(e)
+            is_timeout = "timeout" in error_str.lower() or "timed out" in error_str.lower() or "Read timed out" in error_str
+
             if verbose:
-                print(f"  ✗ Paragraph fusion failed: {e}, using fallback")
+                if is_timeout:
+                    print(f"  ✗ Paragraph fusion failed: Network timeout after {max_retries} retry attempts. Using fallback.")
+                else:
+                    print(f"  ✗ Paragraph fusion failed: {error_str[:200]}, using fallback")
             return paragraph  # Fallback to original
 
     def _repair_missing_artifacts(
