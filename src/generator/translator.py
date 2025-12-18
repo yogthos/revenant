@@ -818,7 +818,8 @@ class StyleTranslator:
                                     print(f"      ✓ Meaning filter PASSED (synonym bridge): Recall {recall_score:.2f} < {min_keyword_presence}, but semantic similarity {semantic_similarity:.2f} > 0.85")
                             else:
                                 if verbose:
-                                    print(f"      ✗ Meaning filter FAILED: Recall {recall_score:.2f} < {min_keyword_presence} AND semantic similarity {semantic_similarity:.2f if semantic_similarity else 'N/A'} <= 0.85")
+                                    semantic_sim_str = f"{semantic_similarity:.2f}" if semantic_similarity is not None else "N/A"
+                                    print(f"      ✗ Meaning filter FAILED: Recall {recall_score:.2f} < {min_keyword_presence} AND semantic similarity {semantic_sim_str} <= 0.85")
                                     print(f"         📝 Original: {blueprint.original_text[:80]}...")
                                     print(f"         📝 Candidate: {candidate_text[:80]}...")
                                     print(f"         💬 Feedback: {critic_result.get('feedback', 'N/A')[:100]}...")
@@ -2697,11 +2698,175 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     print(f"  ⚠ No variations generated, using fallback")
                 return paragraph  # Fallback to original
 
-            # Step 5: Return first variation (evaluation will be done by critic)
-            # TODO: In future, evaluate all variations and return best
+            # Step 5: Evaluate all variations and select best using tiered selection logic
             if verbose:
-                print(f"  Generated {len(variations)} variations, using first")
-            return variations[0]
+                print(f"  Generated {len(variations)} variations, evaluating all...")
+
+            # Initialize critic for evaluation
+            from src.validator.semantic_critic import SemanticCritic
+            from src.ingestion.blueprint import BlueprintExtractor
+            critic = SemanticCritic(config_path=self.config_path)
+            extractor = BlueprintExtractor()
+
+            # Get author style vector for holistic evaluation
+            try:
+                author_style_vector = atlas.get_author_style_vector(author_name)
+            except Exception:
+                author_style_vector = None
+
+            # Create a minimal blueprint for evaluation (critic needs it for paragraph mode)
+            blueprint = extractor.extract(paragraph)
+
+            # Evaluate all variations
+            evaluated_candidates = []
+            proposition_recall_threshold = self.paragraph_fusion_config.get("proposition_recall_threshold", 0.8)
+
+            for i, variation in enumerate(variations):
+                # Clean variation (remove "Variation X:" prefix if present)
+                cleaned_variation = re.sub(r'^Variation \d+:\s*', '', variation.strip())
+
+                critic_result = critic.evaluate(
+                    generated_text=cleaned_variation,
+                    input_blueprint=blueprint,
+                    propositions=propositions,
+                    is_paragraph=True,
+                    author_style_vector=author_style_vector
+                )
+
+                evaluated_candidates.append({
+                    "text": cleaned_variation,
+                    "recall": critic_result.get("proposition_recall", 0.0),
+                    "style_alignment": critic_result.get("style_alignment", 0.0),
+                    "score": critic_result.get("score", 0.0),
+                    "result": critic_result
+                })
+
+                if verbose:
+                    print(f"    Variation {i+1}: recall={critic_result.get('proposition_recall', 0.0):.2f}, "
+                          f"style={critic_result.get('style_alignment', 0.0):.2f}, "
+                          f"score={critic_result.get('score', 0.0):.2f}")
+
+            # Tiered Selection Logic:
+            # 1. Filter qualified candidates (recall >= threshold)
+            qualified_candidates = [
+                c for c in evaluated_candidates
+                if c["recall"] >= proposition_recall_threshold
+            ]
+
+            if qualified_candidates:
+                # 2. From qualified pool, pick highest composite score (Style + Meaning)
+                best_candidate = max(qualified_candidates, key=lambda x: x["score"])
+                if verbose:
+                    print(f"  ✓ Selected qualified candidate: recall={best_candidate['recall']:.2f}, "
+                          f"score={best_candidate['score']:.2f}")
+                return best_candidate["text"]
+            else:
+                # 3. Fallback: No qualified candidates, pick highest recall (salvage meaning)
+                best_candidate = max(evaluated_candidates, key=lambda x: x["recall"])
+                if verbose:
+                    print(f"  ⚠ No qualified candidates (recall >= {proposition_recall_threshold}), "
+                          f"using best recall: {best_candidate['recall']:.2f}")
+
+                # Task 3: "Delta" Repair Loop - if recall < 0.7, attempt repair
+                repair_threshold = 0.7
+                if best_candidate["recall"] < repair_threshold:
+                    if verbose:
+                        print(f"  🔧 Repair loop triggered: recall {best_candidate['recall']:.2f} < {repair_threshold}")
+
+                    # Identify missing propositions
+                    recall_details = best_candidate["result"].get("recall_details", {})
+                    missing_propositions = recall_details.get("missing", [])
+
+                    if missing_propositions:
+                        if verbose:
+                            print(f"  Missing {len(missing_propositions)} propositions: {missing_propositions[:3]}...")
+
+                        # Generate repair prompt
+                        repair_prompt = f"""The following paragraph is good but missed these specific facts: {', '.join(missing_propositions[:5])}.
+
+Rewrite it to include them seamlessly. Maintain the style and structure, but ensure all the missing facts are incorporated naturally.
+
+Original paragraph:
+"{best_candidate['text']}"
+
+Generate 3 new variations that include all the missing facts. Output as a JSON array of strings:
+[
+  "Repaired variation 1...",
+  "Repaired variation 2...",
+  "Repaired variation 3..."
+]"""
+
+                        try:
+                            # Generate repair variations
+                            repair_response = self.llm_provider.call(
+                                system_prompt="You are a ghostwriter repairing a paragraph to include missing facts. Output ONLY valid JSON arrays.",
+                                user_prompt=repair_prompt,
+                                model_type="editor",
+                                require_json=True,
+                                temperature=0.6,  # Slightly lower temperature for focused repair
+                                max_tokens=self.translator_config.get("max_tokens", 500)
+                            )
+
+                            repair_variations = self._extract_json_list(repair_response)
+                            repair_variations = repair_variations[:3]  # Limit to 3
+
+                            if repair_variations:
+                                if verbose:
+                                    print(f"  Generated {len(repair_variations)} repair variations, evaluating...")
+
+                                # Evaluate repair variations
+                                for i, repair_var in enumerate(repair_variations):
+                                    cleaned_repair = re.sub(r'^Repaired variation \d+:\s*', '', repair_var.strip())
+
+                                    repair_result = critic.evaluate(
+                                        generated_text=cleaned_repair,
+                                        input_blueprint=blueprint,
+                                        propositions=propositions,
+                                        is_paragraph=True,
+                                        author_style_vector=author_style_vector
+                                    )
+
+                                    evaluated_candidates.append({
+                                        "text": cleaned_repair,
+                                        "recall": repair_result.get("proposition_recall", 0.0),
+                                        "style_alignment": repair_result.get("style_alignment", 0.0),
+                                        "score": repair_result.get("score", 0.0),
+                                        "result": repair_result
+                                    })
+
+                                    if verbose:
+                                        print(f"    Repair {i+1}: recall={repair_result.get('proposition_recall', 0.0):.2f}, "
+                                              f"style={repair_result.get('style_alignment', 0.0):.2f}, "
+                                              f"score={repair_result.get('score', 0.0):.2f}")
+
+                                # Re-select best from merged pool (original + repairs)
+                                qualified_after_repair = [
+                                    c for c in evaluated_candidates
+                                    if c["recall"] >= proposition_recall_threshold
+                                ]
+
+                                if qualified_after_repair:
+                                    best_after_repair = max(qualified_after_repair, key=lambda x: x["score"])
+                                    if verbose:
+                                        print(f"  ✓ Repair successful: recall={best_after_repair['recall']:.2f}, "
+                                              f"score={best_after_repair['score']:.2f}")
+                                    return best_after_repair["text"]
+                                else:
+                                    # Still no qualified, but pick best from all (including repairs)
+                                    best_after_repair = max(evaluated_candidates, key=lambda x: x["recall"])
+                                    if verbose:
+                                        print(f"  ⚠ Repair improved but still below threshold: "
+                                              f"recall={best_after_repair['recall']:.2f}")
+                                    return best_after_repair["text"]
+                            else:
+                                if verbose:
+                                    print(f"  ⚠ Repair generation failed, using original best candidate")
+                        except Exception as e:
+                            if verbose:
+                                print(f"  ⚠ Repair loop error: {e}, using original best candidate")
+
+                # Return best candidate (either original or after failed repair)
+                return best_candidate["text"]
 
         except Exception as e:
             if verbose:
