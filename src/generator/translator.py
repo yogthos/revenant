@@ -533,6 +533,13 @@ class StyleTranslator:
                         )
 
                         if candidate and candidate.strip():
+                            # ESCAPE HATCH: Check for logic mismatch signal
+                            if "SKIPPING: LOGIC_MISMATCH" in candidate.upper() or "LOGIC_MISMATCH" in candidate.upper():
+                                if verbose:
+                                    print(f"    ⚠ Logic mismatch detected for skeleton, skipping this template")
+                                # Skip this candidate and continue to next skeleton
+                                continue
+
                             # EXPANSION GATE: Reject candidates where word_count > 3 * input_word_count
                             input_word_count = len(blueprint.original_text.split())
                             candidate_word_count = len(candidate.split())
@@ -1570,10 +1577,21 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                         if verbose:
                             print(f"  DEBUG: Stagnation detected (3 gens at {best_score:.2f}).")
 
-                        if best_score >= 0.85:
+                        # Check for logic failure before accepting stagnation exit
+                        logic_fail = False
+                        try:
+                            stagnation_result = critic.evaluate(best_draft, blueprint, allowed_style_words=style_lexicon)
+                            logic_fail = stagnation_result.get("logic_fail", False)
+                        except Exception:
+                            pass
+
+                        if best_score >= 0.85 and not logic_fail:
                             if verbose:
                                 print("  DEBUG: Score is acceptable. Early exit.")
                             break
+                        elif logic_fail:
+                            if verbose:
+                                print(f"  DEBUG: Logic failure detected (score {best_score:.2f}), continuing evolution.")
                         else:
                             # Never trade a good score (>= 0.5) for a potentially worse simplification
                             # Only attempt simplification if best_score is truly bad (< 0.5)
@@ -1609,6 +1627,7 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
 
         # Soft Pass Logic: Only accept if style is present OR score is very high
         # Ban boring sentences - force evolution to continue if no style
+        # LOGIC VETO: Never soft pass if logic failure detected
         style_lexicon = None
         if style_dna_dict and isinstance(style_dna_dict, dict):
             style_lexicon = style_dna_dict.get("lexicon")
@@ -1617,10 +1636,19 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         if style_lexicon and best_draft:
             style_density = self._calculate_style_density(best_draft, style_lexicon)
 
+        # Check for logic failure in the current best result
+        logic_fail = False
+        try:
+            current_result = critic.evaluate(best_draft, blueprint, allowed_style_words=style_lexicon)
+            logic_fail = current_result.get("logic_fail", False)
+        except Exception:
+            pass  # If evaluation fails, continue without logic check
+
         # Conditional Soft Pass:
-        # - If style present (density > 0.1): Accept if score >= 0.85
-        # - If boring (density == 0): Only accept if score >= 0.95
-        if best_score >= 0.85:
+        # - If style present (density > 0.1): Accept if score >= 0.85 AND no logic failure
+        # - If boring (density == 0): Only accept if score >= 0.95 AND no logic failure
+        # - NEVER accept if logic_fail is True (even with high score)
+        if best_score >= 0.85 and not logic_fail:
             if style_density > 0.1:
                 # Style is present, accept early
                 if verbose and best_score < pass_threshold:
@@ -1635,6 +1663,10 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                 # Boring sentence with mediocre score - reject soft pass, keep evolving
                 if verbose:
                     print(f"  Evolution: Soft pass rejected (score {best_score:.2f} but style_density {style_density:.2f} <= 0.1, requiring >= 0.95 for boring sentences)")
+        elif logic_fail:
+            # Logic failure detected - reject soft pass regardless of score
+            if verbose:
+                print(f"  Evolution: Soft pass rejected (logic failure detected, score {best_score:.2f})")
 
         return (best_draft, best_score)
 

@@ -539,7 +539,15 @@ This ensures the output matches the target author's voice.
 - It is better to leave the tail of the skeleton empty than to generate gibberish
 - Only fill slots that you can meaningfully map from the Original Text
 
-**Output:** Return ONLY the final sentence with meaning from the Original Text injected into the skeleton structure."""
+**LOGIC MISMATCH ESCAPE HATCH:**
+- If the input logic (e.g., Universal Truth like "Stars erode") explicitly contradicts the skeleton logic (e.g., Conditional Hypothesis like "If... then..."), you MUST output: **SKIPPING: LOGIC_MISMATCH**
+- Do NOT force a bad sentence that changes the meaning (e.g., turning "Stars erode" into "Stars erode only when...").
+- Examples of logic mismatches:
+  * Universal statement → Conditional template: "Stars erode" cannot become "If stars erode, then..."
+  * Factual statement → Hypothetical template: "The rule exists" cannot become "If the rule existed..."
+- If you detect a logic mismatch, output **SKIPPING: LOGIC_MISMATCH** instead of generating a contradictory sentence.
+
+**Output:** Return ONLY the final sentence with meaning from the Original Text injected into the skeleton structure, OR **SKIPPING: LOGIC_MISMATCH** if the template forces a logical contradiction."""
 
         try:
             mutated = llm_provider.call(

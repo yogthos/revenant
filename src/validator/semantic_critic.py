@@ -529,12 +529,25 @@ class SemanticCritic:
         llm_meaning_preserved = True
         llm_confidence = 1.0
         llm_explanation = ""
+        logic_fail = False
         if self.use_llm_verification and self.llm_provider:
             llm_meaning_preserved, llm_confidence, llm_explanation = self._verify_meaning_with_llm(
                 original_text, generated_text
             )
             # If LLM detects meaning loss with high confidence, override pass status
             if not llm_meaning_preserved and llm_confidence > 0.7:
+                passes = False
+
+            # LOGIC VETO: Check if explanation indicates logic/meaning issues
+            # Keywords that indicate logical problems: conditional relationship, implies, logic mismatch, contradicts
+            explanation_lower = llm_explanation.lower()
+            logic_keywords = ['conditional relationship', 'implies', 'logic mismatch', 'contradicts',
+                            'contradiction', 'logical error', 'meaning shift', 'incorrectly implies',
+                            'adds condition', 'changes meaning', 'logical inconsistency']
+            if any(keyword in explanation_lower for keyword in logic_keywords):
+                logic_fail = True
+                # HARD CAP: Force score to 0.45 if logic is wrong, regardless of Recall
+                final_score = min(final_score, 0.45)
                 passes = False
 
         feedback_parts = []
@@ -544,6 +557,8 @@ class SemanticCritic:
             feedback_parts.append(adherence_feedback)
         if not llm_meaning_preserved and llm_confidence > 0.7:
             feedback_parts.append(f"LLM Verification: {llm_explanation}")
+        if logic_fail:
+            feedback_parts.append(f"LOGIC VETO: {llm_explanation}")
 
         return {
             "pass": passes,
@@ -551,6 +566,7 @@ class SemanticCritic:
             "precision_score": precision_score,
             "adherence_score": adherence_score,
             "llm_meaning_score": llm_confidence,
+            "logic_fail": logic_fail,
             "score": final_score,
             "feedback": " ".join(feedback_parts) if feedback_parts else "Passed semantic validation."
         }
@@ -570,7 +586,7 @@ class SemanticCritic:
         if not self.llm_provider:
             return True, 0.5, "LLM verification unavailable"
 
-        system_prompt = "You are a semantic validator. Your task is to determine if two sentences convey the same core meaning, even if they use different words or stylistic structures."
+        system_prompt = "You are a semantic validator. Your task is to determine if two sentences convey the same core meaning, even if they use different words or stylistic structures. Pay special attention to logical relationships, conditional statements, and meaning shifts."
 
         user_prompt = f"""Compare these two sentences and determine if the generated text preserves the core meaning of the original.
 
@@ -578,11 +594,16 @@ Original: "{original_text}"
 
 Generated: "{generated_text}"
 
-Does the generated text preserve the core meaning of the original? Respond with JSON:
+Does the generated text preserve the core meaning of the original? Pay attention to:
+- Logical relationships: Does it add conditions (e.g., "only when", "if... then") that weren't in the original?
+- Meaning shifts: Does it change a universal statement into a conditional, or vice versa?
+- Contradictions: Does it imply something that contradicts the original meaning?
+
+Respond with JSON:
 {{
     "meaning_preserved": true/false,
     "confidence": 0.0-1.0,
-    "explanation": "brief reason"
+    "explanation": "brief reason (mention if conditional relationship, logic mismatch, or meaning shift detected)"
 }}"""
 
         try:
