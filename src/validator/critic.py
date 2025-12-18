@@ -6,10 +6,11 @@ a reference style paragraph to detect style mismatches and "AI slop".
 
 import json
 import re
-import requests
 import string
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Set, TYPE_CHECKING
+
+from src.generator.llm_provider import LLMProvider
 
 # Initialize NLTK data if needed
 try:
@@ -71,139 +72,6 @@ def _load_config(config_path: str = "config.json") -> Dict:
     """Load configuration from config.json."""
     with open(config_path, 'r') as f:
         return json.load(f)
-
-
-def _call_deepseek_api(system_prompt: str, user_prompt: str, api_key: str, api_url: str, model: str, require_json: bool = True) -> str:
-    """Call DeepSeek API for critic evaluation or text generation.
-
-    Args:
-        system_prompt: System prompt for the LLM.
-        user_prompt: User prompt with the request.
-        api_key: DeepSeek API key.
-        api_url: DeepSeek API URL.
-        model: Model name to use.
-        require_json: If True, request JSON format (for critic). If False, plain text (for generation/editing).
-
-    Returns:
-        LLM response text.
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.3,
-    }
-
-    # Only add JSON format requirement for critic evaluation
-    if require_json:
-        payload["response_format"] = {"type": "json_object"}
-    else:
-        # For text generation/editing, add max_tokens instead
-        payload["max_tokens"] = 200
-
-    # FIX 3: Validate model name for DeepSeek API
-    valid_deepseek_models = ["deepseek-chat", "deepseek-coder", "deepseek-reasoner", "deepseek-chat-v3"]
-    if model not in valid_deepseek_models:
-        print(f"    ⚠ Warning: Model '{model}' may not be valid for DeepSeek API. Valid models: {valid_deepseek_models}")
-
-    try:
-        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-
-        result = response.json()
-        return result.get("choices", [{}])[0].get("message", {}).get("content", "")
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 400:
-            error_detail = e.response.text
-            raise RuntimeError(f"DeepSeek API 400 Bad Request: {error_detail}. Check model name '{model}' and request format.")
-        raise
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"DeepSeek API request failed: {e}")
-
-
-def _call_ollama_api(
-    system_prompt: str,
-    user_prompt: str,
-    api_url: str,
-    model: str,
-    keep_alive: str = "10m"
-) -> str:
-    """Call Ollama API for critic evaluation.
-
-    Args:
-        system_prompt: System prompt for the LLM.
-        user_prompt: User prompt with the request.
-        api_url: Ollama API URL (should be /api/chat endpoint).
-        model: Model name to use.
-        keep_alive: How long to keep model in memory (e.g., "10m", "5m", "-1" for infinite).
-
-    Returns:
-        LLM response text (should be JSON for critic).
-    """
-    # Convert /api/generate to /api/chat if needed
-    if api_url.endswith("/api/generate"):
-        api_url = api_url.replace("/api/generate", "/api/chat")
-    elif not api_url.endswith("/api/chat"):
-        # If neither, assume it's a base URL and append /api/chat
-        api_url = api_url.rstrip("/") + "/api/chat"
-
-    headers = {
-        "Content-Type": "application/json"
-    }
-
-    # For critic, we need JSON output, so add format instruction to system prompt
-    enhanced_system_prompt = system_prompt + "\n\nIMPORTANT: You must respond with valid JSON only. No additional text or explanation."
-
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": enhanced_system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "options": {
-            "temperature": 0.3,
-            "num_predict": 300  # Max tokens for critic response
-        },
-        "format": "json",  # Request JSON format
-        "keep_alive": keep_alive,  # Keep model in VRAM to avoid reload latency
-        "stream": False  # Request non-streaming response
-    }
-
-    try:
-        response = requests.post(api_url, headers=headers, json=data, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-
-        if "message" in result and "content" in result["message"]:
-            return result["message"]["content"].strip()
-        else:
-            raise ValueError(f"Unexpected API response: {result}")
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            # Model might not be found - provide helpful error message
-            try:
-                base_url = api_url.replace("/api/chat", "").replace("/api/generate", "").rstrip("/")
-                models_url = f"{base_url}/api/tags"
-                models_response = requests.get(models_url, timeout=5)
-                if models_response.status_code == 200:
-                    models_data = models_response.json()
-                    models = [m.get("name", "unknown") for m in models_data.get("models", [])]
-                    available_models = ", ".join(models[:5])  # Show first 5 models
-                else:
-                    available_models = "unknown"
-            except:
-                available_models = "unknown"
-            raise RuntimeError(f"Ollama API 404: Model '{model}' not found. Available models: {available_models}")
-        raise RuntimeError(f"Ollama API request failed: {e}")
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Ollama API request failed: {e}")
 
 
 def _detect_hallucinated_words(generated_text: str, original_text: str) -> Tuple[bool, List[str]]:
@@ -776,24 +644,8 @@ def critic_evaluate(
         - "feedback": str - Specific feedback on what to improve
         - "score": float - Style match score (0-1)
     """
-    config = _load_config(config_path)
-    provider = config.get("provider", "deepseek")
-
-    if provider == "deepseek":
-        deepseek_config = config.get("deepseek", {})
-        api_key = deepseek_config.get("api_key")
-        api_url = deepseek_config.get("api_url")
-        model = deepseek_config.get("critic_model", deepseek_config.get("editor_model", "deepseek-chat"))
-
-        if not api_key or not api_url:
-            raise ValueError("DeepSeek API key or URL not found in config")
-    elif provider == "ollama":
-        ollama_config = config.get("ollama", {})
-        api_url = ollama_config.get("url", "http://localhost:11434/api/chat")
-        model = ollama_config.get("critic_model", "qwen3:8b")
-        keep_alive = ollama_config.get("keep_alive", "10m")
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Initialize LLM provider
+    llm = LLMProvider(config_path=config_path)
 
     # HARD GATE: Check for semantic validity before LLM evaluation
     # This deterministic check catches incomplete sentences and nonsensical constructions
@@ -880,13 +732,15 @@ If any citations, quotations, facts, concepts, or details are missing or modifie
     # Note: preservation_instruction already includes the critical failure message if original_text is provided
 
     try:
-        # Call API
-        if provider == "deepseek":
-            response_text = _call_deepseek_api(system_prompt, user_prompt, api_key, api_url, model, require_json=True)
-        elif provider == "ollama":
-            response_text = _call_ollama_api(system_prompt, user_prompt, api_url, model, keep_alive)
-        else:
-            raise ValueError(f"Unsupported provider: {provider}")
+        # Call LLM API
+        response_text = llm.call(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model_type="critic",
+            require_json=True,
+            temperature=0.3,
+            max_tokens=300
+        )
 
         # Parse JSON response
         try:
@@ -1267,23 +1121,8 @@ def apply_surgical_fix(
         Edited text with the surgical fix applied.
     """
     config = _load_config(config_path)
-    provider = config.get("provider", "deepseek")
-
-    if provider == "deepseek":
-        deepseek_config = config.get("deepseek", {})
-        api_key = deepseek_config.get("api_key")
-        api_url = deepseek_config.get("api_url")
-        model = deepseek_config.get("editor_model", "deepseek-chat")
-
-        if not api_key or not api_url:
-            raise ValueError("DeepSeek API key or URL not found in config")
-    elif provider == "ollama":
-        ollama_config = config.get("ollama", {})
-        api_url = ollama_config.get("url", "http://localhost:11434/api/chat")
-        model = ollama_config.get("editor_model", "mistral-nemo")
-        keep_alive = ollama_config.get("keep_alive", "10m")
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Initialize LLM provider
+    llm = LLMProvider(config_path=config_path)
 
     # Build editor prompt
     system_prompt = "You are a Text Editor. Your task is to apply specific edits to text without rewriting the entire content."
@@ -1298,17 +1137,15 @@ Apply ONLY this change. Keep everything else exactly the same.
 
 Output the edited text only, without any explanation or commentary."""
 
-    # FIX 3: Call API with require_json=False for surgical fixes (plain text, not JSON)
-    if provider == "deepseek":
-        # Validate model name before calling
-        valid_deepseek_models = ["deepseek-chat", "deepseek-coder", "deepseek-reasoner", "deepseek-chat-v3"]
-        if model not in valid_deepseek_models:
-            print(f"    ⚠ Warning: Model '{model}' may not be valid for DeepSeek API. Using anyway...")
-        response_text = _call_deepseek_api(system_prompt, user_prompt, api_key, api_url, model, require_json=False)
-    elif provider == "ollama":
-        response_text = _call_ollama_api(system_prompt, user_prompt, api_url, model, keep_alive)
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Call LLM API for surgical fix (plain text, not JSON)
+    response_text = llm.call(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_type="editor",
+        require_json=False,
+        temperature=0.3,
+        max_tokens=200
+    )
 
     # Clean up response (remove quotes if present)
     edited_text = response_text.strip()

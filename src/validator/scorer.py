@@ -509,49 +509,6 @@ def score_output(
     return float(overall_score), metrics, all_pass, diagnostics
 
 
-def _call_llm_evaluator(
-    prompt: str,
-    api_key: str,
-    api_url: str,
-    model: str = "deepseek-chat"
-) -> str:
-    """Call LLM API for evaluation/critique.
-
-    Args:
-        prompt: The evaluation prompt.
-        api_key: API key.
-        api_url: API URL.
-        model: Model name to use.
-
-    Returns:
-        LLM response text.
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": "You are an expert text evaluator. Provide clear, specific feedback and scores."},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.2,  # Low temperature for consistent evaluation
-        "max_tokens": 300
-    }
-
-    try:
-        response = requests.post(api_url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-
-        if "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"].strip()
-        else:
-            raise ValueError(f"Unexpected API response: {result}")
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"API request failed: {e}")
 
 
 def evaluate_style_match(
@@ -574,23 +531,9 @@ def evaluate_style_match(
         - Style match score (0.0 to 1.0)
         - Feedback string with specific suggestions
     """
-    # Load configuration
-    with open(config_path, 'r') as f:
-        config = json.load(f)
-
-    provider = config.get("provider", "deepseek")
-
-    if provider == "deepseek":
-        deepseek_config = config.get("deepseek", {})
-        api_key = deepseek_config.get("api_key")
-        api_url = deepseek_config.get("api_url")
-        # Use critic model if available, otherwise use editor model
-        model = deepseek_config.get("critic_model") or deepseek_config.get("editor_model", "deepseek-chat")
-
-        if not api_key or not api_url:
-            raise ValueError("DeepSeek API key or URL not found in config")
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Initialize LLM provider
+    from src.generator.llm_provider import LLMProvider
+    llm = LLMProvider(config_path=config_path)
 
     # Extract a few style examples
     from nltk.tokenize import sent_tokenize
@@ -633,7 +576,15 @@ FEEDBACK: [specific feedback on what's good/bad and how to improve]
 Be specific in your feedback. If style doesn't match, explain what's wrong (e.g., "too verbose", "not direct enough", "sentence structure too complex")."""
 
     # Call LLM evaluator
-    response = _call_llm_evaluator(evaluation_prompt, api_key, api_url, model)
+    system_prompt = "You are an expert text evaluator. Provide clear, specific feedback and scores."
+    response = llm.call(
+        system_prompt=system_prompt,
+        user_prompt=evaluation_prompt,
+        model_type="critic",
+        require_json=False,
+        temperature=0.2,  # Low temperature for consistent evaluation
+        max_tokens=300
+    )
 
     # Parse response
     meaning_score = 0.5  # Default

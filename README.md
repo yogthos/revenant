@@ -68,6 +68,12 @@ The project uses `config.json` for configuration. Here's the complete structure:
     "editor_model": "deepseek-chat",
     "critic_model": "deepseek-chat"
   },
+  "glm": {
+    "api_key": "your-api-key-here",
+    "api_url": "https://api.z.ai/api/paas/v4/chat/completions",
+    "editor_model": "glm-4.6",
+    "critic_model": "glm-4.6"
+  },
   "atlas": {
     "persist_path": "atlas_cache/",
     "collection_name": "style_atlas",
@@ -119,7 +125,7 @@ The project uses `config.json` for configuration. Here's the complete structure:
 
 #### Provider Settings
 
-- **provider**: LLM provider to use (`"deepseek"` or `"ollama"`)
+- **provider**: LLM provider to use (`"deepseek"`, `"ollama"`, or `"glm"`)
 
 #### DeepSeek Configuration
 
@@ -132,12 +138,19 @@ The project uses `config.json` for configuration. Here's the complete structure:
 
 - **ollama.url**: Ollama API endpoint (default: `"http://localhost:11434/api/chat"`)
   - The system automatically converts `/api/generate` to `/api/chat` if needed
-- **ollama.editor_model**: Model name for text generation (e.g., `"mistral-nemo"`, `"qwen3:32b"`)
+- **ollama.editor_model**: Model name for text generation (e.g., `"mistral-nemo:12b"`, `"qwen3:32b"`)
 - **ollama.critic_model**: Model name for critic evaluation (e.g., `"qwen3:8b"`, `"deepseek-r1:8b"`)
 - **ollama.keep_alive**: Duration to keep model loaded in VRAM (e.g., `"10m"`, `"5m"`, `"30s"`)
   - Reduces latency by keeping models loaded between API calls
   - Format: number followed by unit (`s` for seconds, `m` for minutes, `h` for hours)
   - Default: `"10m"` (10 minutes)
+
+#### GLM (Zhipu AI) Configuration
+
+- **glm.api_key**: Your GLM API key (get one at https://open.bigmodel.cn)
+- **glm.api_url**: GLM API endpoint (default: `"https://api.z.ai/api/paas/v4/chat/completions"`)
+- **glm.editor_model**: Model for text generation (default: `"glm-4.6"`)
+- **glm.critic_model**: Model for critic evaluation (default: `"glm-4.6"`)
 
 #### Style Atlas Settings
 
@@ -223,6 +236,13 @@ Controls deterministic length validation to ensure content preservation:
 2. Navigate to API keys section
 3. Create a new API key
 4. Copy the key and paste it into `config.json` under `deepseek.api_key`
+
+#### GLM (Zhipu AI) API
+
+1. Sign up at https://open.bigmodel.cn
+2. Navigate to API keys section
+3. Create a new API key
+4. Copy the key and paste it into `config.json` under `glm.api_key`
 
 #### Ollama (Local Models)
 

@@ -5,152 +5,13 @@ sentences that preserve semantic meaning while following specific
 structural templates and vocabulary requirements.
 """
 
-import json
-import os
 import re
-from typing import Dict, List, Optional
-import requests
+from typing import List, Optional
 
 from src.models import ContentUnit
 from src.generator.prompt_builder import PromptAssembler
+from src.generator.llm_provider import LLMProvider
 from src.analyzer.style_metrics import get_style_vector
-
-
-def _load_config(config_path: str = "config.json") -> Dict:
-    """Load configuration from config.json.
-
-    Args:
-        config_path: Path to the config file.
-
-    Returns:
-        Configuration dictionary.
-    """
-    with open(config_path, 'r') as f:
-        return json.load(f)
-
-
-def _call_deepseek_api(
-    system_prompt: str,
-    user_prompt: str,
-    api_key: str,
-    api_url: str,
-    model: str = "deepseek-chat"
-) -> str:
-    """Call DeepSeek API to generate text.
-
-    Args:
-        system_prompt: System prompt for the LLM.
-        user_prompt: User prompt with the request.
-        api_key: DeepSeek API key.
-        api_url: DeepSeek API URL.
-        model: Model name to use.
-
-    Returns:
-        Generated text response.
-    """
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "temperature": 0.1,  # Very low temperature for precise structure matching
-        "max_tokens": 200
-    }
-
-    try:
-        response = requests.post(api_url, headers=headers, json=data, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-
-        if "choices" in result and len(result["choices"]) > 0:
-            return result["choices"][0]["message"]["content"].strip()
-        else:
-            raise ValueError(f"Unexpected API response: {result}")
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"API request failed: {e}")
-
-
-def _get_ollama_models(api_url: str) -> str:
-    """Get list of available Ollama models for error messages."""
-    try:
-        base_url = api_url.replace("/api/chat", "").replace("/api/generate", "").rstrip("/")
-        models_url = f"{base_url}/api/tags"
-        response = requests.get(models_url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            models = [m.get("name", "unknown") for m in data.get("models", [])]
-            return ", ".join(models[:5])  # Show first 5 models
-    except:
-        pass
-    return "unknown"
-
-
-def _call_ollama_api(
-    system_prompt: str,
-    user_prompt: str,
-    api_url: str,
-    model: str,
-    keep_alive: str = "10m"
-) -> str:
-    """Call Ollama API to generate text.
-
-    Args:
-        system_prompt: System prompt for the LLM.
-        user_prompt: User prompt with the request.
-        api_url: Ollama API URL (should be /api/chat endpoint).
-        model: Model name to use.
-        keep_alive: How long to keep model in memory (e.g., "10m", "5m", "-1" for infinite).
-
-    Returns:
-        Generated text response.
-    """
-    # Convert /api/generate to /api/chat if needed
-    if api_url.endswith("/api/generate"):
-        api_url = api_url.replace("/api/generate", "/api/chat")
-    elif not api_url.endswith("/api/chat"):
-        # If neither, assume it's a base URL and append /api/chat
-        api_url = api_url.rstrip("/") + "/api/chat"
-
-    headers = {
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        "options": {
-            "temperature": 0.1,  # Very low temperature for precise structure matching
-            "num_predict": 200  # Max tokens
-        },
-        "keep_alive": keep_alive,  # Keep model in VRAM to avoid reload latency
-        "stream": False  # Request non-streaming response
-    }
-
-    try:
-        response = requests.post(api_url, headers=headers, json=data, timeout=60)
-        response.raise_for_status()
-        result = response.json()
-
-        if "message" in result and "content" in result["message"]:
-            return result["message"]["content"].strip()
-        else:
-            raise ValueError(f"Unexpected API response: {result}")
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 404:
-            # Model might not be found - provide helpful error message
-            raise RuntimeError(f"Ollama API 404: Model '{model}' not found. Available models: {_get_ollama_models(api_url)}")
-        raise RuntimeError(f"Ollama API request failed: {e}")
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"Ollama API request failed: {e}")
 
 
 def generate_sentence(
@@ -184,25 +45,8 @@ def generate_sentence(
     Returns:
         Generated sentence string.
     """
-    # Load configuration
-    config = _load_config(config_path)
-    provider = config.get("provider", "deepseek")
-
-    if provider == "deepseek":
-        deepseek_config = config.get("deepseek", {})
-        api_key = deepseek_config.get("api_key")
-        api_url = deepseek_config.get("api_url")
-        model = deepseek_config.get("editor_model", "deepseek-chat")
-
-        if not api_key or not api_url:
-            raise ValueError("DeepSeek API key or URL not found in config")
-    elif provider == "ollama":
-        ollama_config = config.get("ollama", {})
-        api_url = ollama_config.get("url", "http://localhost:11434/api/chat")
-        model = ollama_config.get("editor_model", "mistral-nemo")
-        keep_alive = ollama_config.get("keep_alive", "10m")
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Initialize LLM provider
+    llm = LLMProvider(config_path=config_path)
 
     # Initialize prompt assembler
     assembler = PromptAssembler(target_author_name=target_author_name)
@@ -279,13 +123,15 @@ def generate_sentence(
         if "words" in hint.lower() and ("delete" in hint.lower() or "expand" in hint.lower() or "add" in hint.lower()):
             user_prompt += "\n\nCRITICAL: The length constraint above is a hard requirement. You MUST follow the exact word count instruction."
 
-    # Call API
-    if provider == "deepseek":
-        generated_text = _call_deepseek_api(system_prompt, user_prompt, api_key, api_url, model)
-    elif provider == "ollama":
-        generated_text = _call_ollama_api(system_prompt, user_prompt, api_url, model, keep_alive)
-    else:
-        raise ValueError(f"Unsupported provider: {provider}")
+    # Call LLM API
+    generated_text = llm.call(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model_type="editor",
+        require_json=False,
+        temperature=0.1,  # Very low temperature for precise structure matching
+        max_tokens=200
+    )
 
     # Parse CoT response if hint was provided (retry mode)
     if hint:
