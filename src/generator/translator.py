@@ -2663,6 +2663,8 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         position: str = "BODY",
         structure_tracker: Optional[object] = None,
         used_examples: Optional[Set[str]] = None,
+        secondary_author: Optional[str] = None,
+        blend_ratio: float = 0.5,
         verbose: bool = False
     ) -> tuple[str, Optional[List[Dict]], Optional[str]]:
         """Translate a paragraph holistically using paragraph fusion.
@@ -2727,21 +2729,68 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         rhetorical_type = classifier.classify_heuristic(paragraph)
 
         # Retrieve examples (wide net - don't filter by input length)
-        raw_examples = atlas.get_examples_by_rhetoric(
-            rhetorical_type,
-            top_k=retrieval_pool_size,  # Wide net for complexity filtering
-            author_name=author_name,
-            query_text=None  # Don't filter by input length
-        )
+        # Support dual-author blending
+        if secondary_author:
+            # Split retrieval pool between two authors based on blend_ratio
+            # ratio=0.7 means 70% from primary, 30% from secondary
+            primary_count = max(1, int(retrieval_pool_size * blend_ratio))
+            secondary_count = retrieval_pool_size - primary_count
 
-        if not raw_examples:
-            # Fallback: try any examples from author
-            raw_examples = atlas.get_examples_by_rhetoric(
-                RhetoricalType.OBSERVATION,
-                top_k=retrieval_pool_size,
+            # Retrieve from primary author
+            raw_examples_primary = atlas.get_examples_by_rhetoric(
+                rhetorical_type,
+                top_k=primary_count,
                 author_name=author_name,
                 query_text=None  # Don't filter by input length
             )
+
+            # Retrieve from secondary author
+            raw_examples_secondary = atlas.get_examples_by_rhetoric(
+                rhetorical_type,
+                top_k=secondary_count,
+                author_name=secondary_author,
+                query_text=None  # Don't filter by input length
+            )
+
+            # Pool them for teacher selection
+            raw_examples = raw_examples_primary + raw_examples_secondary
+
+            if verbose:
+                print(f"  Dual-author retrieval: {len(raw_examples_primary)} from {author_name}, "
+                      f"{len(raw_examples_secondary)} from {secondary_author} (ratio: {blend_ratio:.2f})")
+
+            # Fallback if primary retrieval failed
+            if not raw_examples_primary:
+                raw_examples_primary = atlas.get_examples_by_rhetoric(
+                    RhetoricalType.OBSERVATION,
+                    top_k=primary_count,
+                    author_name=author_name,
+                    query_text=None
+                )
+                raw_examples = raw_examples_primary + raw_examples_secondary
+
+            # Fallback if secondary retrieval failed (use primary only)
+            if not raw_examples_secondary and raw_examples_primary:
+                if verbose:
+                    print(f"  ⚠ No examples from {secondary_author}, using primary author only")
+                raw_examples = raw_examples_primary
+        else:
+            # Single author (existing logic)
+            raw_examples = atlas.get_examples_by_rhetoric(
+                rhetorical_type,
+                top_k=retrieval_pool_size,  # Wide net for complexity filtering
+                author_name=author_name,
+                query_text=None  # Don't filter by input length
+            )
+
+            if not raw_examples:
+                # Fallback: try any examples from author
+                raw_examples = atlas.get_examples_by_rhetoric(
+                    RhetoricalType.OBSERVATION,
+                    top_k=retrieval_pool_size,
+                    author_name=author_name,
+                    query_text=None  # Don't filter by input length
+                )
 
         # Filter by complexity (word count, sentence count, structure)
         complex_examples = self._select_complex_examples(
@@ -2915,7 +2964,37 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         if not style_dna:
             from src.analyzer.style_extractor import StyleExtractor
             style_extractor = StyleExtractor(config_path=self.config_path)
-            style_dna = style_extractor.extract_style_dna(complex_examples)
+
+            if secondary_author:
+                # Extract DNA from primary author's examples (from complex_examples pool)
+                # Note: complex_examples already contains mixed examples, but we extract
+                # primary DNA from the primary examples we retrieved earlier
+                style_dna = style_extractor.extract_style_dna(complex_examples)
+
+                # Extract secondary author's DNA separately for lexicon fusion
+                # Get examples from secondary author for DNA extraction
+                secondary_examples = atlas.get_examples_by_rhetoric(
+                    RhetoricalType.OBSERVATION,  # Use generic type for DNA extraction
+                    top_k=5,
+                    author_name=secondary_author,
+                    query_text=None
+                )
+                secondary_dna = style_extractor.extract_style_dna(secondary_examples) if secondary_examples else None
+
+                # Merge lexicons (union of top words from both)
+                if secondary_dna and isinstance(secondary_dna, dict) and isinstance(style_dna, dict):
+                    primary_lexicon = style_dna.get("lexicon", [])[:15]
+                    secondary_lexicon = secondary_dna.get("lexicon", [])[:15]
+                    blended_lexicon = list(set(primary_lexicon) | set(secondary_lexicon))
+                    style_dna["lexicon"] = blended_lexicon
+
+                    if verbose:
+                        print(f"  Blended lexicon: {len(blended_lexicon)} words "
+                              f"({len(primary_lexicon)} from {author_name}, "
+                              f"{len(secondary_lexicon)} from {secondary_author})")
+            else:
+                style_dna = style_extractor.extract_style_dna(complex_examples)
+
             if verbose:
                 print(f"  Extracted style DNA: {style_dna.get('tone', 'Unknown')} tone")
 

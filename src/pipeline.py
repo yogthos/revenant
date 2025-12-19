@@ -139,6 +139,44 @@ def process_text(
     Returns:
         List of generated paragraphs (each paragraph is a space-joined string of sentences).
     """
+    # Read blending configuration
+    try:
+        import json
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        blend_config = config.get("blend", {})
+        blend_authors = blend_config.get("authors", [])
+        blend_ratio = blend_config.get("ratio", 0.5)
+
+        # Determine primary and secondary authors
+        if len(blend_authors) >= 2:
+            # Dual-author mode
+            primary_author = blend_authors[0]
+            secondary_author = blend_authors[1]
+            # Override author_name if different from config
+            if author_name != primary_author:
+                if verbose:
+                    print(f"  Note: Using primary author from config: {primary_author} (was: {author_name})")
+                author_name = primary_author
+        elif len(blend_authors) == 1:
+            # Single-author mode (ratio ignored)
+            primary_author = blend_authors[0]
+            secondary_author = None
+            blend_ratio = 0.5  # Not used, but set for consistency
+            if author_name != primary_author:
+                if verbose:
+                    print(f"  Note: Using author from config: {primary_author} (was: {author_name})")
+                author_name = primary_author
+        else:
+            # No blend config or empty, use provided author_name
+            secondary_author = None
+            blend_ratio = 0.5
+    except Exception as e:
+        if verbose:
+            print(f"  ⚠ Could not read blend config: {e}, using single-author mode")
+        secondary_author = None
+        blend_ratio = 0.5
+
     extractor = BlueprintExtractor()
     classifier = RhetoricalClassifier()
     translator = StyleTranslator(config_path=config_path)
@@ -240,17 +278,32 @@ def process_text(
                     position=position,
                     structure_tracker=structure_tracker,
                     used_examples=used_examples,
+                    secondary_author=secondary_author,
+                    blend_ratio=blend_ratio,
                     verbose=verbose
                 )
 
                 # Evaluate with paragraph mode
                 propositions = proposition_extractor.extract_atomic_propositions(paragraph)
+                # Get style vectors for both authors if blending
+                author_style_vector = None
+                secondary_author_vector = None
+                try:
+                    author_style_vector = atlas.get_author_style_vector(author_name)
+                    if secondary_author:
+                        secondary_author_vector = atlas.get_author_style_vector(secondary_author)
+                except Exception as e:
+                    if verbose:
+                        print(f"  ⚠ Could not get style vectors: {e}")
+
                 critic_result = critic.evaluate(
                     generated_paragraph,
                     extractor.extract(paragraph),
                     propositions=propositions,
                     is_paragraph=True,
-                    author_style_vector=None  # TODO: Get from atlas if available
+                    author_style_vector=author_style_vector,
+                    secondary_author_vector=secondary_author_vector,
+                    blend_ratio=blend_ratio
                 )
 
                 if verbose:
@@ -642,31 +695,41 @@ def run_pipeline(
     authors = blend_config.get("authors", [])
     if not authors:
         raise ValueError("No authors specified in config.json. Set 'blend.authors' to a list of author names.")
-    author_name = authors[0]  # Use first author (Pipeline 2.0 doesn't support blending yet)
+    author_name = authors[0]  # Use first author as primary (for backward compatibility)
 
-    # Get style DNA from registry
+    # Get style DNA from registry for all authors
+    style_dna = ""
     if atlas_cache_path:
         registry = StyleRegistry(atlas_cache_path)
-        exists, suggestion = registry.validate_author(author_name)
-        if not exists:
-            print(f"Warning: Author '{author_name}' not found in registry.")
-            if suggestion:
-                print(f"  {suggestion}")
 
+        # Load style DNA for all authors in blend config
+        for author in authors:
+            exists, suggestion = registry.validate_author(author)
+            if not exists:
+                if verbose:
+                    print(f"Warning: Author '{author}' not found in registry.")
+                    if suggestion:
+                        print(f"  {suggestion}")
+
+            author_dna = registry.get_dna(author)
+            if not author_dna:
+                # Fallback: try to get from atlas
+                author_dna = atlas.author_style_dna.get(author, "")
+                if not author_dna:
+                    if verbose:
+                        print(f"Warning: No Style DNA found for '{author}'. Using empty DNA.")
+                        available = list(registry.get_all_profiles().keys())
+                        if available:
+                            print(f"Available authors in registry: {', '.join(sorted(available))}")
+                        print(f"Generate Style DNA using: python scripts/generate_style_dna.py --author '{author}'")
+            else:
+                if verbose:
+                    print(f"  ✓ Loaded Style DNA from registry for '{author}'")
+
+        # Get style DNA for primary author (for backward compatibility with single-author mode)
         style_dna = registry.get_dna(author_name)
         if not style_dna:
-            # Fallback: try to get from atlas
             style_dna = atlas.author_style_dna.get(author_name, "")
-            if not style_dna:
-                print(f"Warning: No Style DNA found for '{author_name}'. Using empty DNA.")
-                available = list(registry.get_all_profiles().keys())
-                if available:
-                    print(f"Available authors in registry: {', '.join(sorted(available))}")
-                print(f"Generate Style DNA using: python scripts/generate_style_dna.py --author '{author_name}'")
-                style_dna = ""
-        else:
-            if verbose:
-                print(f"  ✓ Loaded Style DNA from registry for '{author_name}'")
     else:
         style_dna = atlas.author_style_dna.get(author_name, "")
 

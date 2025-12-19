@@ -199,7 +199,9 @@ class SemanticCritic:
         propositions: Optional[List[str]] = None,
         is_paragraph: bool = False,
         author_style_vector: Optional[np.ndarray] = None,
-        style_lexicon: Optional[List[str]] = None
+        style_lexicon: Optional[List[str]] = None,
+        secondary_author_vector: Optional[np.ndarray] = None,
+        blend_ratio: float = 0.5
     ) -> Dict[str, any]:
         """Evaluate generated text against input blueprint.
 
@@ -252,7 +254,10 @@ class SemanticCritic:
         # PARAGRAPH MODE: Use proposition-based evaluation
         if is_paragraph and propositions:
             return self._evaluate_paragraph_mode(
-                generated_text, original_text, propositions, author_style_vector, style_lexicon=style_lexicon
+                generated_text, original_text, propositions, author_style_vector,
+                style_lexicon=style_lexicon,
+                secondary_author_vector=secondary_author_vector,
+                blend_ratio=blend_ratio
             )
 
         # SENTENCE MODE: Continue with existing sentence-level logic
@@ -1385,7 +1390,9 @@ Return JSON:
         self,
         generated_text: str,
         author_style_vector: Optional[np.ndarray] = None,
-        style_lexicon: Optional[List[str]] = None
+        style_lexicon: Optional[List[str]] = None,
+        secondary_author_vector: Optional[np.ndarray] = None,
+        blend_ratio: float = 0.5
     ) -> Tuple[float, Dict]:
         """Check style alignment between generated text and author style.
 
@@ -1412,12 +1419,20 @@ Return JSON:
         # Calculate style similarity (vector-based)
         style_similarity = 0.5  # Default if no author vector
         if author_style_vector is not None and NUMPY_AVAILABLE and np is not None:
-            # Calculate cosine similarity
-            dot_product = np.dot(generated_style_vector, author_style_vector)
+            # Interpolate vectors if secondary author provided
+            if secondary_author_vector is not None:
+                # Create "ghost vector": (1 - ratio) * primary + ratio * secondary
+                # ratio=0.7 means 70% primary, 30% secondary
+                target_vector = (author_style_vector * (1 - blend_ratio)) + (secondary_author_vector * blend_ratio)
+            else:
+                target_vector = author_style_vector
+
+            # Calculate cosine similarity against target vector
+            dot_product = np.dot(generated_style_vector, target_vector)
             norm_gen = np.linalg.norm(generated_style_vector)
-            norm_author = np.linalg.norm(author_style_vector)
-            if norm_gen > 0 and norm_author > 0:
-                style_similarity = dot_product / (norm_gen * norm_author)
+            norm_target = np.linalg.norm(target_vector)
+            if norm_gen > 0 and norm_target > 0:
+                style_similarity = dot_product / (norm_gen * norm_target)
                 style_similarity = max(0.0, min(1.0, style_similarity))  # Clamp to [0, 1]
 
         # Calculate lexicon density (percentage of words in generated_text that appear in style_lexicon)
@@ -1488,7 +1503,9 @@ Return JSON:
         original_text: str,
         propositions: List[str],
         author_style_vector: Optional[np.ndarray] = None,
-        style_lexicon: Optional[List[str]] = None
+        style_lexicon: Optional[List[str]] = None,
+        secondary_author_vector: Optional[np.ndarray] = None,
+        blend_ratio: float = 0.5
     ) -> Dict[str, any]:
         """Evaluate paragraph in paragraph mode using proposition recall and style alignment.
 
@@ -1521,7 +1538,9 @@ Return JSON:
         style_alignment, style_details = self._check_style_alignment(
             generated_text,
             author_style_vector,
-            style_lexicon=style_lexicon
+            style_lexicon=style_lexicon,
+            secondary_author_vector=secondary_author_vector,
+            blend_ratio=blend_ratio
         )
 
         # Final score: (Meaning * 0.6) + (Style * 0.4)
