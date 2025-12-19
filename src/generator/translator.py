@@ -2819,10 +2819,10 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
             # Composite scoring: sentence count + diversity + positional fit + freshness
             # Load weights from config
             diversity_config = self.paragraph_fusion_config.get("structure_diversity", {})
-            count_weight = diversity_config.get("count_match_weight", 0.3)
+            count_weight = diversity_config.get("count_match_weight", 0.5)  # Increased from 0.3 to prioritize structure fit
             diversity_weight = diversity_config.get("diversity_weight", 0.4)
             positional_weight = diversity_config.get("positional_weight", 0.3)
-            freshness_weight = diversity_config.get("freshness_weight", 2.0)
+            freshness_weight = diversity_config.get("freshness_weight", 0.1)  # Reduced from 2.0 to prevent "Fresh but Terrible" selection
             enabled = diversity_config.get("enabled", True)
 
             # Positional keyword sets
@@ -2841,6 +2841,15 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     # 1. Sentence count match
                     example_sentences = sent_tokenize(example)
                     sentence_count = len([s for s in example_sentences if s.strip()])
+
+                    # Hard filter: Reject examples that are too short to hold the content
+                    # (Prevent 13 propositions -> 2 sentence template)
+                    min_sentences = max(2, int(target_sentences * 0.5))
+                    if sentence_count < min_sentences:
+                        if verbose:
+                            print(f"    Skipping example with {sentence_count} sentences (minimum: {min_sentences})")
+                        continue
+
                     count_diff = abs(sentence_count - target_sentences)
                     count_match = 1.0 - (count_diff / max(target_sentences, 5))  # Normalized
                     count_match = max(0.0, count_match)  # Ensure non-negative
@@ -2947,6 +2956,11 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
             if best_match:
                 # teacher_example already set above (or in fallback)
                 # rhythm_map already extracted above (or set in fallback)
+
+                # Validation: Check rhythm_map sentence count before generation
+                if rhythm_map and len(rhythm_map) < target_sentences * 0.4:
+                    if verbose:
+                        print(f"  ⚠ Warning: Template too short ({len(rhythm_map)} vs {target_sentences}). Quality may be affected.")
 
                 if verbose:
                     if rhythm_map:
@@ -3084,6 +3098,7 @@ These connectors match the author's style and help create flowing, complex sente
 
         prompt = PARAGRAPH_FUSION_PROMPT.format(
             propositions_list=propositions_list,
+            proposition_count=len(propositions),
             style_examples=style_examples_text,
             mandatory_vocabulary=mandatory_vocabulary,
             rhetorical_connectors=rhetorical_connectors,
@@ -3478,7 +3493,7 @@ Generate 3 new variations that include ALL facts from the checklist. Output as a
                                 if verbose:
                                     print(f"  ✓ Repair {repair_attempt} successful: recall={best_after_repair['recall']:.2f}, "
                                           f"score={best_after_repair['score']:.2f}")
-                                return best_after_repair["text"]
+                                return best_after_repair["text"], rhythm_map, teacher_example
                             else:
                                 # Still no qualified, but pick best from all (including repairs)
                                 best_after_repair = max(evaluated_candidates, key=lambda x: x["recall"])
