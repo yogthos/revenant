@@ -27,7 +27,7 @@ class MockLLMProvider:
         self.call_count = 0
         self.call_history = []
 
-    def call(self, system_prompt, user_prompt, model_type="editor", require_json=False, temperature=0.7, max_tokens=500):
+    def call(self, system_prompt, user_prompt, model_type="editor", require_json=False, temperature=0.7, max_tokens=500, timeout=None, top_p=None):
         self.call_count += 1
         self.call_history.append({
             "system_prompt": system_prompt[:100] if len(system_prompt) > 100 else system_prompt,

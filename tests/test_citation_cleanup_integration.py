@@ -25,7 +25,7 @@ class MockLLMProvider:
     def __init__(self):
         self.call_count = 0
 
-    def call(self, system_prompt, user_prompt, model_type="editor", require_json=False, temperature=0.7, max_tokens=500):
+    def call(self, system_prompt, user_prompt, model_type="editor", require_json=False, temperature=0.7, max_tokens=500, timeout=None, top_p=None):
         self.call_count += 1
 
         if "extract every distinct fact" in user_prompt.lower():
