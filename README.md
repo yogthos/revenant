@@ -2,6 +2,23 @@
 
 Transform text to match a target author's style while preserving semantic meaning. Uses a Style Atlas architecture with RAG-based retrieval, paragraph fusion, and semantic validation.
 
+## Dependencies
+
+This project requires the following Python packages (see `requirements.txt` for versions):
+- **spacy** - Natural language processing and grammatical validation
+- **nltk** - Text tokenization and linguistic analysis
+- **numpy** - Numerical computations
+- **scikit-learn** - Machine learning (K-means clustering for style atlas)
+- **sentence-transformers** - Semantic embeddings and similarity calculations
+- **torch** - PyTorch (required by sentence-transformers for neural network operations)
+- **requests** - HTTP requests for LLM API calls
+- **chromadb** - Vector database for style atlas storage
+- **pytest** - Testing framework
+
+Additional setup required:
+- **spaCy English model**: `en_core_web_sm` (download with `python3 -m spacy download en_core_web_sm`)
+- **NLTK data**: punkt, punkt_tab, averaged_perceptron_tagger_eng, vader_lexicon (downloaded automatically or manually)
+
 ## Quick Start
 
 ### Installation
@@ -15,7 +32,10 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 
 # Download NLTK data (automatic on first run, or manually):
-python3 -c "import nltk; nltk.download('punkt_tab'); nltk.download('stopwords'); nltk.download('averaged_perceptron_tagger_eng')"
+python3 -c "import nltk; nltk.download('punkt', quiet=True); nltk.download('punkt_tab', quiet=True); nltk.download('averaged_perceptron_tagger_eng', quiet=True); nltk.download('vader_lexicon', quiet=True)"
+
+# Download spaCy model (required for grammatical validation):
+python3 -m spacy download en_core_web_sm
 ```
 
 ### Configuration
@@ -279,9 +299,17 @@ If paragraph fusion fails or is disabled:
 
 Run tests:
 ```bash
+# Activate virtual environment first
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Run individual test files
 python3 tests/test_paragraph_rhythm_extraction.py
 python3 tests/test_translate_paragraph_contract.py
 python3 tests/test_pipeline_fallback_contract.py
+python3 tests/test_quality_improvements.py
+
+# Or run all tests with pytest
+pytest tests/
 ```
 
 ## Troubleshooting
@@ -293,3 +321,7 @@ python3 tests/test_pipeline_fallback_contract.py
 **Low quality output**: Adjust `paragraph_fusion.proposition_recall_threshold` or `semantic_critic.recall_threshold`
 
 **Import errors**: Ensure virtual environment is activated and dependencies are installed
+
+**Missing spaCy model**: Run `python3 -m spacy download en_core_web_sm` to download the English model
+
+**Missing NLTK data**: The code will attempt to download required NLTK data automatically, but you can also download manually using the command in the Installation section

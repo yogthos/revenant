@@ -1,16 +1,52 @@
 """Tests for gradient-based evolution with fitness-based selection."""
 
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch
-from src.generator.translator import StyleTranslator
-from src.validator.semantic_critic import SemanticCritic
-from src.critic.scorer import SoftScorer
-from src.generator.mutation_operators import (
-    OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH,
-    get_operator, SemanticInjectionOperator, GrammarRepairOperator, StylePolishOperator
-)
-from src.ingestion.blueprint import SemanticBlueprint
-from src.atlas.rhetoric import RhetoricalType
+
+# Add project root to Python path
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+# Import with error handling for missing dependencies
+try:
+    from src.generator.translator import StyleTranslator
+    from src.validator.semantic_critic import SemanticCritic
+    from src.critic.scorer import SoftScorer
+    from src.generator.mutation_operators import (
+        OP_SEMANTIC_INJECTION, OP_GRAMMAR_REPAIR, OP_STYLE_POLISH,
+        get_operator, SemanticInjectionOperator, GrammarRepairOperator, StylePolishOperator
+    )
+    from src.ingestion.blueprint import SemanticBlueprint
+    from src.atlas.rhetoric import RhetoricalType
+    DEPENDENCIES_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    DEPENDENCIES_AVAILABLE = False
+    IMPORT_ERROR = str(e)
+    print(f"⚠ Skipping tests: Missing dependencies - {IMPORT_ERROR}")
+    # Create dummy classes to prevent NameError
+    class StyleTranslator:
+        pass
+    class SemanticCritic:
+        pass
+    class SoftScorer:
+        pass
+    class SemanticInjectionOperator:
+        pass
+    class GrammarRepairOperator:
+        pass
+    class StylePolishOperator:
+        pass
+    def get_operator(op_type):
+        return None
+    OP_SEMANTIC_INJECTION = "semantic_injection"
+    OP_GRAMMAR_REPAIR = "grammar_repair"
+    OP_STYLE_POLISH = "style_polish"
+    class SemanticBlueprint:
+        pass
+    class RhetoricalType:
+        OBSERVATION = "observation"
 
 
 class TestSoftScorer(unittest.TestCase):
@@ -18,6 +54,8 @@ class TestSoftScorer(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        if not DEPENDENCIES_AVAILABLE:
+            self.skipTest(f"Missing dependencies: {IMPORT_ERROR}")
         self.scorer = SoftScorer(config_path="config.json")
 
     def test_calculate_raw_score_never_zero(self):
@@ -86,6 +124,8 @@ class TestMutationOperators(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        if not DEPENDENCIES_AVAILABLE:
+            self.skipTest(f"Missing dependencies: {IMPORT_ERROR}")
         self.blueprint = SemanticBlueprint(
             original_text="Every object we touch eventually breaks.",
             svo_triples=[("we", "touch", "object")],
@@ -168,6 +208,8 @@ class TestFitnessBasedEvolution(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        if not DEPENDENCIES_AVAILABLE:
+            self.skipTest(f"Missing dependencies: {IMPORT_ERROR}")
         self.translator = StyleTranslator(config_path="config.json")
         self.blueprint = SemanticBlueprint(
             original_text="Every object we touch eventually breaks.",
@@ -225,6 +267,7 @@ class TestFitnessBasedEvolution(unittest.TestCase):
             "pass": False,
             "score": 0.2,
             "recall_score": 0.5,
+            "precision_score": 0.4,
             "fluency_score": 0.4,
             "feedback": "Low scores"
         }
@@ -234,11 +277,19 @@ class TestFitnessBasedEvolution(unittest.TestCase):
             "pass": False,
             "score": 0.6,
             "recall_score": 0.7,
+            "precision_score": 0.6,
             "fluency_score": 0.5,
             "feedback": "Better but still failing"
         }
 
-        mock_critic.evaluate.side_effect = [parent_result, child_result]
+        evaluate_calls = []
+        def mock_evaluate(text, blueprint, allowed_style_words=None, **kwargs):
+            evaluate_calls.append(text)
+            if len(evaluate_calls) <= 1:
+                return parent_result
+            return child_result
+
+        mock_critic.evaluate.side_effect = mock_evaluate
 
         # Mock soft scorer
         mock_soft_scorer = Mock()
@@ -281,6 +332,7 @@ class TestFitnessBasedEvolution(unittest.TestCase):
             "pass": False,
             "score": 0.2,
             "recall_score": 0.4,
+            "precision_score": 0.3,
             "fluency_score": 0.3,
             "feedback": "Missing concepts"
         }
@@ -290,11 +342,19 @@ class TestFitnessBasedEvolution(unittest.TestCase):
             "pass": False,
             "score": 0.6,
             "recall_score": 0.7,
+            "precision_score": 0.6,
             "fluency_score": 0.5,
             "feedback": "Better but still needs work"
         }
 
-        mock_critic.evaluate.side_effect = [draft1_result, draft2_result]
+        evaluate_calls = []
+        def mock_evaluate(text, blueprint, allowed_style_words=None, **kwargs):
+            evaluate_calls.append(text)
+            if len(evaluate_calls) <= 1:
+                return draft1_result
+            return draft2_result
+
+        mock_critic.evaluate.side_effect = mock_evaluate
 
         # Mock soft scorer
         mock_soft_scorer = Mock()
@@ -339,6 +399,8 @@ class TestEvolutionConvergence(unittest.TestCase):
 
     def setUp(self):
         """Set up test fixtures."""
+        if not DEPENDENCIES_AVAILABLE:
+            self.skipTest(f"Missing dependencies: {IMPORT_ERROR}")
         self.translator = StyleTranslator(config_path="config.json")
 
     def test_evolution_converges_from_low_similarity(self):
@@ -381,21 +443,29 @@ class TestEvolutionConvergence(unittest.TestCase):
             "feedback": "Passed semantic validation."
         }
 
-        mock_critic.evaluate.side_effect = [
-            initial_result,  # Initial evaluation
-            initial_result,  # Check before evolution
-            gen1_result,     # Candidate 1 evaluation
-            gen1_result,     # Final evaluation
-        ]
+        evaluate_calls = []
+        def mock_evaluate(text, blueprint, allowed_style_words=None, **kwargs):
+            evaluate_calls.append(text)
+            # First call: initial draft evaluation
+            if len(evaluate_calls) == 1:
+                return initial_result
+            # Subsequent calls: candidate evaluations
+            # Check if the text contains the improved keywords
+            if "reinforce" in text.lower() and "rule" in text.lower():
+                return gen1_result
+            return initial_result
 
-        # Mock soft scorer
+        mock_critic.evaluate.side_effect = mock_evaluate
+
+        # Mock soft scorer - needs to return higher raw_score for improved candidate
         mock_soft_scorer = Mock()
-        initial_eval = {"raw_score": 0.73, "pass": False}
-        gen1_eval = {"raw_score": 0.96, "pass": True}
-        mock_soft_scorer.evaluate_with_raw_score.side_effect = [
-            initial_eval,  # Initial raw_score
-            gen1_eval,     # Candidate 1 raw_score
-        ]
+        def mock_eval_with_raw_score(text, blueprint, style_lexicon=None, **kwargs):
+            # Return higher raw_score for improved candidate
+            if "reinforce" in text.lower() and "rule" in text.lower():
+                return {"raw_score": 0.96, "pass": True, "recall_score": 1.0, "fluency_score": 0.9, "precision_score": 0.8, "score": 0.90}
+            return {"raw_score": 0.73, "pass": False, "recall_score": 0.60, "fluency_score": 0.9, "precision_score": 0.5, "score": 0.73}
+        
+        mock_soft_scorer.evaluate_with_raw_score.side_effect = mock_eval_with_raw_score
         mock_soft_scorer.calculate_raw_score.return_value = (0.96, {
             "recall": 1.0, "fluency": 0.9, "similarity": 0.95
         })
@@ -408,8 +478,10 @@ class TestEvolutionConvergence(unittest.TestCase):
                 ("semantic_injection", "Human experience confirms and reinforces the universal rule of finitude.")
             ]
 
-            # Mock acceptance check
-            self.translator._check_acceptance = Mock(return_value=True)
+            # Mock acceptance check - should pass for improved candidate
+            def mock_acceptance(recall_score, precision_score, fluency_score=None, overall_score=0.0, pass_threshold=0.9, **kwargs):
+                return overall_score >= 0.90 and recall_score >= 0.95
+            self.translator._check_acceptance = mock_acceptance
 
             # Run evolution
             best_draft, best_score = self.translator._evolve_text(
@@ -482,23 +554,28 @@ class TestEvolutionConvergence(unittest.TestCase):
             "feedback": "Passed semantic validation."
         }
 
-        mock_critic.evaluate.side_effect = [
-            initial_result,  # Initial
-            initial_result,  # Check before gen 1
-            gen1_result,     # Gen 1 candidate
-            gen1_result,     # Check before gen 2
-            gen2_result,     # Gen 2 candidate
-            gen2_result,     # Final
-        ]
+        def mock_evaluate(text, blueprint, allowed_style_words=None, **kwargs):
+            # Return results based on text content
+            text_lower = text.lower()
+            if "eventually" in text_lower and "object" in text_lower:
+                return gen2_result  # Perfect version
+            elif "object" in text_lower and "touch" in text_lower:
+                return gen1_result  # Improved but missing "eventually"
+            return initial_result  # Initial draft
 
-        # Mock soft scorer with incremental improvements
+        mock_critic.evaluate.side_effect = mock_evaluate
+
+        # Mock soft scorer with incremental improvements based on text
         mock_soft_scorer = Mock()
-        mock_soft_scorer.evaluate_with_raw_score.side_effect = [
-            {"raw_score": 0.53, "pass": False},  # Initial (boosted from 0.0)
-            {"raw_score": 0.82, "pass": False},  # Gen 1
-            {"raw_score": 0.95, "pass": True},    # Gen 2
-        ]
-
+        def mock_eval_with_raw_score(text, blueprint, style_lexicon=None, **kwargs):
+            text_lower = text.lower()
+            if "eventually" in text_lower and "object" in text_lower:
+                return {"raw_score": 0.95, "pass": True, "recall_score": 1.0, "fluency_score": 1.0, "precision_score": 1.0, "score": 0.95}
+            elif "object" in text_lower and "touch" in text_lower:
+                return {"raw_score": 0.82, "pass": False, "recall_score": 0.67, "fluency_score": 1.0, "precision_score": 1.0, "score": 0.92}
+            return {"raw_score": 0.53, "pass": False, "recall_score": 0.0, "fluency_score": 0.0, "precision_score": 0.0, "score": 0.0}
+        
+        mock_soft_scorer.evaluate_with_raw_score.side_effect = mock_eval_with_raw_score
         self.translator.soft_scorer = mock_soft_scorer
 
         # Mock population generation - return improving candidates
@@ -511,10 +588,11 @@ class TestEvolutionConvergence(unittest.TestCase):
                 return [("semantic_injection", "Every object we touch eventually breaks.")]
 
         with patch.object(self.translator, '_generate_population_with_operator', side_effect=mock_gen):
-            self.translator._check_acceptance = Mock(side_effect=[
-                False,  # Gen 1 doesn't pass
-                True,   # Gen 2 passes
-            ])
+            def mock_acceptance(recall_score, precision_score, fluency_score=None, overall_score=0.0, pass_threshold=0.9, **kwargs):
+                # Gen 1: recall 0.67 < 0.95, so False
+                # Gen 2: recall 1.0 >= 0.95 and overall 0.95 >= 0.9, so True
+                return overall_score >= 0.90 and recall_score >= 0.95
+            self.translator._check_acceptance = mock_acceptance
 
             # Run evolution
             best_draft, best_score = self.translator._evolve_text(
@@ -578,20 +656,26 @@ class TestEvolutionConvergence(unittest.TestCase):
             "feedback": "Passed semantic validation."
         }
 
-        mock_critic.evaluate.side_effect = [
-            initial_result,
-            initial_result,
-            improved_result,
-            improved_result,
-        ]
+        def mock_evaluate(text, blueprint, allowed_style_words=None, **kwargs):
+            # Check if text has all required content
+            text_lower = text.lower()
+            has_all = all(word in text_lower for word in ["birth", "life", "decay", "cycle", "reality"])
+            if has_all and "biological" in text_lower:
+                return improved_result
+            return initial_result
 
-        # Mock soft scorer
+        mock_critic.evaluate.side_effect = mock_evaluate
+
+        # Mock soft scorer - return higher score for improved draft
         mock_soft_scorer = Mock()
-        mock_soft_scorer.evaluate_with_raw_score.side_effect = [
-            {"raw_score": 0.81, "pass": False},
-            {"raw_score": 0.93, "pass": True},
-        ]
-
+        def mock_eval_with_raw_score(text, blueprint, style_lexicon=None, **kwargs):
+            text_lower = text.lower()
+            has_all = all(word in text_lower for word in ["birth", "life", "decay", "cycle", "reality"])
+            if has_all and "biological" in text_lower:
+                return {"raw_score": 0.93, "pass": True, "recall_score": 1.0, "fluency_score": 0.95, "precision_score": 0.90, "score": 0.92}
+            return {"raw_score": 0.81, "pass": False, "recall_score": 1.0, "fluency_score": 0.70, "precision_score": 0.86, "score": 0.81}
+        
+        mock_soft_scorer.evaluate_with_raw_score.side_effect = mock_eval_with_raw_score
         self.translator.soft_scorer = mock_soft_scorer
 
         # Mock population generation
@@ -601,7 +685,9 @@ class TestEvolutionConvergence(unittest.TestCase):
                 ("grammar_repair", "The biological cycle of birth, life, and decay defines our reality.")
             ]
 
-            self.translator._check_acceptance = Mock(return_value=True)
+            def mock_acceptance(recall_score, precision_score, fluency_score=None, overall_score=0.0, pass_threshold=0.9, **kwargs):
+                return overall_score >= 0.90 and recall_score >= 0.95
+            self.translator._check_acceptance = mock_acceptance
 
             # Run evolution
             best_draft, best_score = self.translator._evolve_text(
@@ -769,7 +855,7 @@ class TestEvolutionConvergence(unittest.TestCase):
         # Mock critic with progressive improvements
         mock_critic = Mock()
 
-        def mock_evaluate(text, blueprint):
+        def mock_evaluate(text, blueprint, allowed_style_words=None, **kwargs):
             # Simulate progressive improvement
             if "reinforce" not in text.lower() or "rule" not in text.lower():
                 # Missing keywords
@@ -855,8 +941,8 @@ class TestEvolutionConvergence(unittest.TestCase):
 
         with patch.object(self.translator, '_generate_population_with_operator', side_effect=mock_gen):
             # Mock acceptance check - Gen 2 should pass
-            def mock_acceptance(recall, precision, fluency, overall, threshold, **kwargs):
-                return overall >= 0.90 and recall >= 0.95
+            def mock_acceptance(recall_score, precision_score, fluency_score=None, overall_score=0.0, threshold=0.85, style_density=None, logic_fail=False, **kwargs):
+                return overall_score >= 0.90 and recall_score >= 0.95
 
             self.translator._check_acceptance = mock_acceptance
 
@@ -894,5 +980,8 @@ class TestEvolutionConvergence(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if not DEPENDENCIES_AVAILABLE:
+        print(f"⚠ SKIPPED: Missing dependencies - {IMPORT_ERROR}")
+        sys.exit(1)
     unittest.main()
 

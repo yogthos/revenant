@@ -15,11 +15,40 @@ from pathlib import Path
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.analysis.semantic_analyzer import PropositionExtractor
-from src.validator.semantic_critic import SemanticCritic
-from src.generator.translator import StyleTranslator
-from src.ingestion.blueprint import BlueprintExtractor
-import json
+# Import with error handling for missing dependencies
+try:
+    from src.analysis.semantic_analyzer import PropositionExtractor
+    from src.validator.semantic_critic import SemanticCritic
+    from src.generator.translator import StyleTranslator
+    from src.ingestion.blueprint import BlueprintExtractor
+    import json
+    DEPENDENCIES_AVAILABLE = True
+except (ImportError, ModuleNotFoundError) as e:
+    DEPENDENCIES_AVAILABLE = False
+    IMPORT_ERROR = str(e)
+    print(f"⚠ Skipping tests: Missing dependencies - {IMPORT_ERROR}")
+    # Create dummy classes to prevent NameError
+    class PropositionExtractor:
+        def extract_atomic_propositions(self, text):
+            return []
+    class SemanticCritic:
+        def _check_proposition_recall(self, text, propositions):
+            return 0.0, {}
+        def _check_style_alignment(self, text, author_style_vector=None):
+            return 0.5, {}
+        def evaluate(self, *args, **kwargs):
+            return {"pass": False, "score": 0.0}
+    class StyleTranslator:
+        def _select_complex_examples(self, *args, **kwargs):
+            return []
+        def _count_words(self, text):
+            return len(text.split())
+        def _count_sentences(self, text):
+            return len([s for s in text.split('.') if s.strip()])
+    class BlueprintExtractor:
+        def extract(self, text):
+            return None
+    json = None
 
 
 def test_proposition_extraction():
@@ -27,6 +56,9 @@ def test_proposition_extraction():
 
     Goal: Ensure we can turn a complex paragraph into a clean list of facts.
     """
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_proposition_extraction (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 1: Proposition Extraction")
     print("="*60)
@@ -80,11 +112,14 @@ def test_proposition_recall():
     Goal: Ensure the Critic can find a specific fact buried inside a complex, stylized paragraph.
     This is the riskiest part - we need to verify semantic similarity works on styled text.
     """
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_proposition_recall (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 2: Proposition Recall")
     print("="*60)
 
-    critic = SemanticCritic()
+    critic = SemanticCritic(config_path="config.json")
 
     # Setup: Simple proposition
     propositions = ["Stars eventually die"]
@@ -130,11 +165,14 @@ def test_proposition_recall():
 
 def test_proposition_recall_multiple():
     """Test 2b: Verify Proposition Recall with Multiple Propositions"""
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_proposition_recall_multiple (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 2b: Proposition Recall (Multiple Propositions)")
     print("="*60)
 
-    critic = SemanticCritic()
+    critic = SemanticCritic(config_path="config.json")
 
     # Multiple propositions
     propositions = [
@@ -170,11 +208,14 @@ def test_fusion_generation_structure():
     Goal: Ensure the Generator combines inputs rather than translating one-by-one.
     This test verifies the structure and prompt formatting.
     """
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_fusion_generation_structure (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 3: Fusion Generation Structure")
     print("="*60)
 
-    translator = StyleTranslator()
+    translator = StyleTranslator(config_path="config.json")
 
     # Mock inputs
     propositions = ["A implies B", "B implies C"]
@@ -197,7 +238,13 @@ def test_fusion_generation_structure():
 
     prompt = PARAGRAPH_FUSION_PROMPT.format(
         propositions_list=propositions_list,
-        style_examples=style_examples_text
+        proposition_count=len(propositions),
+        style_examples=style_examples_text,
+        mandatory_vocabulary="",
+        rhetorical_connectors="",
+        citation_instruction="",
+        citation_output_instruction="",
+        structural_blueprint=""
     )
 
     print("\nChecking prompt structure...")
@@ -220,11 +267,14 @@ def test_fusion_generation_structure():
 
 def test_style_alignment():
     """Test 4: Verify Style Alignment Calculation"""
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_style_alignment (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 4: Style Alignment")
     print("="*60)
 
-    critic = SemanticCritic()
+    critic = SemanticCritic(config_path="config.json")
 
     # Generate a paragraph with reasonable sentence length
     generated_text = "It is through the dialectical process of contradiction and resolution that we come to understand the fundamental relationships between phenomena, where each element serves as both cause and effect in the grand materialist framework of existence, demonstrating the interconnected nature of all material processes."
@@ -258,11 +308,14 @@ def test_style_alignment():
 
 def test_paragraph_mode_evaluation():
     """Test 5: Verify Paragraph Mode Evaluation End-to-End"""
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_paragraph_mode_evaluation (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 5: Paragraph Mode Evaluation")
     print("="*60)
 
-    critic = SemanticCritic()
+    critic = SemanticCritic(config_path="config.json")
     extractor = BlueprintExtractor()
     proposition_extractor = PropositionExtractor()
 
@@ -315,6 +368,11 @@ def run_all_tests():
     print("PARAGRAPH FUSION VERIFICATION SUITE")
     print("="*60)
 
+    if not DEPENDENCIES_AVAILABLE:
+        print(f"\n⚠ All tests skipped due to missing dependencies: {IMPORT_ERROR}")
+        print("="*60)
+        return 1
+
     tests = [
         ("Proposition Extraction", test_proposition_extraction),
         ("Proposition Recall", test_proposition_recall),
@@ -366,11 +424,14 @@ def run_all_tests():
 
 def test_complexity_filtering():
     """Test 6: Verify Complexity-Based Example Selection"""
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_complexity_filtering (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 6: Complexity-Based Example Selection")
     print("="*60)
 
-    translator = StyleTranslator()
+    translator = StyleTranslator(config_path="config.json")
 
     # Create test examples with varying complexity
     examples = [
@@ -420,11 +481,14 @@ def test_complexity_filtering():
 
 def test_complexity_deduplication():
     """Test 7: Verify Deduplication in Complexity Selection"""
+    if not DEPENDENCIES_AVAILABLE:
+        print("⚠ SKIPPED: test_complexity_deduplication (missing dependencies)")
+        return False
     print("\n" + "="*60)
     print("TEST 7: Complexity Selection Deduplication")
     print("="*60)
 
-    translator = StyleTranslator()
+    translator = StyleTranslator(config_path="config.json")
 
     # Create similar examples (near duplicates)
     examples = [

@@ -3,11 +3,14 @@
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
-import pytest
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+# Ensure config.json exists before imports
+from tests.test_helpers import ensure_config_exists
+ensure_config_exists()
 
 # Import with error handling for missing dependencies
 try:
@@ -515,7 +518,7 @@ def test_is_blueprint_incomplete_missing_object():
 def test_is_blueprint_incomplete_complete_blueprint():
     """Test that complete blueprint is not marked as incomplete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_is_blueprint_incomplete_complete_blueprint (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -539,7 +542,7 @@ def test_is_blueprint_incomplete_complete_blueprint():
 def test_is_blueprint_incomplete_lemmatization():
     """Test that lemmatization works correctly (Objects matches object)."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_is_blueprint_incomplete_lemmatization (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -564,7 +567,7 @@ def test_is_blueprint_incomplete_lemmatization():
 def test_is_blueprint_incomplete_biological_cycle():
     """Test that blueprint missing 'biological' and list items is detected."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_is_blueprint_incomplete_biological_cycle (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -589,7 +592,7 @@ def test_is_blueprint_incomplete_biological_cycle():
 def test_is_blueprint_incomplete_empty_svo_long_text():
     """Test that empty SVO for long text (>5 words) is detected as incomplete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_is_blueprint_incomplete_empty_svo_long_text (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -613,7 +616,7 @@ def test_is_blueprint_incomplete_empty_svo_long_text():
 def test_is_blueprint_incomplete_short_text_no_nouns():
     """Test that short text with no nouns doesn't trigger false positive."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_is_blueprint_incomplete_short_text_no_nouns (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -638,7 +641,7 @@ def test_is_blueprint_incomplete_short_text_no_nouns():
 def test_build_prompt_uses_original_only_when_incomplete():
     """Test that _build_prompt uses original-text-only template when blueprint is incomplete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_build_prompt_uses_original_only_when_incomplete (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -676,7 +679,7 @@ def test_build_prompt_uses_original_only_when_incomplete():
 def test_build_prompt_uses_blueprint_when_complete():
     """Test that _build_prompt uses standard blueprint template when blueprint is complete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_build_prompt_uses_blueprint_when_complete (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -711,7 +714,7 @@ def test_build_prompt_uses_blueprint_when_complete():
 def test_build_original_text_only_prompt():
     """Test that _build_original_text_only_prompt creates correct prompt."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_build_original_text_only_prompt (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -750,7 +753,7 @@ def test_build_original_text_only_prompt():
 def test_generate_simplification_uses_original_when_incomplete():
     """Test that _generate_simplification uses original_text when blueprint is incomplete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_generate_simplification_uses_original_when_incomplete (missing dependencies)")
         return
     from unittest.mock import Mock
     from src.validator.semantic_critic import SemanticCritic
@@ -797,7 +800,7 @@ def test_generate_simplification_uses_original_when_incomplete():
 def test_generate_simplification_uses_blueprint_when_complete():
     """Test that _generate_simplification uses blueprint when blueprint is complete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_generate_simplification_uses_blueprint_when_complete (missing dependencies)")
         return
     from unittest.mock import Mock
     from src.validator.semantic_critic import SemanticCritic
@@ -839,7 +842,7 @@ def test_generate_simplification_uses_blueprint_when_complete():
 def test_is_blueprint_incomplete_partial_match():
     """Test that blueprint with <50% noun match is detected as incomplete."""
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_is_blueprint_incomplete_partial_match (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
 
@@ -863,9 +866,11 @@ def test_is_blueprint_incomplete_partial_match():
 
 def test_select_best_candidate_uses_judge():
     """Test that _select_best_candidate uses LLM Judge for ranking."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_select_best_candidate_uses_judge (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_select_best_candidate_uses_judge (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")
@@ -918,9 +923,11 @@ def test_select_best_candidate_uses_judge():
 
 def test_select_best_candidate_filters_hard_gates():
     """Test that _select_best_candidate filters candidates through hard gates."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_select_best_candidate_filters_hard_gates (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_select_best_candidate_filters_hard_gates (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")
@@ -968,9 +975,11 @@ def test_select_best_candidate_filters_hard_gates():
 
 def test_select_best_candidate_keeps_parent_when_judge_selects_parent():
     """Test that _select_best_candidate keeps parent when judge selects it."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_select_best_candidate_keeps_parent_when_judge_selects_parent (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_select_best_candidate_keeps_parent_when_judge_selects_parent (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")
@@ -1020,9 +1029,11 @@ def test_select_best_candidate_keeps_parent_when_judge_selects_parent():
 
 def test_select_best_candidate_handles_all_rejected():
     """Test that _select_best_candidate handles case where all candidates are rejected."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_select_best_candidate_handles_all_rejected (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_select_best_candidate_handles_all_rejected (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")
@@ -1070,9 +1081,11 @@ def test_select_best_candidate_handles_all_rejected():
 
 def test_evolve_text_uses_judge():
     """Test that _evolve_text uses LLM Judge for selection."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_evolve_text_uses_judge (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_evolve_text_uses_judge (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")
@@ -1132,9 +1145,11 @@ def test_evolve_text_uses_judge():
 
 def test_evolve_text_tracks_convergence():
     """Test that _evolve_text detects convergence when same candidate wins 2 rounds."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_evolve_text_tracks_convergence (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_evolve_text_tracks_convergence (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")
@@ -1216,9 +1231,11 @@ def test_evolve_text_tracks_convergence():
 
 def test_full_translation_with_judge():
     """Integration test: Full translation flow uses LLM Judge."""
-    pytest.skip("_select_best_candidate method has been removed - selection is now inline in _evolve_text")
+    # Skip: _select_best_candidate method has been removed - selection is now inline in _evolve_text
+    print("⊘ SKIPPED: test_full_translation_with_judge (method removed)")
+    return
     if not DEPENDENCIES_AVAILABLE:
-        print(f"⚠ SKIPPED: {func_name} (missing dependencies)")
+        print("⚠ SKIPPED: test_full_translation_with_judge (missing dependencies)")
         return
     translator = StyleTranslator(config_path="config.json")
     critic = SemanticCritic(config_path="config.json")

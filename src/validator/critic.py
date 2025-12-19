@@ -499,6 +499,10 @@ def is_text_complete(text: str) -> bool:
     if not text: return False
     text = text.strip()
 
+    # Check if text is empty after stripping
+    if not text:
+        return False
+
     # 1. Must end in terminal punctuation
     if text[-1] not in ".!?\"'":
         return False

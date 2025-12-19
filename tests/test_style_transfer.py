@@ -219,9 +219,13 @@ class TestStyleDNAInjection:
         # Format prompt with vocabulary
         prompt = PARAGRAPH_FUSION_PROMPT.format(
             propositions_list="- Test proposition",
+            proposition_count=1,
             style_examples="Example text",
             mandatory_vocabulary=f"### MANDATORY VOCABULARY:\nYou MUST use at least 3-5 distinct words from this list: {vocabulary_text}",
-            rhetorical_connectors=""
+            rhetorical_connectors="",
+            citation_instruction="",
+            citation_output_instruction="",
+            structural_blueprint=""
         )
 
         # Verify vocabulary section is present
@@ -242,9 +246,13 @@ class TestStyleDNAInjection:
 
         prompt = PARAGRAPH_FUSION_PROMPT.format(
             propositions_list="- Test proposition",
+            proposition_count=1,
             style_examples="Example text",
             mandatory_vocabulary="",
-            rhetorical_connectors=f"### RHETORICAL CONNECTORS:\nUse these transition phrases: {connectors_text}"
+            rhetorical_connectors=f"### RHETORICAL CONNECTORS:\nUse these transition phrases: {connectors_text}",
+            citation_instruction="",
+            citation_output_instruction="",
+            structural_blueprint=""
         )
 
         # Verify connectors section is present
@@ -424,7 +432,7 @@ class TestAuthorStyleVector:
         )
 
         # Mock the collection and StyleBlender
-        with patch('src.atlas.builder.StyleBlender') as mock_blender_class:
+        with patch('src.atlas.blender.StyleBlender') as mock_blender_class:
             mock_blender = Mock()
             mock_blender.get_author_centroid.return_value = np.array([0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2])
             mock_blender_class.return_value = mock_blender
@@ -450,7 +458,8 @@ class TestAuthorStyleVector:
         )
 
         # Mock StyleBlender to raise ValueError (author not found)
-        with patch('src.atlas.builder.StyleBlender') as mock_blender_class:
+        # StyleBlender is imported inside get_author_style_vector, so patch the import
+        with patch('src.atlas.blender.StyleBlender') as mock_blender_class:
             mock_blender = Mock()
             mock_blender.get_author_centroid.side_effect = ValueError("Author not found")
             mock_blender_class.return_value = mock_blender

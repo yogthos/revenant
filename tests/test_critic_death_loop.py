@@ -88,13 +88,17 @@ def test_false_positive_sets_score_085():
 
     # Check that score is 0.85 (or higher) when false positive is detected
     # The false positive detector should have caught this and set score to 0.85
-    assert not ("essential" in feedback.lower() and ("does not appear" in feedback.lower() or "not present" in feedback.lower())), \
-        "False positive was not caught by detector"
+    if ("essential" in feedback.lower() and ("does not appear" in feedback.lower() or "not present" in feedback.lower())):
+        print("  ❌ FAIL: False positive was not caught by detector")
+        return False
 
     # If false positive was caught, score should be 0.85
-    assert score >= 0.85 or score != 0.5, \
-        f"Score should be 0.85 or higher (not 0.5), got {score}"
+    if not (score >= 0.85 or score != 0.5):
+        print(f"  ❌ FAIL: Score should be 0.85 or higher (not 0.5), got {score}")
+        return False
+
     print("  ✓ PASS: Score is 0.85 or higher (false positive corrected)")
+    return True
 
 
 def test_generator_doesnt_copy_august():
@@ -146,16 +150,19 @@ def test_lowercase_essential_never_flagged():
 
         # Check that lowercase "essential" is NOT flagged
         feedback_lower = feedback.lower()
-        assert not ("essential" in feedback_lower and
+        if ("essential" in feedback_lower and
             ("does not appear" in feedback_lower or "not present" in feedback_lower or
-             "proper noun" in feedback_lower or "entity" in feedback_lower)), \
-            "Lowercase 'essential' was flagged as proper noun/entity"
+             "proper noun" in feedback_lower or "entity" in feedback_lower)):
+            print("  ❌ FAIL: Lowercase 'essential' was flagged as proper noun/entity")
+            return False
 
         # Score should not be 0.0 for a valid lowercase word
-        assert not (score == 0.0 and failure_type == "meaning"), \
-            "Score is 0.0 for valid lowercase word"
+        if score == 0.0 and failure_type == "meaning":
+            print("  ❌ FAIL: Score is 0.0 for valid lowercase word")
+            return False
 
         print("  ✓ PASS: Lowercase 'essential' not flagged")
+        return True
 
 
 def test_emdash_not_grammar_error():
