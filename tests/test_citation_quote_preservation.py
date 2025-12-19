@@ -39,8 +39,20 @@ class MockLLMProvider:
             "require_json": require_json
         })
 
+        # Mock response for artifact repair (check this FIRST before other conditions)
+        if "missing citations" in user_prompt.lower() or "missing quotes" in user_prompt.lower():
+            # Repair by adding missing artifacts
+            if "[^1]" in user_prompt and "[^2]" in user_prompt:
+                return "It is through the dialectical process that human experience reinforces the rule of finitude [^1], demonstrating how the biological cycle defines our reality [^2]."
+            elif "[^1]" in user_prompt:
+                return "It is through the dialectical process that human experience reinforces the rule of finitude [^1], demonstrating how the biological cycle defines our reality."
+            elif '"' in user_prompt or "quotes" in user_prompt.lower():
+                return 'It is a fundamental truth that "The code is embedded in every particle.", demonstrating the interconnected nature of all material processes.'
+            else:
+                return "Repaired paragraph with missing artifacts."
+
         # Mock response for PropositionExtractor
-        if "extract every distinct fact/claim" in user_prompt.lower() or "semantic analyzer" in system_prompt.lower():
+        elif "extract every distinct fact/claim" in user_prompt.lower() or "semantic analyzer" in system_prompt.lower():
             # Check if input contains citations
             if "[^1]" in user_prompt or "[^2]" in user_prompt:
                 # Preserve citations in propositions
@@ -86,18 +98,6 @@ class MockLLMProvider:
                 return json.dumps([
                     "It is through the dialectical process of contradiction and resolution that we come to understand the fundamental relationships between phenomena."
                 ])
-
-        # Mock response for artifact repair
-        elif "missing citations" in user_prompt.lower() or "missing quotes" in user_prompt.lower():
-            # Repair by adding missing artifacts
-            if "[^1]" in user_prompt and "[^2]" in user_prompt:
-                return "It is through the dialectical process that human experience reinforces the rule of finitude [^1], demonstrating how the biological cycle defines our reality [^2]."
-            elif "[^1]" in user_prompt:
-                return "It is through the dialectical process that human experience reinforces the rule of finitude [^1], demonstrating how the biological cycle defines our reality."
-            elif '"' in user_prompt or "quotes" in user_prompt.lower():
-                return 'It is a fundamental truth that "The code is embedded in every particle.", demonstrating the interconnected nature of all material processes.'
-            else:
-                return "Repaired paragraph with missing artifacts."
 
         # Default fallback
         return "Mocked LLM response."
@@ -161,7 +161,6 @@ def test_proposition_extraction_preserves_citations():
         "Citation [^1] should be bound to finitude/human experience fact"
 
     print("\n✓ Test 1 PASSED: Citations preserved in proposition extraction")
-    return True
 
 
 def test_quote_extraction():
@@ -199,7 +198,6 @@ def test_quote_extraction():
         assert len(quote.strip('"\'')) > 2, f"Quote '{quote}' should be substantial"
 
     print("\n✓ Test 2 PASSED: Quote extraction works correctly")
-    return True
 
 
 def test_citation_verification_detects_missing():
@@ -237,7 +235,6 @@ def test_citation_verification_detects_missing():
     assert "[^2]" in missing_citations, "Should detect [^2] as missing"
 
     print("\n✓ Test 3 PASSED: Verification detects missing citations")
-    return True
 
 
 def test_quote_verification_detects_missing():
@@ -284,7 +281,6 @@ def test_quote_verification_detects_missing():
         "Input should contain the expected quote"
 
     print("\n✓ Test 4 PASSED: Verification detects missing quotes")
-    return True
 
 
 def test_repair_missing_citations():
@@ -327,7 +323,6 @@ def test_repair_missing_citations():
     assert len(found_citations) > 0, "Repaired text should contain at least one citation"
 
     print("\n✓ Test 5 PASSED: Repair mechanism fixes missing citations")
-    return True
 
 
 def test_repair_missing_quotes():
@@ -374,7 +369,6 @@ def test_repair_missing_quotes():
     assert len(found_quotes) > 0, "Repaired text should contain at least one quote"
 
     print("\n✓ Test 6 PASSED: Repair mechanism fixes missing quotes")
-    return True
 
 
 def test_end_to_end_citation_preservation():
@@ -414,12 +408,23 @@ def test_end_to_end_citation_preservation():
             "feedback": "Passed"
         }
 
-        generated = translator.translate_paragraph(
+        result = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=True
         )
+        # translate_paragraph returns (text, rhythm_map, teacher_example)
+        if isinstance(result, tuple):
+            generated = result[0]
+        else:
+            generated = result
+
+        # translate_paragraph returns (text, rhythm_map, teacher_example)
+        if isinstance(result, tuple):
+            generated = result[0]
+        else:
+            generated = result
 
     print(f"\nGenerated paragraph: {generated}")
 
@@ -439,7 +444,6 @@ def test_end_to_end_citation_preservation():
     assert len(generated) > 0, "Generated paragraph should not be empty"
 
     print("\n✓ Test 7 PASSED: End-to-end citation preservation pipeline works")
-    return True
 
 
 def test_end_to_end_quote_preservation():
@@ -479,12 +483,17 @@ def test_end_to_end_quote_preservation():
             "feedback": "Passed"
         }
 
-        generated = translator.translate_paragraph(
+        result = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=True
         )
+        # translate_paragraph returns (text, rhythm_map, teacher_example)
+        if isinstance(result, tuple):
+            generated = result[0]
+        else:
+            generated = result
 
     print(f"\nGenerated paragraph: {generated}")
 
@@ -511,7 +520,6 @@ def test_end_to_end_quote_preservation():
     assert len(generated) > 0, "Generated paragraph should not be empty"
 
     print("\n✓ Test 8 PASSED: End-to-end quote preservation pipeline works")
-    return True
 
 
 def test_citation_quote_combined_preservation():
@@ -590,7 +598,6 @@ def test_citation_quote_combined_preservation():
         print(f"Repaired quotes: {repaired_quotes}")
 
     print("\n✓ Test 9 PASSED: Combined citation and quote preservation works")
-    return True
 
 
 def test_citation_misattribution_prevention():
@@ -672,7 +679,6 @@ def test_citation_misattribution_prevention():
     assert "[^2]" not in bindings.get("[^1]", ""), "Citation [^2] should not appear in [^1]'s fact"
 
     print("\n✓ Test 10 PASSED: Citation misattribution prevention works")
-    return True
 
 
 def test_no_phantom_citations_when_input_has_none():
@@ -719,12 +725,17 @@ def test_no_phantom_citations_when_input_has_none():
             }
         }
 
-        generated = translator.translate_paragraph(
+        result = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+        # translate_paragraph returns (text, rhythm_map, teacher_example)
+        if isinstance(result, tuple):
+            generated = result[0]
+        else:
+            generated = result
 
     print(f"\nGenerated paragraph: {generated}")
 
@@ -741,7 +752,6 @@ def test_no_phantom_citations_when_input_has_none():
     assert len(output_citations) == 0, f"Output should have NO citations, but found: {sorted(output_citations)}"
 
     print("\n✓ Test 11 PASSED: No phantom citations when input has none")
-    return True
 
 
 def test_only_expected_citations_in_output():
@@ -788,12 +798,17 @@ def test_only_expected_citations_in_output():
             }
         }
 
-        generated = translator.translate_paragraph(
+        result = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+        # translate_paragraph returns (text, rhythm_map, teacher_example)
+        if isinstance(result, tuple):
+            generated = result[0]
+        else:
+            generated = result
 
     print(f"\nGenerated paragraph: {generated}")
 
@@ -814,7 +829,6 @@ def test_only_expected_citations_in_output():
     # Note: In real scenario, all should be preserved, but for mock test we just check no phantoms
 
     print("\n✓ Test 12 PASSED: Output contains only expected citations (no phantoms)")
-    return True
 
 
 def test_dynamic_citation_prompt_omitted_when_none():
@@ -843,14 +857,17 @@ def test_dynamic_citation_prompt_omitted_when_none():
     style_examples = "Example 1: \"It is through the dialectical process...\""
     mandatory_vocabulary = ""
     rhetorical_connectors = ""
+    structural_blueprint = ""
 
     prompt = PARAGRAPH_FUSION_PROMPT.format(
         propositions_list=propositions_list,
+        proposition_count=2,
         style_examples=style_examples,
         mandatory_vocabulary=mandatory_vocabulary,
         rhetorical_connectors=rhetorical_connectors,
         citation_instruction=citation_instruction,
-        citation_output_instruction=citation_output_instruction
+        citation_output_instruction=citation_output_instruction,
+        structural_blueprint=structural_blueprint
     )
 
     print("Checking prompt for citation mentions...")
@@ -862,7 +879,6 @@ def test_dynamic_citation_prompt_omitted_when_none():
     assert "[^1]" not in prompt or citation_instruction == "", "Prompt should not mention citation examples when none exist"
 
     print("\n✓ Test 13 PASSED: Dynamic citation prompt correctly omitted when no citations")
-    return True
 
 
 def test_dynamic_citation_prompt_included_when_citations_exist():
@@ -909,7 +925,6 @@ def test_dynamic_citation_prompt_included_when_citations_exist():
     assert "[^1]" in prompt or "[^2]" in prompt, "Prompt should include citation examples when citations exist"
 
     print("\n✓ Test 14 PASSED: Dynamic citation prompt correctly included when citations exist")
-    return True
 
 
 if __name__ == "__main__":

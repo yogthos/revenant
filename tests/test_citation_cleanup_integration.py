@@ -97,12 +97,17 @@ def test_phantom_removal_and_restore_work_together():
             }
         }
 
-        result = translator.translate_paragraph(
+        result, _, _ = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+
+        # Ensure result is a string (handle case where it might be a tuple or other type)
+        if isinstance(result, tuple):
+            result = result[0] if result else ""
+        result = str(result) if result else ""
 
         # Extract citations from input and output
         citation_pattern = r'\[\^\d+\]'
@@ -157,12 +162,17 @@ def test_citations_at_sentence_boundaries():
             }
         }
 
-        result = translator.translate_paragraph(
+        result, _, _ = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+
+        # Ensure result is a string
+        if isinstance(result, tuple):
+            result = result[0] if result else ""
+        result = str(result) if result else ""
 
         # Citation should be preserved
         assert "[^155]" in result, "Citation at sentence end should be preserved"
@@ -228,12 +238,17 @@ def test_multiple_phantom_citations_removed():
             }
         }
 
-        result = translator.translate_paragraph(
+        result, _, _ = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+
+        # Ensure result is a string
+        if isinstance(result, tuple):
+            result = result[0] if result else ""
+        result = str(result) if result else ""
 
         # Extract citations
         citation_pattern = r'\[\^\d+\]'
@@ -302,12 +317,17 @@ def test_valid_citations_preserved_after_phantom_removal():
             }
         }
 
-        result = translator.translate_paragraph(
+        result, _, _ = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+
+        # Ensure result is a string
+        if isinstance(result, tuple):
+            result = result[0] if result else ""
+        result = str(result) if result else ""
 
         # Both valid citations should be preserved
         assert "[^155]" in result, "Valid citation [^155] should be preserved"
@@ -375,12 +395,17 @@ def test_citation_cleanup_with_no_input_citations():
             }
         }
 
-        result = translator.translate_paragraph(
+        result, _, _ = translator.translate_paragraph(
             paragraph=input_paragraph,
             atlas=mock_atlas,
             author_name="Test Author",
             verbose=False
         )
+
+        # Ensure result is a string
+        if isinstance(result, tuple):
+            result = result[0] if result else ""
+        result = str(result) if result else ""
 
         # Should have NO citations in output (all phantoms removed)
         citation_pattern = r'\[\^\d+\]'

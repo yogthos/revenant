@@ -265,7 +265,8 @@ def test_hybrid_matching_false_negative():
 
     print(f"\nResults:")
     print(f"  Similarity score: {similarity_score:.3f}")
-    print(f"  Hybrid match ratio: {hybrid_match_score:.3f if hybrid_match_score is not None else 'N/A'}")
+    hybrid_match_str = f"{hybrid_match_score:.3f}" if hybrid_match_score is not None else 'N/A'
+    print(f"  Hybrid match ratio: {hybrid_match_str}")
     print(f"  Recall: {recall:.2f}")
     print(f"  Preserved: {len(preserved)} propositions")
     print(f"  Missing: {len(missing)} propositions")
@@ -325,7 +326,7 @@ def test_multi_pass_repair():
     with patch('src.validator.semantic_critic.SemanticCritic') as MockCritic:
         mock_critic_instance = MockCritic.return_value
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             text_lower = generated_text.lower()
 
             # Track repair attempts
@@ -426,7 +427,7 @@ def test_explicit_repair_prompt():
     with patch('src.validator.semantic_critic.SemanticCritic') as MockCritic:
         mock_critic_instance = MockCritic.return_value
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             # All variations have low recall initially
             return {
                 "proposition_recall": 0.60,

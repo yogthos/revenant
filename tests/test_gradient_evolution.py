@@ -825,7 +825,7 @@ class TestEvolutionConvergence(unittest.TestCase):
             "Human experience confirms and reinforces the universal rule of finitude.": 0.95,
         }
 
-        def mock_eval_with_raw_score(text, blueprint):
+        def mock_eval_with_raw_score(text, blueprint, style_lexicon=None, **kwargs):
             raw_score = raw_score_map.get(text, 0.5)
             result = mock_evaluate(text, blueprint)
             return {

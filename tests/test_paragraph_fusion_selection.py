@@ -107,7 +107,7 @@ def test_tiered_selection_qualified_pool():
         # Variation 4: Low recall (0.4), low style (0.2) -> score = 0.4*0.6 + 0.2*0.4 = 0.32
         # Variation 5: Medium recall (0.75), medium style (0.6) -> score = 0.75*0.6 + 0.6*0.4 = 0.69
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             # Map variations to scores based on content
             text_lower = generated_text.lower()
 
@@ -171,12 +171,17 @@ def test_tiered_selection_qualified_pool():
 
         # Assertions
         assert result is not None
-        assert isinstance(result, str)
+        # translate_paragraph returns (text, rhythm_map, teacher_example)
+        if isinstance(result, tuple):
+            result_text = result[0]
+        else:
+            result_text = result
+        assert isinstance(result_text, str)
         # Should select Variation 3 (highest composite score from qualified pool)
         # Check that it's a longer, styled text (not the short plain one)
-        assert len(result) > 100, "Should select longer, styled variation"
+        assert len(result_text) > 100, "Should select longer, styled variation"
 
-        print(f"\n✓ Selected result: {result[:100]}...")
+        print(f"\n✓ Selected result: {result_text[:100]}...")
         print(f"✓ Result length: {len(result)} characters")
         print("✓ Test 1 PASSED: Tiered selection picks highest composite score from qualified pool")
         return True
@@ -207,7 +212,7 @@ def test_tiered_selection_fallback():
         # Variation 4: recall 0.4
         # Variation 5: recall 0.3
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             if "dialectical process" in generated_text:
                 return {
                     "proposition_recall": 0.7,  # Highest recall
@@ -277,7 +282,7 @@ def test_repair_loop_triggered():
     with patch('src.validator.semantic_critic.SemanticCritic') as MockCritic:
         mock_critic_instance = MockCritic.return_value
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             text_lower = generated_text.lower()
 
             # Check if this is a repair variation (contains all three propositions)
@@ -370,7 +375,7 @@ def test_repair_loop_not_triggered():
     with patch('src.validator.semantic_critic.SemanticCritic') as MockCritic:
         mock_critic_instance = MockCritic.return_value
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             # All variations have recall >= 0.7, so repair should NOT be triggered
             return {
                 "proposition_recall": 0.75,  # Above repair threshold (0.7)
@@ -430,7 +435,7 @@ def test_plain_english_trap_avoided():
     with patch('src.validator.semantic_critic.SemanticCritic') as MockCritic:
         mock_critic_instance = MockCritic.return_value
 
-        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None):
+        def mock_evaluate(generated_text, input_blueprint, propositions=None, is_paragraph=False, author_style_vector=None, style_lexicon=None, **kwargs):
             text_lower = generated_text.lower()
 
             # Candidate A: Plain English, perfect recall (1.0), low style (0.1)

@@ -49,9 +49,9 @@ def test_paragraph_fusion_success_no_sentence_fallback():
     with patch('src.pipeline.StyleTranslator') as MockTranslator:
         mock_translator = MockTranslator.return_value
 
-        # Mock translate_paragraph to return successful result
-        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False):
-            return "Generated paragraph successfully."
+        # Mock translate_paragraph to return successful result (returns tuple: paragraph, rhythm_map, example)
+        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False, **kwargs):
+            return ("Generated paragraph successfully.", None, None)
         mock_translator.translate_paragraph = mock_translate_paragraph
 
         # Mock translate to track if it's called (sentence-by-sentence)
@@ -78,23 +78,42 @@ def test_paragraph_fusion_success_no_sentence_fallback():
                     "The biological cycle defines our reality"
                 ]
 
-                input_text = "Human experience reinforces the rule of finitude. The biological cycle defines our reality."
+                # Mock BlueprintExtractor to return proper SemanticBlueprint objects
+                with patch('src.pipeline.BlueprintExtractor') as MockBlueprintExtractor:
+                    from src.ingestion.blueprint import SemanticBlueprint
+                    mock_extractor = MockBlueprintExtractor.return_value
+                    def mock_extract(text, **kwargs):
+                        return SemanticBlueprint(
+                            original_text=text,
+                            svo_triples=[],
+                            named_entities=[],
+                            core_keywords=set(),
+                            citations=[],
+                            quotes=[],
+                            **kwargs
+                        )
+                    mock_extractor.extract = mock_extract
 
-                result = process_text(
-                    input_text=input_text,
-                    atlas=mock_atlas,
-                    author_name="Test Author",
-                    style_dna="Test style DNA",
-                    max_retries=1,
-                    verbose=False
-                )
+                    input_text = "Human experience reinforces the rule of finitude. The biological cycle defines our reality."
 
-                # Verify paragraph fusion succeeded
-                assert len(result) > 0, "Should return result"
+                    result = process_text(
+                        input_text=input_text,
+                        atlas=mock_atlas,
+                        author_name="Test Author",
+                        style_dna="Test style DNA",
+                        max_retries=1,
+                        verbose=False
+                    )
 
-                # Verify sentence-by-sentence was NOT called
-                assert not sentence_translate_called["value"], \
-                    "Sentence-by-sentence translate should NOT be called when paragraph fusion succeeds"
+                    # Verify paragraph fusion succeeded
+                    assert len(result) > 0, "Should return result"
+                    # Verify all items are strings
+                    for i, para in enumerate(result):
+                        assert isinstance(para, str), f"Result[{i}] should be a string, got {type(para)}"
+
+                    # Verify sentence-by-sentence was NOT called
+                    assert not sentence_translate_called["value"], \
+                        "Sentence-by-sentence translate should NOT be called when paragraph fusion succeeds"
     print("✓ Contract: Paragraph fusion success → no sentence fallback")
 
 
@@ -112,8 +131,8 @@ def test_paragraph_fusion_failure_triggers_sentence_fallback():
         mock_translator = MockTranslator.return_value
 
         # Mock translate_paragraph to return result (but will fail evaluation)
-        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False):
-            return "Generated paragraph with low recall."
+        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False, **kwargs):
+            return ("Generated paragraph with low recall.", None, None)
         mock_translator.translate_paragraph = mock_translate_paragraph
 
         # Mock translate to track if it's called (sentence-by-sentence)
@@ -157,23 +176,39 @@ def test_paragraph_fusion_failure_triggers_sentence_fallback():
                     "The biological cycle defines our reality"
                 ]
 
-                input_text = "Human experience reinforces the rule of finitude. The biological cycle defines our reality."
+                # Mock BlueprintExtractor to return proper SemanticBlueprint objects
+                with patch('src.pipeline.BlueprintExtractor') as MockBlueprintExtractor:
+                    from src.ingestion.blueprint import SemanticBlueprint
+                    mock_extractor = MockBlueprintExtractor.return_value
+                    def mock_extract(text, **kwargs):
+                        return SemanticBlueprint(
+                            original_text=text,
+                            svo_triples=[],
+                            named_entities=[],
+                            core_keywords=set(),
+                            citations=[],
+                            quotes=[],
+                            **kwargs
+                        )
+                    mock_extractor.extract = mock_extract
 
-                result = process_text(
-                    input_text=input_text,
-                    atlas=mock_atlas,
-                    author_name="Test Author",
-                    style_dna="Test style DNA",
-                    max_retries=1,
-                    verbose=False
-                )
+                    input_text = "Human experience reinforces the rule of finitude. The biological cycle defines our reality."
 
-                # Verify sentence-by-sentence WAS called
-                assert sentence_translate_called["value"], \
-                    "Sentence-by-sentence translate SHOULD be called when paragraph fusion fails"
+                    result = process_text(
+                        input_text=input_text,
+                        atlas=mock_atlas,
+                        author_name="Test Author",
+                        style_dna="Test style DNA",
+                        max_retries=1,
+                        verbose=False
+                    )
 
-                # Verify result exists
-                assert len(result) > 0, "Should return result from sentence-by-sentence fallback"
+                    # Verify sentence-by-sentence WAS called
+                    assert sentence_translate_called["value"], \
+                        "Sentence-by-sentence translate SHOULD be called when paragraph fusion fails"
+
+                    # Verify result exists
+                    assert len(result) > 0, "Should return result from sentence-by-sentence fallback"
     print("✓ Contract: Paragraph fusion failure → sentence fallback executed")
 
 
@@ -191,7 +226,7 @@ def test_paragraph_fusion_exception_triggers_sentence_fallback():
         mock_translator = MockTranslator.return_value
 
         # Mock translate_paragraph to raise exception
-        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False):
+        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False, **kwargs):
             raise Exception("Paragraph fusion error")
         mock_translator.translate_paragraph = mock_translate_paragraph
 
@@ -219,23 +254,39 @@ def test_paragraph_fusion_exception_triggers_sentence_fallback():
                     "The biological cycle defines our reality"
                 ]
 
-                input_text = "Human experience reinforces the rule of finitude. The biological cycle defines our reality."
+                # Mock BlueprintExtractor to return proper SemanticBlueprint objects
+                with patch('src.pipeline.BlueprintExtractor') as MockBlueprintExtractor:
+                    from src.ingestion.blueprint import SemanticBlueprint
+                    mock_extractor = MockBlueprintExtractor.return_value
+                    def mock_extract(text, **kwargs):
+                        return SemanticBlueprint(
+                            original_text=text,
+                            svo_triples=[],
+                            named_entities=[],
+                            core_keywords=set(),
+                            citations=[],
+                            quotes=[],
+                            **kwargs
+                        )
+                    mock_extractor.extract = mock_extract
 
-                result = process_text(
-                    input_text=input_text,
-                    atlas=mock_atlas,
-                    author_name="Test Author",
-                    style_dna="Test style DNA",
-                    max_retries=1,
-                    verbose=False
-                )
+                    input_text = "Human experience reinforces the rule of finitude. The biological cycle defines our reality."
 
-                # Verify sentence-by-sentence WAS called after exception
-                assert sentence_translate_called["value"], \
-                    "Sentence-by-sentence translate SHOULD be called when paragraph fusion raises exception"
+                    result = process_text(
+                        input_text=input_text,
+                        atlas=mock_atlas,
+                        author_name="Test Author",
+                        style_dna="Test style DNA",
+                        max_retries=1,
+                        verbose=False
+                    )
 
-                # Verify result exists
-                assert len(result) > 0, "Should return result from sentence-by-sentence fallback"
+                    # Verify sentence-by-sentence WAS called after exception
+                    assert sentence_translate_called["value"], \
+                        "Sentence-by-sentence translate SHOULD be called when paragraph fusion raises exception"
+
+                    # Verify result exists
+                    assert len(result) > 0, "Should return result from sentence-by-sentence fallback"
     print("✓ Contract: Paragraph fusion exception → sentence fallback executed")
 
 
@@ -255,10 +306,10 @@ def test_multiple_paragraphs_mixed_success_failure():
 
         # Track paragraph fusion calls
         para_fusion_call_count = {"value": 0}
-        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False):
+        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False, **kwargs):
             para_fusion_call_count["value"] += 1
             paragraph_fusion_results.append(f"Para {para_fusion_call_count['value']} fusion")
-            return f"Generated paragraph {para_fusion_call_count['value']}."
+            return (f"Generated paragraph {para_fusion_call_count['value']}.", None, None)
         mock_translator.translate_paragraph = mock_translate_paragraph
 
         # Track sentence-by-sentence calls
@@ -309,26 +360,42 @@ def test_multiple_paragraphs_mixed_success_failure():
                     "The biological cycle defines our reality"
                 ]
 
-                input_text = """First paragraph. First sentence. Second sentence.
+                # Mock BlueprintExtractor to return proper SemanticBlueprint objects
+                with patch('src.pipeline.BlueprintExtractor') as MockBlueprintExtractor:
+                    from src.ingestion.blueprint import SemanticBlueprint
+                    mock_extractor = MockBlueprintExtractor.return_value
+                    def mock_extract(text, **kwargs):
+                        return SemanticBlueprint(
+                            original_text=text,
+                            svo_triples=[],
+                            named_entities=[],
+                            core_keywords=set(),
+                            citations=[],
+                            quotes=[],
+                            **kwargs
+                        )
+                    mock_extractor.extract = mock_extract
+
+                    input_text = """First paragraph. First sentence. Second sentence.
 
 Second paragraph. First sentence. Second sentence."""
 
-                result = process_text(
-                    input_text=input_text,
-                    atlas=mock_atlas,
-                    author_name="Test Author",
-                    style_dna="Test style DNA",
-                    max_retries=1,
-                    verbose=False
-                )
+                    result = process_text(
+                        input_text=input_text,
+                        atlas=mock_atlas,
+                        author_name="Test Author",
+                        style_dna="Test style DNA",
+                        max_retries=1,
+                        verbose=False
+                    )
 
-                # Should have 2 paragraphs in result
-                assert len(result) == 2, f"Should have 2 paragraphs, got {len(result)}"
+                    # Should have 2 paragraphs in result
+                    assert len(result) == 2, f"Should have 2 paragraphs, got {len(result)}"
 
-                # First paragraph should use sentence fallback (fusion failed)
-                # Second paragraph should use fusion (succeeded)
-                assert para_fusion_call_count["value"] == 2, "Both paragraphs should attempt fusion"
-                assert sentence_call_count["value"] > 0, "First paragraph should fall back to sentences"
+                    # First paragraph should use sentence fallback (fusion failed)
+                    # Second paragraph should use fusion (succeeded)
+                    assert para_fusion_call_count["value"] == 2, "Both paragraphs should attempt fusion"
+                    assert sentence_call_count["value"] > 0, "First paragraph should fall back to sentences"
     print("✓ Contract: Multiple paragraphs with mixed success/failure handled correctly")
 
 
@@ -345,8 +412,8 @@ def test_context_propagation_across_fallback_boundary():
         mock_translator = MockTranslator.return_value
 
         # Mock translate_paragraph to fail
-        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False):
-            return "Generated paragraph."
+        def mock_translate_paragraph(paragraph, atlas, author_name, style_dna=None, verbose=False, **kwargs):
+            return ("Generated paragraph.", None, None)
         mock_translator.translate_paragraph = mock_translate_paragraph
 
         # Mock translate to track context
@@ -388,20 +455,36 @@ def test_context_propagation_across_fallback_boundary():
                     "The biological cycle defines our reality"
                 ]
 
-                input_text = "First sentence. Second sentence. Third sentence."
+                # Mock BlueprintExtractor to return proper SemanticBlueprint objects
+                with patch('src.pipeline.BlueprintExtractor') as MockBlueprintExtractor:
+                    from src.ingestion.blueprint import SemanticBlueprint
+                    mock_extractor = MockBlueprintExtractor.return_value
+                    def mock_extract(text, **kwargs):
+                        return SemanticBlueprint(
+                            original_text=text,
+                            svo_triples=[],
+                            named_entities=[],
+                            core_keywords=set(),
+                            citations=[],
+                            quotes=[],
+                            **kwargs
+                        )
+                    mock_extractor.extract = mock_extract
 
-                result = process_text(
-                    input_text=input_text,
-                    atlas=mock_atlas,
-                    author_name="Test Author",
-                    style_dna="Test style DNA",
-                    max_retries=1,
-                    verbose=False
-                )
+                    input_text = "First sentence. Second sentence. Third sentence."
 
-                # Context should propagate between sentences in fallback
-                # First sentence has no context, second should have first sentence's context
-                assert len(context_tracking) >= 1, "Context should propagate in sentence fallback"
+                    result = process_text(
+                        input_text=input_text,
+                        atlas=mock_atlas,
+                        author_name="Test Author",
+                        style_dna="Test style DNA",
+                        max_retries=1,
+                        verbose=False
+                    )
+
+                    # Context should propagate between sentences in fallback
+                    # First sentence has no context, second should have first sentence's context
+                    assert len(context_tracking) >= 1, "Context should propagate in sentence fallback"
     print("✓ Contract: Context propagates across fallback boundary")
 
 

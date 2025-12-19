@@ -2583,6 +2583,33 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         return candidates
 
 
+    def _remove_phantom_citations(self, text: str, expected_citations: set) -> str:
+        """Remove phantom citations (citations not in original input) from text.
+
+        Args:
+            text: Text that may contain phantom citations
+            expected_citations: Set of valid citation strings from original input
+
+        Returns:
+            Text with phantom citations removed
+        """
+        if not text:
+            return text
+
+        citation_pattern = r'\[\^\d+\]'
+        found_citations = set(re.findall(citation_pattern, text))
+        phantom_citations = found_citations - expected_citations
+
+        if phantom_citations:
+            # Remove each phantom citation from text
+            for phantom in phantom_citations:
+                # Remove citation with optional space before and after
+                text = re.sub(r'\s*' + re.escape(phantom) + r'\s*', ' ', text)
+                # Clean up any double spaces
+                text = re.sub(r'\s+', ' ', text)
+
+        return text
+
     def _restore_citations_and_quotes(self, generated: str, blueprint: SemanticBlueprint) -> str:
         """Ensure all citations and quotes from blueprint are present in generated text.
 
@@ -2619,7 +2646,9 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
 
         # CRITICAL FIX: Verify citations actually exist in original input text
         # Extract citations from original text to ensure we only restore real ones
-        original_citations = set(re.findall(citation_pattern, blueprint.original_text))
+        # Ensure original_text is a string (not a tuple)
+        original_text = blueprint.original_text if isinstance(blueprint.original_text, str) else str(blueprint.original_text)
+        original_citations = set(re.findall(citation_pattern, original_text))
 
         # Remove phantom citations from generated text (citations not in original input)
         phantom_citations = generated_citations - original_citations
@@ -2976,41 +3005,47 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
 
         # Step 3: Extract style DNA if not provided
         if not style_dna:
-            from src.analyzer.style_extractor import StyleExtractor
-            style_extractor = StyleExtractor(config_path=self.config_path)
+            try:
+                from src.analyzer.style_extractor import StyleExtractor
+                style_extractor = StyleExtractor(config_path=self.config_path)
 
-            if secondary_author:
-                # Extract DNA from primary author's examples (from complex_examples pool)
-                # Note: complex_examples already contains mixed examples, but we extract
-                # primary DNA from the primary examples we retrieved earlier
-                style_dna = style_extractor.extract_style_dna(complex_examples)
+                if secondary_author:
+                    # Extract DNA from primary author's examples (from complex_examples pool)
+                    # Note: complex_examples already contains mixed examples, but we extract
+                    # primary DNA from the primary examples we retrieved earlier
+                    style_dna = style_extractor.extract_style_dna(complex_examples)
 
-                # Extract secondary author's DNA separately for lexicon fusion
-                # Get examples from secondary author for DNA extraction
-                secondary_examples = atlas.get_examples_by_rhetoric(
-                    RhetoricalType.OBSERVATION,  # Use generic type for DNA extraction
-                    top_k=5,
-                    author_name=secondary_author,
-                    query_text=None
-                )
-                secondary_dna = style_extractor.extract_style_dna(secondary_examples) if secondary_examples else None
+                    # Extract secondary author's DNA separately for lexicon fusion
+                    # Get examples from secondary author for DNA extraction
+                    secondary_examples = atlas.get_examples_by_rhetoric(
+                        RhetoricalType.OBSERVATION,  # Use generic type for DNA extraction
+                        top_k=5,
+                        author_name=secondary_author,
+                        query_text=None
+                    )
+                    secondary_dna = style_extractor.extract_style_dna(secondary_examples) if secondary_examples else None
 
-                # Merge lexicons (union of top words from both)
-                if secondary_dna and isinstance(secondary_dna, dict) and isinstance(style_dna, dict):
-                    primary_lexicon = style_dna.get("lexicon", [])[:15]
-                    secondary_lexicon = secondary_dna.get("lexicon", [])[:15]
-                    blended_lexicon = list(set(primary_lexicon) | set(secondary_lexicon))
-                    style_dna["lexicon"] = blended_lexicon
+                    # Merge lexicons (union of top words from both)
+                    if secondary_dna and isinstance(secondary_dna, dict) and isinstance(style_dna, dict):
+                        primary_lexicon = style_dna.get("lexicon", [])[:15]
+                        secondary_lexicon = secondary_dna.get("lexicon", [])[:15]
+                        blended_lexicon = list(set(primary_lexicon) | set(secondary_lexicon))
+                        style_dna["lexicon"] = blended_lexicon
 
-                    if verbose:
-                        print(f"  Blended lexicon: {len(blended_lexicon)} words "
-                              f"({len(primary_lexicon)} from {author_name}, "
-                              f"{len(secondary_lexicon)} from {secondary_author})")
-            else:
-                style_dna = style_extractor.extract_style_dna(complex_examples)
+                        if verbose:
+                            print(f"  Blended lexicon: {len(blended_lexicon)} words "
+                                  f"({len(primary_lexicon)} from {author_name}, "
+                                  f"{len(secondary_lexicon)} from {secondary_author})")
+                else:
+                    style_dna = style_extractor.extract_style_dna(complex_examples)
 
-            if verbose:
-                print(f"  Extracted style DNA: {style_dna.get('tone', 'Unknown')} tone")
+                if verbose:
+                    print(f"  Extracted style DNA: {style_dna.get('tone', 'Unknown')} tone")
+            except Exception as e:
+                # Gracefully handle style DNA extraction failure
+                if verbose:
+                    print(f"  ⚠ Style DNA extraction failed: {e}, continuing without style DNA")
+                style_dna = None  # Continue without style DNA
 
         # Extract style_lexicon for use in evaluation and repair
         style_lexicon = None
@@ -3120,33 +3155,44 @@ These connectors match the author's style and help create flowing, complex sente
         retry_delay = self.llm_provider_config.get("retry_delay", 2)  # Start delay in seconds
 
         response = None
-        for attempt in range(max_retries):
-            try:
-                response = self.llm_provider.call(
-                    system_prompt="You are a ghostwriter creating paragraphs in a specific style. Output ONLY valid JSON arrays.",
-                    user_prompt=prompt,
-                    model_type="editor",
-                    require_json=True,
-                    temperature=0.7,  # Moderate temperature for style variation
-                    max_tokens=self.translator_config.get("max_tokens", 500),
-                    timeout=api_timeout
-                )
-                break  # Success, exit retry loop
-            except (RuntimeError, requests.exceptions.RequestException, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-                error_str = str(e)
-                is_timeout = "timeout" in error_str.lower() or "timed out" in error_str.lower() or "Read timed out" in error_str
+        try:
+            for attempt in range(max_retries):
+                try:
+                    response = self.llm_provider.call(
+                        system_prompt="You are a ghostwriter creating paragraphs in a specific style. Output ONLY valid JSON arrays.",
+                        user_prompt=prompt,
+                        model_type="editor",
+                        require_json=True,
+                        temperature=0.7,  # Moderate temperature for style variation
+                        max_tokens=self.translator_config.get("max_tokens", 500),
+                        timeout=api_timeout
+                    )
+                    break  # Success, exit retry loop
+                except (RuntimeError, requests.exceptions.RequestException, requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+                    error_str = str(e)
+                    is_timeout = "timeout" in error_str.lower() or "timed out" in error_str.lower() or "Read timed out" in error_str
 
-                if attempt < max_retries - 1 and is_timeout:
-                    # Retry on timeout with exponential backoff
-                    if verbose:
-                        print(f"  ⚠ Timeout error (attempt {attempt + 1}/{max_retries}): {error_str[:100]}...")
-                        print(f"  ⏳ Waiting {retry_delay}s before retry...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                    continue
-                else:
-                    # Final attempt failed or non-timeout error - re-raise
-                    raise
+                    if attempt < max_retries - 1 and is_timeout:
+                        # Retry on timeout with exponential backoff
+                        if verbose:
+                            print(f"  ⚠ Timeout error (attempt {attempt + 1}/{max_retries}): {error_str[:100]}...")
+                            print(f"  ⏳ Waiting {retry_delay}s before retry...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                        continue
+                    else:
+                        # Final attempt failed or non-timeout error - re-raise
+                        raise
+        except Exception as e:
+            # Gracefully handle LLM generation failure
+            if verbose:
+                print(f"  ⚠ LLM generation failed: {e}, returning original paragraph")
+            return paragraph, rhythm_map, teacher_example  # Fallback to original
+
+        if response is None:
+            if verbose:
+                print(f"  ⚠ No response from LLM, returning original paragraph")
+            return paragraph, rhythm_map, teacher_example  # Fallback to original
 
         try:
 
@@ -3273,7 +3319,16 @@ These connectors match the author's style and help create flowing, complex sente
                 if verbose:
                     print(f"  ✓ Selected qualified candidate: recall={best_candidate['recall']:.2f}, "
                           f"score={best_candidate['score']:.2f}")
-                return best_candidate["text"], rhythm_map, teacher_example
+
+                # Remove phantom citations before returning
+                final_text = self._remove_phantom_citations(best_candidate["text"], expected_citations)
+                # Restore valid citations if needed
+                from src.ingestion.blueprint import BlueprintExtractor
+                extractor = BlueprintExtractor()
+                blueprint = extractor.extract(paragraph)
+                final_text = self._restore_citations_and_quotes(final_text, blueprint)
+
+                return final_text, rhythm_map, teacher_example
             else:
                 # 3. Fallback: No qualified candidates, pick highest recall (salvage meaning)
                 best_candidate = max(evaluated_candidates, key=lambda x: x["recall"])
@@ -3493,7 +3548,16 @@ Generate 3 new variations that include ALL facts from the checklist. Output as a
                                 if verbose:
                                     print(f"  ✓ Repair {repair_attempt} successful: recall={best_after_repair['recall']:.2f}, "
                                           f"score={best_after_repair['score']:.2f}")
-                                return best_after_repair["text"], rhythm_map, teacher_example
+
+                                # Remove phantom citations before returning
+                                final_text = self._remove_phantom_citations(best_after_repair["text"], expected_citations)
+                                # Restore valid citations if needed
+                                from src.ingestion.blueprint import BlueprintExtractor
+                                extractor = BlueprintExtractor()
+                                blueprint = extractor.extract(paragraph)
+                                final_text = self._restore_citations_and_quotes(final_text, blueprint)
+
+                                return final_text, rhythm_map, teacher_example
                             else:
                                 # Still no qualified, but pick best from all (including repairs)
                                 best_after_repair = max(evaluated_candidates, key=lambda x: x["recall"])
@@ -3529,20 +3593,16 @@ Generate 3 new variations that include ALL facts from the checklist. Output as a
                 # Step 3: Explicit phantom citation removal (sanitize output)
                 # Remove any citations that don't exist in the original paragraph
                 final_text = current_best["text"]
+
+                # Remove phantom citations
                 citation_pattern = r'\[\^\d+\]'
                 found_citations = set(re.findall(citation_pattern, final_text))
                 phantom_citations = found_citations - expected_citations
+                if phantom_citations and verbose:
+                    print(f"  🧹 Removing {len(phantom_citations)} phantom citations: {sorted(phantom_citations)}")
+                final_text = self._remove_phantom_citations(final_text, expected_citations)
 
-                if phantom_citations:
-                    if verbose:
-                        print(f"  🧹 Removing {len(phantom_citations)} phantom citations: {sorted(phantom_citations)}")
-                    # Remove each phantom citation from generated text
-                    for phantom in phantom_citations:
-                        # Remove the citation, handling spacing
-                        final_text = re.sub(re.escape(phantom) + r'\s*', '', final_text)
-                        final_text = re.sub(r'\s+' + re.escape(phantom), '', final_text)
-
-                # Step 1: Use standard restoration tool (integrate with existing system)
+                # Step 4: Use standard restoration tool (integrate with existing system)
                 # Create a blueprint from the original paragraph for citation restoration
                 from src.ingestion.blueprint import BlueprintExtractor
                 extractor = BlueprintExtractor()

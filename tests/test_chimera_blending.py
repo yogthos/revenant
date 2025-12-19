@@ -53,8 +53,9 @@ class TestTranslatorInterface(unittest.TestCase):
         self.assertIn('author_name', params)
 
         # Blending parameters should be optional (have defaults)
-        self.assertIsNotNone(params['secondary_author'].default)
-        self.assertIsNotNone(params['blend_ratio'].default)
+        # Check that default is not inspect.Parameter.empty (meaning it has a default)
+        self.assertNotEqual(params['secondary_author'].default, inspect.Parameter.empty)
+        self.assertNotEqual(params['blend_ratio'].default, inspect.Parameter.empty)
 
     def test_blend_ratio_default_value(self):
         """Test that blend_ratio defaults to 0.5 (equal blend)."""

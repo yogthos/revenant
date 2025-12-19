@@ -156,8 +156,9 @@ class BlueprintExtractor:
             if not root:
                 continue
 
-            # Strategy 1: ROOT is a verb (normal case)
-            if root.pos_ == "VERB":
+            # Strategy 1: ROOT is a verb or auxiliary verb (normal case)
+            # Handle both VERB and AUX (auxiliary verbs like "is", "are", "was", etc.)
+            if root.pos_ in ("VERB", "AUX"):
                 # Find subject (nsubj or nsubjpass for passive)
                 subject = None
                 for token in sent:
@@ -179,27 +180,82 @@ class BlueprintExtractor:
                             obj = self._extract_phrase(token)
                             break
 
+                # Also check for attribute (attr) for copular verbs like "is"
+                if not obj:
+                    for token in sent:
+                        if token.dep_ == "attr" and token.head == root:
+                            obj = self._extract_phrase(token)
+                            break
+
                 # Extract main clause SVO
-                main_svo = None
-                if subject:
-                    verb_lemma = root.lemma_.lower()
-                    subject_clean = self._clean_span(subject)
-                    obj_clean = self._clean_span(obj) if obj else ""
-                    main_svo = (subject_clean, verb_lemma, obj_clean)
+                # Always extract at least the verb, even if subject/object are missing
+                verb_lemma = root.lemma_.lower()
+                subject_clean = self._clean_span(subject) if subject else ""
+                obj_clean = self._clean_span(obj) if obj else ""
+                main_svo = (subject_clean, verb_lemma, obj_clean)
+                # Only add if we have at least a subject or object (to avoid empty SVOs)
+                if subject_clean or obj_clean:
                     svos.append(main_svo)
 
-                # ENHANCEMENT: Extract SVO from nested clauses (that, which, who)
-                # Check for relative clauses and complement clauses
-                nested_clauses = []
+                # ENHANCEMENT: Extract SVO from nested clauses using spaCy dependency labels
+                # Use dependency parsing to identify nested clauses rather than hardcoding words
+                # Key dependency labels for nested clauses:
+                # - ccomp: clausal complement (e.g., "I think that he left")
+                # - csubj: clausal subject (e.g., "That he left is surprising")
+                # - acl: adjectival clause modifier / relative clause (e.g., "the man who left")
+                # - advcl: adverbial clause modifier (e.g., "when he left")
+                nested_clause_deps = ("ccomp", "csubj", "acl", "advcl")
+
                 for token in sent:
-                    # Find "that" clauses (ccomp, csubj, acl)
-                    if token.text.lower() in ["that", "which", "who", "whom"]:
+                    # Check if this token is part of a nested clause using dependency labels
+                    is_nested_clause = token.dep_ in nested_clause_deps
+
+                    # Also check if this token is the head of a nested clause
+                    # (e.g., "that" introducing a complement clause)
+                    is_nested_marker = any(
+                        child.dep_ in nested_clause_deps and child.head == token
+                        for child in sent
+                    )
+
+                    if is_nested_clause or is_nested_marker:
                         # Find the verb in the nested clause
+                        # The verb is typically the ROOT of the nested clause subtree
                         nested_verb = None
-                        for child in token.subtree:
-                            if child.pos_ == "VERB" and child != root:
-                                nested_verb = child
-                                break
+
+                        # Strategy 1: Look for the ROOT verb in the nested clause subtree
+                        # For ccomp/csubj/acl/advcl, the nested verb is usually in the subtree
+                        if is_nested_clause:
+                            # The token itself might be the verb, or the verb is in its subtree
+                            if token.pos_ == "VERB" and token != root:
+                                nested_verb = token
+                            else:
+                                # Look for verb in the subtree (prefer ROOT verbs)
+                                for child in token.subtree:
+                                    if child.dep_ == "ROOT" and child.pos_ == "VERB" and child != root:
+                                        nested_verb = child
+                                        break
+                                # If no ROOT verb found, take any verb in subtree
+                                if not nested_verb:
+                                    for child in token.subtree:
+                                        if child.pos_ == "VERB" and child != root:
+                                            nested_verb = child
+                                            break
+
+                        # Strategy 2: If token is a marker (like "that"), find verb in its children
+                        elif is_nested_marker:
+                            # Look for verbs that are children of this token or in its subtree
+                            for child in token.subtree:
+                                if child.pos_ == "VERB" and child != root:
+                                    # Prefer verbs that are direct children or have nested clause deps
+                                    if child.head == token or child.dep_ in nested_clause_deps:
+                                        nested_verb = child
+                                        break
+                            # Fallback: find any verb after the marker
+                            if not nested_verb:
+                                for t in sent:
+                                    if t.i > token.i and t.pos_ == "VERB" and t != root:
+                                        nested_verb = t
+                                        break
 
                         if nested_verb:
                             # Extract SVO from nested clause
@@ -208,16 +264,21 @@ class BlueprintExtractor:
 
                             # Find subject of nested verb
                             for t in sent:
-                                if t.dep_ in ("nsubj", "nsubjpass") and t.head == nested_verb:
+                                if t.dep_ in ("nsubj", "nsubjpass", "csubj") and t.head == nested_verb:
                                     nested_subject = self._extract_phrase(t)
                                     break
 
-                            # If no explicit subject, the head of "that" might be the subject
-                            if not nested_subject and token.head == nested_verb:
-                                # The noun before "that" is the subject
+                            # For relative clauses (acl), the subject might be the head of the relative pronoun
+                            if not nested_subject and token.dep_ == "acl":
+                                # Look for noun phrase that the relative clause modifies
                                 for t in sent:
-                                    if t.head == token and t.pos_ == "NOUN":
-                                        nested_subject = self._extract_phrase(t)
+                                    if t.head == token.head and t.pos_ in ("NOUN", "PROPN"):
+                                        # This is the antecedent, but we need the actual subject
+                                        # Look for subject after the relative marker
+                                        for t2 in sent:
+                                            if t2.i > token.i and t2.i < nested_verb.i and t2.pos_ in ("NOUN", "PROPN"):
+                                                nested_subject = self._extract_phrase(t2)
+                                                break
                                         break
 
                             # Find object of nested verb
@@ -225,6 +286,13 @@ class BlueprintExtractor:
                                 if t.dep_ == "dobj" and t.head == nested_verb:
                                     nested_obj = self._extract_phrase(t)
                                     break
+
+                            # Also check for prepositional objects
+                            if not nested_obj:
+                                for t in sent:
+                                    if t.dep_ == "pobj" and t.head.head == nested_verb:
+                                        nested_obj = self._extract_phrase(t)
+                                        break
 
                             if nested_subject or nested_obj:
                                 nested_verb_lemma = nested_verb.lemma_.lower()

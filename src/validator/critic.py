@@ -480,7 +480,8 @@ def is_grammatically_coherent(text: str) -> bool:
             return False
 
     # Check 3: Must have a verb (using Spacy if available)
-    if _spacy_nlp is not None:
+    # Skip verb check for very short texts (like titles) - they're valid without verbs
+    if len(words) > 3 and _spacy_nlp is not None:
         try:
             doc = _spacy_nlp(text)
             has_verb = any(token.pos_ == "VERB" for token in doc)
@@ -711,8 +712,27 @@ def check_critical_nouns_coverage(
     missing_critical = []
     for abstract_noun in original_abstract:
         if abstract_noun in critical_abstract:
+            # Try WordNet synonyms first
             abstract_synonyms = get_wordnet_synonyms(abstract_noun)
-            if not (abstract_synonyms & generated_all):
+            found_match = bool(abstract_synonyms & generated_all)
+
+            # If WordNet doesn't find a match, try spaCy similarity
+            if not found_match and _spacy_nlp is not None:
+                try:
+                    orig_token = _spacy_nlp.vocab[abstract_noun]
+                    if orig_token.has_vector:
+                        # Check similarity with all generated nouns
+                        for gen_noun, _ in generated_nouns:
+                            gen_token = _spacy_nlp.vocab[gen_noun]
+                            if gen_token.has_vector:
+                                similarity = orig_token.similarity(gen_token)
+                                if similarity >= 0.6:  # Same threshold as synonym detection
+                                    found_match = True
+                                    break
+                except (KeyError, AttributeError, RuntimeError):
+                    pass
+
+            if not found_match:
                 missing_critical.append(abstract_noun)
 
     if missing_critical:
@@ -726,8 +746,40 @@ def check_critical_nouns_coverage(
     # Check 3: Overall noun coverage (90% threshold)
     covered_nouns = set()
     for orig_noun, _ in original_nouns:
+        # Direct match first
+        if orig_noun in generated_all:
+            covered_nouns.add(orig_noun)
+            continue
+
+        # Try WordNet synonyms
         orig_synonyms = get_wordnet_synonyms(orig_noun)
-        if orig_synonyms & generated_all:
+        found_match = bool(orig_synonyms & generated_all)
+
+        # Also check reverse: get synonyms of generated nouns and see if original is in them
+        if not found_match:
+            for gen_noun, _ in generated_nouns:
+                gen_synonyms = get_wordnet_synonyms(gen_noun)
+                if orig_noun in gen_synonyms:
+                    found_match = True
+                    break
+
+        # If WordNet doesn't find a match, try spaCy similarity
+        if not found_match and _spacy_nlp is not None:
+            try:
+                orig_token = _spacy_nlp.vocab[orig_noun]
+                if orig_token.has_vector:
+                    # Check similarity with all generated nouns
+                    for gen_noun, _ in generated_nouns:
+                        gen_token = _spacy_nlp.vocab[gen_noun]
+                        if gen_token.has_vector:
+                            similarity = orig_token.similarity(gen_token)
+                            if similarity >= 0.6:  # Same threshold as synonym detection
+                                found_match = True
+                                break
+            except (KeyError, AttributeError, RuntimeError):
+                pass
+
+        if found_match:
             covered_nouns.add(orig_noun)
 
     coverage_ratio = len(covered_nouns) / len(original_nouns) if original_nouns else 1.0

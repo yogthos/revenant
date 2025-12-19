@@ -4,7 +4,6 @@ This test ensures that the fluency checker catches awkward constructions
 like interrupted future tense and unnecessary passive voice.
 """
 
-import pytest
 from src.validator.semantic_critic import SemanticCritic
 
 

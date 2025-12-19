@@ -77,10 +77,12 @@ def test_prompt_loading_template_variable_substitution():
     try:
         formatted = prompt.format(
             propositions_list="- Test proposition",
+            proposition_count=1,
             style_examples="Example 1: \"Test example\"",
             mandatory_vocabulary="",
             rhetorical_connectors="",
             citation_instruction="",
+            structural_blueprint="",
             citation_output_instruction=""
         )
 

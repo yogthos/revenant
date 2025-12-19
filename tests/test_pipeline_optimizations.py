@@ -92,9 +92,11 @@ def test_empty_blueprint_uses_original_text():
     )
 
     # Verify prompt uses original_text, not empty blueprint structure
-    assert "INPUT TEXT:" in prompt or "INPUT TEXT" in prompt, "Should use INPUT TEXT for empty blueprint"
+    # Empty blueprints are handled by _build_original_text_only_prompt which uses "SOURCE TEXT"
+    # or by the empty blueprint template which uses "INPUT TEXT"
+    assert "SOURCE TEXT" in prompt or "INPUT TEXT" in prompt, "Should use SOURCE TEXT or INPUT TEXT for empty blueprint"
     assert "Architecture remains." in prompt, "Should include original text"
-    assert "Subjects: None" not in prompt or "Subjects: []" not in prompt, "Should not show empty subjects list"
+    assert "Subjects:" not in prompt or "Subjects: []" not in prompt, "Should not show empty subjects list"
 
     print("✓ test_empty_blueprint_uses_original_text passed")
 
@@ -130,10 +132,19 @@ def test_empty_blueprint_literal_translation():
 
     # Get the prompt that was sent
     call_args = mock_llm.call.call_args
-    user_prompt = call_args[1].get('user_prompt') or call_args[0][1] if len(call_args[0]) > 1 else ""
+    # Extract user_prompt from call args (can be positional or keyword)
+    if call_args:
+        if 'user_prompt' in call_args[1]:
+            user_prompt = call_args[1]['user_prompt']
+        elif len(call_args[0]) > 1:
+            user_prompt = call_args[0][1]
+        else:
+            user_prompt = ""
+    else:
+        user_prompt = ""
 
-    # Verify prompt uses INPUT TEXT
-    assert "INPUT TEXT:" in user_prompt, "Literal translation should use INPUT TEXT for empty blueprint"
+    # Verify prompt uses SOURCE TEXT or INPUT TEXT (empty blueprints use original_only template)
+    assert "SOURCE TEXT" in user_prompt or "INPUT TEXT" in user_prompt, f"Literal translation should use SOURCE TEXT or INPUT TEXT for empty blueprint. Got: {user_prompt[:200]}"
     assert "The structure holds." in user_prompt, "Should include original text"
 
     print("✓ test_empty_blueprint_literal_translation passed")
@@ -214,11 +225,12 @@ def test_non_empty_blueprint_uses_normal_structure():
         examples=["Example 1"]
     )
 
-    # Verify prompt uses blueprint structure, not INPUT TEXT
-    assert "INPUT BLUEPRINT" in prompt, "Should use INPUT BLUEPRINT for normal blueprint"
+    # Verify prompt uses blueprint structure (STRUCTURE CHECKLIST), not SOURCE TEXT only
+    assert "STRUCTURE CHECKLIST" in prompt, "Should use STRUCTURE CHECKLIST for normal blueprint"
     assert "Subjects:" in prompt, "Should include subjects"
     assert "Actions:" in prompt, "Should include actions"
-    assert "INPUT TEXT:" not in prompt, "Should not use INPUT TEXT for non-empty blueprint"
+    # Normal blueprints also include SOURCE TEXT, but should have STRUCTURE CHECKLIST too
+    assert "SOURCE TEXT" in prompt, "Should include SOURCE TEXT for normal blueprint"
 
     print("✓ test_non_empty_blueprint_uses_normal_structure passed")
 

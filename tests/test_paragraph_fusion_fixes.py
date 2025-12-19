@@ -46,7 +46,8 @@ class MockLLMProvider:
         self.call_count += 1
         self.call_history.append({
             "system_prompt": system_prompt[:100] if len(system_prompt) > 100 else system_prompt,
-            "user_prompt": user_prompt[:200] if len(user_prompt) > 200 else user_prompt,
+            "user_prompt": user_prompt,  # Store full prompt for testing
+            "user_prompt_preview": user_prompt[:200] if len(user_prompt) > 200 else user_prompt,
             "model_type": model_type,
             "require_json": require_json
         })
@@ -324,7 +325,7 @@ def test_prompt_includes_proposition_count():
                 {"length": "long", "type": "declarative", "opener": None}
             ]
 
-            translator.translate_paragraph(
+            _, _, _ = translator.translate_paragraph(
                 paragraph="Prop 1. Prop 2. Prop 3. Prop 4. Prop 5.",
                 atlas=mock_atlas,
                 author_name="Test Author",
@@ -337,8 +338,9 @@ def test_prompt_includes_proposition_count():
 
             # Check user_prompt contains proposition count
             user_prompt = prompt_calls[0]["user_prompt"]
-            assert "5 propositions" in user_prompt or "proposition_count" in user_prompt.lower() or f"{len(propositions)} propositions" in user_prompt, \
-                f"Prompt should include proposition count. Found: {user_prompt[:300]}"
+            # The prompt should include "You have {count} propositions" from the template
+            assert f"You have {len(propositions)} propositions" in user_prompt or f"{len(propositions)} propositions" in user_prompt or "proposition_count" in user_prompt.lower(), \
+                f"Prompt should include proposition count. Found: {user_prompt[:500]}"
 
             print(f"✓ Prompt includes proposition count: {len(propositions)}")
             print("✓ TEST PASSED: Prompt includes proposition_count")
@@ -386,7 +388,7 @@ def test_validation_warning_for_short_rhythm_map():
             import contextlib
             f = io.StringIO()
             with contextlib.redirect_stdout(f):
-                translator.translate_paragraph(
+                _, _, _ = translator.translate_paragraph(
                     paragraph=". ".join(propositions) + ".",
                     atlas=mock_atlas,
                     author_name="Test Author",

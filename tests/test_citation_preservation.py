@@ -210,8 +210,11 @@ class TestCriticValidation(unittest.TestCase):
         generated = "Test sentence."  # Missing citation
         result = self.critic.evaluate(generated, input_blueprint)
 
-        self.assertFalse(result["pass"])
-        self.assertIn("Missing citations", result["feedback"])
+        # The critic should fail when citations are missing (checked early in evaluate method)
+        self.assertFalse(result.get("pass", True),
+                        f"Critic should fail when citations are missing. Result: {result}")
+        self.assertIn("Missing citations", result.get("feedback", ""),
+                     f"Feedback should mention missing citations. Feedback: {result.get('feedback', '')}")
 
     def test_critic_passes_with_citation(self):
         """Test that critic passes when citation is present."""

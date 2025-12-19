@@ -302,19 +302,102 @@ def test_ghost_word_ban_prompt_enhancement():
 if __name__ == "__main__":
     print("Running template evolution hallucination fix tests...\n")
 
+    tests_skipped = 0
+    tests_passed = 0
+    tests_failed = 0
+
     try:
         test_rhetorical_type_is_a_raw_example()
-        test_svo_extraction_nested_clauses()
-        test_blueprint_completeness_check()
-        test_single_example_strict_fallback()
-        test_template_structure_compatibility()
-        test_ghost_word_ban_in_skeleton()
-        test_ghost_word_ban_prompt_enhancement()
-
-        print("\n✓ All template evolution hallucination fix tests passed!")
+        tests_passed += 1
     except Exception as e:
-        print(f"\n✗ Test failed: {e}")
-        import traceback
-        traceback.print_exc()
+        if "SKIPPED" in str(e) or not RHETORIC_AVAILABLE:
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_rhetorical_type_is_a_raw_example failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    try:
+        test_svo_extraction_nested_clauses()
+        tests_passed += 1
+    except Exception as e:
+        if "SKIPPED" in str(e) or not BLUEPRINT_AVAILABLE:
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_svo_extraction_nested_clauses failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    try:
+        test_blueprint_completeness_check()
+        tests_passed += 1
+    except Exception as e:
+        if "SKIPPED" in str(e) or not (TRANSLATOR_AVAILABLE and BLUEPRINT_AVAILABLE):
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_blueprint_completeness_check failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    try:
+        test_single_example_strict_fallback()
+        tests_passed += 1
+    except Exception as e:
+        if "SKIPPED" in str(e) or not (TRANSLATOR_AVAILABLE and BLUEPRINT_AVAILABLE and RHETORIC_AVAILABLE):
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_single_example_strict_fallback failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    try:
+        test_template_structure_compatibility()
+        tests_passed += 1
+    except Exception as e:
+        if "SKIPPED" in str(e) or not (TRANSLATOR_AVAILABLE and BLUEPRINT_AVAILABLE):
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_template_structure_compatibility failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    try:
+        test_ghost_word_ban_in_skeleton()
+        tests_passed += 1
+    except Exception as e:
+        if "SKIPPED" in str(e) or not STRUCTURALIZER_AVAILABLE:
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_ghost_word_ban_in_skeleton failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    try:
+        test_ghost_word_ban_prompt_enhancement()
+        tests_passed += 1
+    except Exception as e:
+        if "SKIPPED" in str(e) or not STRUCTURALIZER_AVAILABLE:
+            tests_skipped += 1
+        else:
+            tests_failed += 1
+            print(f"\n✗ test_ghost_word_ban_prompt_enhancement failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    if tests_failed == 0:
+        if tests_passed > 0:
+            print(f"\n✓ All template evolution hallucination fix tests passed! ({tests_passed} passed, {tests_skipped} skipped)")
+            sys.exit(0)
+        else:
+            print(f"\n⊘ All tests skipped due to missing dependencies ({tests_skipped} skipped)")
+            sys.exit(1)  # Exit with non-zero so test runner marks as skipped
+    else:
+        print(f"\n✗ Some tests failed: {tests_failed} failed, {tests_passed} passed, {tests_skipped} skipped")
         sys.exit(1)
 

@@ -249,6 +249,22 @@ class SemanticCritic:
                 "feedback": "CRITICAL: Generated text is empty."
             }
 
+        # CRITICAL: Validate citations and quotes FIRST (non-negotiable)
+        # This must happen before other checks to ensure citations are always validated
+        citations_valid, citations_feedback = self._validate_citations_and_quotes(
+            generated_text, input_blueprint
+        )
+        if not citations_valid:
+            # Citations/quotes are missing - this is a critical failure
+            return {
+                "pass": False,
+                "recall_score": 0.0,
+                "precision_score": 0.0,
+                "fluency_score": 0.0,
+                "score": 0.0,
+                "feedback": f"CRITICAL: {citations_feedback}"
+            }
+
         original_text = input_blueprint.original_text
 
         # PARAGRAPH MODE: Use proposition-based evaluation
@@ -261,6 +277,48 @@ class SemanticCritic:
             )
 
         # SENTENCE MODE: Continue with existing sentence-level logic
+        # HARD GATE 1.5: Noun Preservation Check (ALWAYS RUN - critical for meaning preservation)
+        # Extract concrete nouns from original and ensure they appear in output
+        if original_text:
+            try:
+                # Use shared NLPManager for spaCy model
+                from src.utils.nlp_manager import NLPManager
+                nlp = NLPManager.get_nlp()
+            except (OSError, ImportError, RuntimeError):
+                nlp = None
+
+            if nlp:
+                try:
+                    # Extract nouns from original text
+                    original_doc = nlp(original_text)
+                    original_nouns = set()
+                    for token in original_doc:
+                        if token.pos_ == "NOUN" and not token.is_stop:
+                            # Use lemma for matching (handles plurals/singulars)
+                            original_nouns.add(token.lemma_.lower())
+
+                    # Extract nouns from generated text
+                    generated_doc = nlp(generated_text)
+                    generated_nouns = set()
+                    for token in generated_doc:
+                        if token.pos_ == "NOUN" and not token.is_stop:
+                            generated_nouns.add(token.lemma_.lower())
+
+                    # HARD GATE: If original had nouns but output has ZERO matching nouns, fail
+                    if original_nouns and not any(noun in generated_nouns for noun in original_nouns):
+                        missing_nouns = list(original_nouns)[:5]  # Show first 5 missing nouns
+                        return {
+                            "pass": False,
+                            "recall_score": 0.0,
+                            "precision_score": 0.0,
+                            "fluency_score": 0.0,
+                            "score": 0.0,
+                            "feedback": f"CRITICAL: Key nouns from original text are missing in output. Missing nouns: {', '.join(missing_nouns)}. Restore all key concepts from the original text."
+                        }
+                except Exception:
+                    # If noun check fails, continue (don't block on spaCy errors)
+                    pass
+
         # HARD GATE: Semantic Similarity Check (Phase 3)
         # This replaces manual word-count and fragment checks with embedding-based validation
         similarity = None
@@ -310,47 +368,6 @@ class SemanticCritic:
                     "score": 0.0,
                     "feedback": f"CRITICAL: Semantic collapse. Output ({output_len} words) lost >50% of original content ({input_len} words). Restore missing concepts from the original text."
                 }
-
-            # HARD GATE 1.5: Noun Preservation Check (Fallback)
-            # Extract concrete nouns from original and ensure they appear in output
-            if original_text:
-                try:
-                    # Use shared NLPManager for spaCy model
-                    from src.utils.nlp_manager import NLPManager
-                    nlp = NLPManager.get_nlp()
-                except (OSError, ImportError, RuntimeError):
-                    nlp = None
-
-                    if nlp:
-                        # Extract nouns from original text
-                        original_doc = nlp(original_text)
-                        original_nouns = set()
-                        for token in original_doc:
-                            if token.pos_ == "NOUN" and not token.is_stop:
-                                # Use lemma for matching (handles plurals/singulars)
-                                original_nouns.add(token.lemma_.lower())
-
-                        # Extract nouns from generated text
-                        generated_doc = nlp(generated_text)
-                        generated_nouns = set()
-                        for token in generated_doc:
-                            if token.pos_ == "NOUN" and not token.is_stop:
-                                generated_nouns.add(token.lemma_.lower())
-
-                        # HARD GATE: If original had nouns but output has ZERO matching nouns, fail
-                        if original_nouns and not any(noun in generated_nouns for noun in original_nouns):
-                            missing_nouns = list(original_nouns)[:5]  # Show first 5 missing nouns
-                            return {
-                                "pass": False,
-                                "recall_score": 0.0,
-                                "precision_score": 0.0,
-                                "fluency_score": 0.0,
-                                "score": 0.0,
-                                "feedback": f"CRITICAL: Key nouns from original text are missing in output. Missing nouns: {', '.join(missing_nouns)}. Restore all key concepts from the original text."
-                            }
-                except Exception:
-                    # If noun check fails, continue (don't block on spaCy errors)
-                    pass
 
         # HARD GATE 2: Fragment Check (Fallback - only if semantic model unavailable)
         # Semantic similarity check above should catch fragments, but keep this as backup
@@ -510,21 +527,6 @@ class SemanticCritic:
         except Exception:
             # If logic check fails, continue (don't block on spaCy errors)
             pass
-
-        # First, validate citations and quotes (non-negotiable)
-        citations_valid, citations_feedback = self._validate_citations_and_quotes(
-            generated_text, input_blueprint
-        )
-        if not citations_valid:
-            # Citations/quotes are missing - this is a critical failure
-            return {
-                "pass": False,
-                "recall_score": 0.0,
-                "precision_score": 0.0,
-                "fluency_score": 0.0,
-                "score": 0.0,
-                "feedback": f"CRITICAL: {citations_feedback}"
-            }
 
         # Extract blueprint from generated text
         try:
@@ -1119,7 +1121,10 @@ Return JSON:
                 feedback_parts.append("Prefer Active Voice for universal statements (e.g., 'breaks' instead of 'will be broken').")
 
             # Parse with spaCy
-            doc = self.extractor.nlp(generated_text)
+            nlp = self.extractor._get_nlp()
+            if nlp is None:
+                return 0.6, "Warning: Could not fully analyze fluency: spaCy model not available"
+            doc = nlp(generated_text)
 
             # Check 1: Sentence completeness (must have subject and predicate)
             has_subject = False
