@@ -9,7 +9,7 @@ import re
 import time
 import requests
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict, Optional, Set
 from src.ingestion.blueprint import SemanticBlueprint
 from src.atlas.rhetoric import RhetoricalType
 from src.generator.llm_provider import LLMProvider
@@ -2662,8 +2662,9 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         style_dna: Optional[Dict] = None,
         position: str = "BODY",
         structure_tracker: Optional[object] = None,
+        used_examples: Optional[Set[str]] = None,
         verbose: bool = False
-    ) -> tuple[str, Optional[List[Dict]]]:
+    ) -> tuple[str, Optional[List[Dict]], Optional[str]]:
         """Translate a paragraph holistically using paragraph fusion.
 
         Extracts atomic propositions from the paragraph, retrieves complex style examples,
@@ -2681,7 +2682,7 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
             Generated paragraph in target style.
         """
         if not paragraph or not paragraph.strip():
-            return paragraph, None
+            return paragraph, None, None
 
         # Step 1: Extract atomic propositions (with citations bound to facts)
         if verbose:
@@ -2692,7 +2693,7 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
 
         if not propositions:
             # Fallback: use original paragraph
-            return paragraph, None
+            return paragraph, None, None
 
         # Step 1.5: Extract direct quotations separately (for quote preservation)
         quote_pattern = r'["\'](?:[^"\']|(?<=\\)["\'])*["\']'
@@ -2762,16 +2763,17 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
         n_props = len(propositions)
         target_sentences = math.ceil(n_props * 0.6)  # Target ratio: ~1.5 props per sentence
 
-        teacher_example = None
+        teacher_example = None  # Will be set when best_match is selected
         rhythm_map = None
 
         if complex_examples:
-            # Composite scoring: sentence count + diversity + positional fit
+            # Composite scoring: sentence count + diversity + positional fit + freshness
             # Load weights from config
             diversity_config = self.paragraph_fusion_config.get("structure_diversity", {})
             count_weight = diversity_config.get("count_match_weight", 0.3)
             diversity_weight = diversity_config.get("diversity_weight", 0.4)
             positional_weight = diversity_config.get("positional_weight", 0.3)
+            freshness_weight = diversity_config.get("freshness_weight", 2.0)
             enabled = diversity_config.get("enabled", True)
 
             # Positional keyword sets
@@ -2837,11 +2839,16 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                         opener_penalty = structure_tracker.get_opener_penalty(opener)
                         diversity_score *= opener_penalty
 
-                    # 5. Composite score
+                    # 5. Freshness score (prefer unused examples)
+                    is_used = used_examples and (example in used_examples)
+                    freshness_score = 0.0 if is_used else 1.0
+
+                    # 6. Composite score
                     composite_score = (
                         count_match * count_weight +
                         diversity_score * diversity_weight +
-                        positional_fit * positional_weight
+                        positional_fit * positional_weight +
+                        freshness_score * freshness_weight
                     )
 
                     # Track best candidate
@@ -2849,6 +2856,7 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                         best_score = composite_score
                         best_match = example
                         rhythm_map = candidate_rhythm_map  # Store rhythm map for best match
+                        teacher_example = example  # Store for tracking
 
                 except Exception as e:
                     # If analysis fails, skip this example
@@ -2884,9 +2892,11 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     if verbose:
                         sentence_count = len(rhythm_map) if rhythm_map else 0
                         print(f"  Selected fallback teacher example with {sentence_count} sentences (target: {target_sentences})")
+                else:
+                    teacher_example = None
 
             if best_match:
-                teacher_example = best_match
+                # teacher_example already set above (or in fallback)
                 # rhythm_map already extracted above (or set in fallback)
 
                 if verbose:
@@ -3054,7 +3064,7 @@ These connectors match the author's style and help create flowing, complex sente
             if not variations:
                 if verbose:
                     print(f"  ⚠ No variations generated, using fallback")
-                return paragraph, rhythm_map  # Fallback to original
+                return paragraph, rhythm_map, teacher_example  # Fallback to original
 
             # Step 5: Evaluate all variations and select best using tiered selection logic
             if verbose:
@@ -3169,7 +3179,7 @@ These connectors match the author's style and help create flowing, complex sente
                 if verbose:
                     print(f"  ✓ Selected qualified candidate: recall={best_candidate['recall']:.2f}, "
                           f"score={best_candidate['score']:.2f}")
-                return best_candidate["text"], rhythm_map
+                return best_candidate["text"], rhythm_map, teacher_example
             else:
                 # 3. Fallback: No qualified candidates, pick highest recall (salvage meaning)
                 best_candidate = max(evaluated_candidates, key=lambda x: x["recall"])
@@ -3390,7 +3400,7 @@ Generate 3 new variations that include ALL facts from the checklist. Output as a
                 # Return best candidate (either original or after repair attempts)
                 if verbose and current_best["recall"] < proposition_recall_threshold:
                     print(f"  ⚠ Final recall {current_best['recall']:.2f} below threshold {proposition_recall_threshold:.2f}, returning best available")
-                return final_text, rhythm_map
+                return final_text, rhythm_map, teacher_example
 
         except Exception as e:
             error_str = str(e)
@@ -3401,7 +3411,7 @@ Generate 3 new variations that include ALL facts from the checklist. Output as a
                     print(f"  ✗ Paragraph fusion failed: Network timeout after {max_retries} retry attempts. Using fallback.")
                 else:
                     print(f"  ✗ Paragraph fusion failed: {error_str[:200]}, using fallback")
-            return paragraph, None  # Fallback to original
+            return paragraph, None, None  # Fallback to original
 
     def _repair_missing_artifacts(
         self,

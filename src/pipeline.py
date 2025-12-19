@@ -232,13 +232,14 @@ def process_text(
 
             # Translate paragraph holistically
             try:
-                generated_paragraph, teacher_rhythm_map = translator.translate_paragraph(
+                generated_paragraph, teacher_rhythm_map, teacher_example = translator.translate_paragraph(
                     paragraph,
                     atlas,
                     author_name,
                     style_dna=style_dna_dict,
                     position=position,
                     structure_tracker=structure_tracker,
+                    used_examples=used_examples,
                     verbose=verbose
                 )
 
@@ -269,6 +270,10 @@ def process_text(
                         from src.analyzer.structuralizer import generate_structure_signature
                         signature = generate_structure_signature(teacher_rhythm_map)
                         structure_tracker.add_structure(signature, teacher_rhythm_map)
+
+                    # Track teacher example to prevent reuse
+                    if teacher_example:
+                        used_examples.add(teacher_example)
 
                     generated_paragraphs.append(generated_paragraph)
                     if write_callback:

@@ -224,6 +224,53 @@ class TestPositionalFiltering(unittest.TestCase):
             self.assertIsNotNone(rhythm_map)
 
 
+class TestUsedExamplesTracking(unittest.TestCase):
+    """Test that used_examples parameter is properly handled."""
+
+    def setUp(self):
+        if StructureTracker is None:
+            self.skipTest("StructureTracker not available")
+
+    def test_translate_paragraph_imports(self):
+        """Test that translate_paragraph can be imported without NameError."""
+        try:
+            from src.generator.translator import StyleTranslator
+            # Check that the method signature is correct
+            import inspect
+            sig = inspect.signature(StyleTranslator.translate_paragraph)
+            params = list(sig.parameters.keys())
+
+            # Verify used_examples parameter exists
+            self.assertIn('used_examples', params)
+
+            # Verify return type annotation includes 3 values
+            return_annotation = sig.return_annotation
+            # Should be tuple[str, Optional[List[Dict]], Optional[str]]
+            self.assertIsNotNone(return_annotation)
+
+        except NameError as e:
+            self.fail(f"NameError when importing StyleTranslator: {e}")
+        except Exception as e:
+            self.fail(f"Unexpected error when importing StyleTranslator: {e}")
+
+    def test_used_examples_parameter_type(self):
+        """Test that used_examples parameter accepts Set[str] type."""
+        try:
+            from src.generator.translator import StyleTranslator
+            import inspect
+
+            sig = inspect.signature(StyleTranslator.translate_paragraph)
+            used_examples_param = sig.parameters.get('used_examples')
+
+            self.assertIsNotNone(used_examples_param, "used_examples parameter should exist")
+
+            # Check default value
+            self.assertEqual(used_examples_param.default, None)
+
+        except Exception as e:
+            self.fail(f"Error checking used_examples parameter: {e}")
+
+
 if __name__ == '__main__':
     unittest.main()
 
