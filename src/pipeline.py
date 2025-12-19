@@ -139,6 +139,44 @@ def process_text(
     Returns:
         List of generated paragraphs (each paragraph is a space-joined string of sentences).
     """
+    # Read blending configuration
+    try:
+        import json
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        blend_config = config.get("blend", {})
+        blend_authors = blend_config.get("authors", [])
+        blend_ratio = blend_config.get("ratio", 0.5)
+
+        # Determine primary and secondary authors
+        if len(blend_authors) >= 2:
+            # Dual-author mode
+            primary_author = blend_authors[0]
+            secondary_author = blend_authors[1]
+            # Override author_name if different from config
+            if author_name != primary_author:
+                if verbose:
+                    print(f"  Note: Using primary author from config: {primary_author} (was: {author_name})")
+                author_name = primary_author
+        elif len(blend_authors) == 1:
+            # Single-author mode (ratio ignored)
+            primary_author = blend_authors[0]
+            secondary_author = None
+            blend_ratio = 0.5  # Not used, but set for consistency
+            if author_name != primary_author:
+                if verbose:
+                    print(f"  Note: Using author from config: {primary_author} (was: {author_name})")
+                author_name = primary_author
+        else:
+            # No blend config or empty, use provided author_name
+            secondary_author = None
+            blend_ratio = 0.5
+    except Exception as e:
+        if verbose:
+            print(f"  ⚠ Could not read blend config: {e}, using single-author mode")
+        secondary_author = None
+        blend_ratio = 0.5
+
     extractor = BlueprintExtractor()
     classifier = RhetoricalClassifier()
     translator = StyleTranslator(config_path=config_path)
@@ -240,17 +278,32 @@ def process_text(
                     position=position,
                     structure_tracker=structure_tracker,
                     used_examples=used_examples,
+                    secondary_author=secondary_author,
+                    blend_ratio=blend_ratio,
                     verbose=verbose
                 )
 
                 # Evaluate with paragraph mode
                 propositions = proposition_extractor.extract_atomic_propositions(paragraph)
+                # Get style vectors for both authors if blending
+                author_style_vector = None
+                secondary_author_vector = None
+                try:
+                    author_style_vector = atlas.get_author_style_vector(author_name)
+                    if secondary_author:
+                        secondary_author_vector = atlas.get_author_style_vector(secondary_author)
+                except Exception as e:
+                    if verbose:
+                        print(f"  ⚠ Could not get style vectors: {e}")
+
                 critic_result = critic.evaluate(
                     generated_paragraph,
                     extractor.extract(paragraph),
                     propositions=propositions,
                     is_paragraph=True,
-                    author_style_vector=None  # TODO: Get from atlas if available
+                    author_style_vector=author_style_vector,
+                    secondary_author_vector=secondary_author_vector,
+                    blend_ratio=blend_ratio
                 )
 
                 if verbose:
