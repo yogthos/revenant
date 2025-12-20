@@ -2889,8 +2889,10 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     sentence_count = len([s for s in example_sentences if s.strip()])
 
                     # Hard filter: Reject examples that are too short to hold the content
-                    # (Prevent 13 propositions -> 2 sentence template)
-                    min_sentences = max(2, int(target_sentences * 0.5))
+                    # Load ratio from config (default 0.3 allows for high density/long sentences)
+                    # Lower ratio = more lenient, allows denser templates (e.g., 13 props in 3 sentences)
+                    min_ratio = self.paragraph_fusion_config.get("min_sentence_ratio", 0.3)
+                    min_sentences = max(2, int(target_sentences * min_ratio))
                     if sentence_count < min_sentences:
                         if verbose:
                             print(f"    Skipping example with {sentence_count} sentences (minimum: {min_sentences})")

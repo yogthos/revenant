@@ -306,17 +306,63 @@ def process_text(
                     blend_ratio=blend_ratio
                 )
 
+                # Load thresholds from config for tiered evaluation
+                try:
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                    paragraph_fusion_config = config.get("paragraph_fusion", {})
+                    ideal_threshold = paragraph_fusion_config.get("proposition_recall_threshold", 0.85)
+                    min_viable = paragraph_fusion_config.get("min_viable_recall_threshold", 0.70)
+                except Exception:
+                    # Fallback to defaults if config read fails
+                    ideal_threshold = 0.85
+                    min_viable = 0.70
+
+                # Get proposition recall from critic result
+                internal_recall = critic_result.get('proposition_recall', 0.0)
+
+                # Tiered evaluation logic
+                if internal_recall >= ideal_threshold:
+                    # Scenario A: Perfect Pass
+                    if verbose:
+                        print(f"  ✓ Fusion Success: Score {internal_recall:.2f} >= {ideal_threshold}")
+                    # Override critic_result to ensure pass=True
+                    critic_result["pass"] = True
+                    critic_result["score"] = 1.0  # Perfect score
+                    pass_status = "PERFECT PASS"
+
+                elif internal_recall >= min_viable:
+                    # Scenario B: Soft Pass (The Fix)
+                    if verbose:
+                        print(f"  ⚠ Soft Pass: Score {internal_recall:.2f} is below ideal ({ideal_threshold}) but viable (>= {min_viable}). Accepting.")
+                    # Override critic_result to accept despite original pass=False
+                    critic_result["pass"] = True
+                    critic_result["score"] = 0.8  # Reduced but acceptable score
+                    pass_status = "SOFT PASS"
+
+                else:
+                    # Scenario C: Hard Fail -> Trigger Sentence-by-Sentence Fallback
+                    if verbose:
+                        print(f"  ✗ Fusion Failed: Score {internal_recall:.2f} below viability floor ({min_viable}).")
+                    critic_result["pass"] = False
+                    critic_result["score"] = 0.0
+                    pass_status = "HARD FAIL"
+
+                # Logging with status indicator
                 if verbose:
                     pass_value = critic_result.get('pass', False)
-                    # Color codes: green for True, red for False
-                    pass_color = '\033[92m' if pass_value else '\033[91m'  # Green or Red
+                    # Color codes: green for Perfect/Soft Pass, red for Hard Fail
+                    if pass_value:
+                        pass_color = '\033[92m'  # Green
+                    else:
+                        pass_color = '\033[91m'  # Red
                     reset_color = '\033[0m'
                     pass_str = f"{pass_color}{pass_value}{reset_color}"
-                    print(f"  Paragraph fusion result: pass={pass_str}, "
+                    print(f"  Paragraph fusion result: {pass_status}, pass={pass_str}, "
                           f"score={critic_result.get('score', 0.0):.2f}, "
-                          f"proposition_recall={critic_result.get('proposition_recall', 0.0):.2f}")
+                          f"proposition_recall={internal_recall:.2f}")
 
-                # Use generated paragraph if it passes, otherwise fall back to sentence-by-sentence
+                # Use generated paragraph if it passes (Perfect or Soft Pass), otherwise fall back
                 if critic_result.get('pass', False):
                     # Record structure for diversity tracking
                     if teacher_rhythm_map:
