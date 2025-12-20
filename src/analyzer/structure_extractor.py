@@ -94,6 +94,17 @@ PRESERVE the pronoun 'It' ONLY if used as a dummy subject (e.g., 'It is clear th
 - All articles: the, a, an
 - All punctuation exactly as it appears
 
+**Step 4: Rhetorical Preservation.** You MUST preserve specific rhetorical frames that define the author's voice. Do NOT replace these with placeholders.
+* **Contrast:** 'not... but...', 'neither... nor...', 'on the contrary', 'instead of'
+* **Imperatives/Modals:** 'It is necessary to', 'We must', 'One should', 'It is clear that', 'It is evident that'
+* **Causal/Logical:** 'In order to', 'Because of', 'Arising from', 'Consequently'
+* **Temporal Anchors:** 'At that time', 'During the', 'As soon as'
+
+**Example:**
+Input: 'We must not fear hardship, but rather embrace it.'
+Output: 'We must not [VP] [NP], but rather [VP] [NP].'
+(Note: 'We must not' and 'but rather' are preserved).
+
 **Examples:**
 Input: "The violent shift to capitalism did not bring freedom."
 Output: "The [ADJ] [NP] to [NP] did not bring [NP]."

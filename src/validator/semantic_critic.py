@@ -345,7 +345,7 @@ class SemanticCritic:
 
         return False, [], 1.0, "No context leak detected"
 
-    def _verify_coherence(self, text: str) -> Tuple[float, str]:
+    def _verify_coherence(self, text: str, verbose: bool = False) -> Tuple[float, str]:
         """Verify text coherence using LLM-based evaluation.
 
         Checks for:
@@ -356,6 +356,7 @@ class SemanticCritic:
 
         Args:
             text: Text to evaluate for coherence.
+            verbose: Whether to print debug information.
 
         Returns:
             Tuple of (coherence_score: float, reason: str).
@@ -409,6 +410,12 @@ class SemanticCritic:
 
             # Ensure score is in valid range
             score = max(0.0, min(1.0, score))
+
+            # DEBUG: Log low coherence scores to help diagnose issues
+            if verbose and score < 0.5:
+                print(f"      DEBUG Coherence: score={score:.2f}, reason={reason}")
+                print(f"      DEBUG Text evaluated: {text[:200]}...")
+                print(f"      DEBUG LLM response: {response[:300]}...")
 
             return score, reason
 
@@ -1995,13 +2002,15 @@ Return JSON:
         topic_similarity_threshold = paragraph_config.get("topic_similarity_threshold", 0.6)
 
         # MEANING FIRST: Run coherence check BEFORE style calculation
-        coherence_score, coherence_reason = self._verify_coherence(generated_text)
+        coherence_score, coherence_reason = self._verify_coherence(generated_text, verbose=verbose)
         topic_similarity = self._calculate_semantic_similarity(original_text, generated_text)
 
         # HARD GATE: If incoherent, fail immediately (no style calculation needed)
         if coherence_score < coherence_threshold:
             if verbose:
                 print(f"      ⚠ Coherence FAILED: {coherence_score:.2f} < {coherence_threshold:.2f} → score=0.0")
+                print(f"      Generated text (first 200 chars): {generated_text[:200]}...")
+                print(f"      Coherence reason: {coherence_reason}")
             return {
                 "pass": False,
                 "score": 0.0,
