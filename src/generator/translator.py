@@ -3013,15 +3013,12 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                     example_sentences = sent_tokenize(example)
                     sentence_count = len([s for s in example_sentences if s.strip()])
 
-                    # Hard filter: Reject examples that are too short to hold the content
-                    # Load ratio from config (default 0.3 if not set, but config should specify appropriate value)
-                    # Lower ratio = more lenient, allows denser templates (e.g., 13 props in 3 sentences)
-                    # Higher ratio = stricter, ensures better structural match (e.g., 0.5 requires 4+ sentences for 8-sentence target)
-                    min_ratio = self.paragraph_fusion_config.get("min_sentence_ratio", 0.3)
-                    min_sentences = max(2, int(target_sentences * min_ratio))
-                    if sentence_count < min_sentences:
+                    # Safety floor: Only reject 1-sentence fragments
+                    # Sentence count suitability (3 vs 8) is handled by composite scorer ranking
+                    # This allows high-density templates to compete if they have good style alignment
+                    if sentence_count < 2:
                         if verbose:
-                            print(f"    Skipping example with {sentence_count} sentences (minimum: {min_sentences})")
+                            print(f"    Skipping fragment (1 sentence).")
                         continue
 
                     count_diff = abs(sentence_count - target_sentences)
@@ -3101,21 +3098,34 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                 if verbose:
                     print(f"  ⚠ Composite scoring failed for all examples. Falling back to simple length matching.")
 
-                # Fallback: simple sentence count matching (original behavior)
-                best_match = None
+                # Fallback: Find the first candidate that isn't a fragment (safety floor)
+                # Then pick the one closest to target length
+                fallback_choice = None
                 best_diff = float('inf')
 
                 for example in complex_examples:
                     try:
                         example_sentences = sent_tokenize(example)
                         sentence_count = len([s for s in example_sentences if s.strip()])
-                        diff = abs(sentence_count - target_sentences)
 
+                        # Safety floor: must have at least 2 sentences
+                        if sentence_count < 2:
+                            continue
+
+                        diff = abs(sentence_count - target_sentences)
                         if diff < best_diff:
                             best_diff = diff
-                            best_match = example
+                            fallback_choice = example
                     except Exception:
                         continue
+
+                # Emergency safety: If literally everything is 1 sentence, take the longest one
+                if not fallback_choice and complex_examples:
+                    fallback_choice = max(complex_examples, key=len)
+                    if verbose:
+                        print(f"  ⚠ Emergency fallback: All examples are fragments, selecting longest.")
+
+                best_match = fallback_choice
 
                 if best_match:
                     teacher_example = best_match
@@ -3141,6 +3151,11 @@ Do NOT copy the text verbatim. Transform it into the target style while preservi
                         sentence_count = len(rhythm_map)
                         mismatch = abs(sentence_count - target_sentences)
                         print(f"  Selected teacher example with {sentence_count} sentences (target: {target_sentences})")
+
+                        # Capacity warning: Log if selected template is significantly denser than target
+                        if sentence_count < target_sentences * 0.5:
+                            print(f"  ℹ Note: Selected high-density template ({sentence_count} sentences for {target_sentences} target).")
+
                         if mismatch > 2:
                             print(f"  ⚠ Warning: Large sentence count mismatch ({mismatch} sentences). Quality may be affected.")
                         rhythm_summary = [f"{r['length']} {r['type']}" for r in rhythm_map[:3]]
