@@ -253,17 +253,53 @@ def process_text(
             if verbose:
                 print(f"  Context reset (new paragraph)")
 
-        # Check if this is a multi-sentence paragraph (use paragraph fusion)
-        is_multi_sentence = len(sentences) > 1
-        min_sentences_for_fusion = 2
+        # Check if we should transcribe single-sentence paragraphs as-is (likely headings)
+        # Load config once for both heading detection and paragraph fusion settings
+        paragraph_fusion_config = {}
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
             paragraph_fusion_config = config.get("paragraph_fusion", {})
-            if paragraph_fusion_config.get("enabled", True):
-                min_sentences_for_fusion = paragraph_fusion_config.get("min_sentences_for_fusion", 2)
         except Exception:
             pass
+
+        transcribe_headings_as_is = paragraph_fusion_config.get("transcribe_headings_as_is", False)
+
+        # If enabled and single sentence, check if it looks like a heading
+        if transcribe_headings_as_is and len(sentences) == 1:
+            single_sentence = sentences[0].strip()
+            # Heuristics for heading detection:
+            # 1. Short length (typically headings are < 100 chars)
+            # 2. All caps or no lowercase letters (common in headings)
+            # 3. Ends with no sentence-ending punctuation or just colon
+            is_short = len(single_sentence) < 100
+            is_all_caps = single_sentence.isupper() and len(single_sentence) > 3
+            has_no_lowercase = not any(c.islower() for c in single_sentence)
+            stripped = single_sentence.rstrip()
+            ends_with_colon = stripped.endswith(':')
+            ends_with_sentence_punct = stripped.endswith(('.', '!', '?'))
+            # Heading if: ends with colon OR doesn't end with sentence punctuation
+            ends_like_heading = ends_with_colon or not ends_with_sentence_punct
+
+            # Consider it a heading if it's short and (all caps OR no lowercase) and ends like a heading
+            looks_like_heading = is_short and (is_all_caps or has_no_lowercase) and ends_like_heading
+
+            if looks_like_heading:
+                if verbose:
+                    print(f"  ℹ Detected heading, transcribing as-is: {single_sentence[:50]}{'...' if len(single_sentence) > 50 else ''}")
+                generated_paragraphs.append(single_sentence)
+                if write_callback:
+                    is_new_paragraph = True
+                    write_callback(single_sentence, is_new_paragraph, is_first_paragraph)
+                    if is_first_paragraph:
+                        is_first_paragraph = False
+                continue  # Skip restyling for this paragraph
+
+        # Check if this is a multi-sentence paragraph (use paragraph fusion)
+        is_multi_sentence = len(sentences) > 1
+        min_sentences_for_fusion = 2
+        if paragraph_fusion_config.get("enabled", True):
+            min_sentences_for_fusion = paragraph_fusion_config.get("min_sentences_for_fusion", 2)
 
         # Use paragraph fusion if enabled and paragraph has multiple sentences
         if is_multi_sentence and len(sentences) >= min_sentences_for_fusion:
