@@ -1,6 +1,6 @@
 """Test utilities for linguistic quality testing."""
 
-from tests.utils.linguistic_helpers import (
+from .linguistic_helpers import (
     calculate_semantic_drift,
     extract_perspective_pronouns,
     count_llm_calls,

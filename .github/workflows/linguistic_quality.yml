@@ -45,7 +45,9 @@ jobs:
 
     - name: Test linguistic helpers
       run: |
-        pytest tests/utils/linguistic_helpers.py -v
+        # linguistic_helpers.py is a utility module, not a test file
+        # Verify it can be imported without errors
+        python3 -c "from tests.utils.linguistic_helpers import calculate_semantic_drift, extract_perspective_pronouns; print('✓ linguistic_helpers imports successfully')"
 
   mocked-integration-tests:
     name: Mocked Integration Tests
