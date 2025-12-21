@@ -141,6 +141,26 @@ Examples:
         help='Enable verbose output for all steps'
     )
 
+    parser.add_argument(
+        '--relaxed',
+        action='store_true',
+        help='Use relaxed filtering for paragraph atlas (min-sentences=1, min-style-score=3)'
+    )
+
+    parser.add_argument(
+        '--min-sentences',
+        type=int,
+        default=None,
+        help='Minimum sentences per paragraph (overrides --relaxed if set)'
+    )
+
+    parser.add_argument(
+        '--min-style-score',
+        type=int,
+        default=None,
+        help='Minimum style score 1-5 (overrides --relaxed if set)'
+    )
+
     args = parser.parse_args()
 
     # Validate style file exists
@@ -203,6 +223,12 @@ Examples:
             atlas_cmd.extend(["--output-dir", args.output_dir])
         if args.num_clusters:
             atlas_cmd.extend(["--clusters", str(args.num_clusters)])
+        if args.relaxed:
+            atlas_cmd.append("--relaxed")
+        if args.min_sentences is not None:
+            atlas_cmd.extend(["--min-sentences", str(args.min_sentences)])
+        if args.min_style_score is not None:
+            atlas_cmd.extend(["--min-style-score", str(args.min_style_score)])
 
         if not run_command(atlas_cmd, "Building paragraph atlas", args.verbose):
             success = False

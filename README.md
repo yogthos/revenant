@@ -106,6 +106,9 @@ python3 scripts/init_author.py --author "Mao" --style-file styles/sample_mao.txt
 
 # Skip steps that are already done
 python3 scripts/init_author.py --author "Mao" --style-file styles/sample_mao.txt --skip-style-load
+
+# Use relaxed filtering (if you get "No valid paragraphs found" error)
+python3 scripts/init_author.py --author "Mao" --style-file styles/sample_mao.txt --relaxed
 ```
 
 **Manual Setup (Individual Steps):**
@@ -123,8 +126,28 @@ python3 scripts/load_style.py \
 
 **2. Build Paragraph Atlas** (for statistical archetype generation):
 ```bash
+# Basic usage
 python3 scripts/build_paragraph_atlas.py styles/sample_mao.txt --author "Mao"
+
+# Use relaxed filtering (if you get "No valid paragraphs found" error)
+# This lowers thresholds: min-sentences=1, min-style-score=3
+python3 scripts/build_paragraph_atlas.py styles/sample_mao.txt --author "Mao" --relaxed
+
+# Custom filtering thresholds
+python3 scripts/build_paragraph_atlas.py styles/sample_mao.txt --author "Mao" \
+  --min-sentences 1 --min-style-score 3
+
+# Specify number of clusters
+python3 scripts/build_paragraph_atlas.py styles/sample_mao.txt --author "Mao" --clusters 15
 ```
+
+**Filtering Options:**
+- `--relaxed`: Use relaxed filtering (min-sentences=1, min-style-score=3). Useful when:
+  - Your corpus has many single-sentence paragraphs
+  - LLM style scoring is too conservative
+  - You want to include more paragraphs for analysis
+- `--min-sentences N`: Minimum sentences per paragraph (default: 2)
+- `--min-style-score N`: Minimum style score 1-5 (default: 4). Lower scores accept more generic text.
 
 This creates:
 - `atlas_cache/paragraph_atlas/{author}/archetypes.json` - Paragraph archetype statistics
@@ -814,6 +837,11 @@ For more details, see `tests/integration/README.md`.
 **Atlas not found**: Load styles first using `scripts/load_style.py`
 
 **Paragraph Atlas not found**: Build paragraph atlas using `scripts/build_paragraph_atlas.py`
+
+**No valid paragraphs found**: If you get this error when building the atlas, try:
+- Use `--relaxed` flag: `python3 scripts/build_paragraph_atlas.py <file> --author <name> --relaxed`
+- Lower thresholds manually: `--min-sentences 1 --min-style-score 3`
+- Check that your corpus file has paragraphs separated by blank lines
 
 **Style RAG collection not found**: Build RAG index using `scripts/build_rag_index.py --author <name> --corpus-file <file>` or use `scripts/init_author.py`
 

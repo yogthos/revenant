@@ -20,7 +20,7 @@ sys.path.insert(0, str(project_root))
 
 from src.generator.llm_provider import LLMProvider
 
-# Configuration
+# Configuration (defaults - can be overridden via command-line)
 MIN_SENTENCES = 2   # Ignore single-sentence fragments
 MIN_STYLE_SCORE = 4 # Only keep "Strong Style Match" or better (1-5 scale)
 
@@ -90,7 +90,8 @@ except OSError:
     nlp = spacy.load("en_core_web_sm")
 
 class ParagraphAnalyzer:
-    def __init__(self, config_path="config.json", author_name="the author"):
+    def __init__(self, config_path="config.json", author_name="the author",
+                 min_sentences=MIN_SENTENCES, min_style_score=MIN_STYLE_SCORE):
         self.scaler = StandardScaler()
         # KMeans will be initialized later once we know K
         self.kmeans = None
@@ -98,6 +99,8 @@ class ParagraphAnalyzer:
         print(f"Initializing LLM Provider for style auditing (Config: {config_path})...")
         self.llm = LLMProvider(config_path=config_path)
         self.author_name = author_name
+        self.min_sentences = min_sentences
+        self.min_style_score = min_style_score
 
     def get_paragraph_features(self, text: str) -> Dict[str, float]:
         """
@@ -106,7 +109,7 @@ class ParagraphAnalyzer:
         doc = nlp(text)
         sents = list(doc.sents)
 
-        if len(sents) < MIN_SENTENCES:
+        if len(sents) < self.min_sentences:
             return None
 
         # 1. Rhythm & Burstiness
@@ -187,7 +190,7 @@ class ParagraphAnalyzer:
 
                 style_score = audit_style_fidelity(p_text, self.llm, self.author_name)
 
-                if style_score < MIN_STYLE_SCORE:
+                if style_score < self.min_style_score:
                     skipped_style += 1
                     continue # Drop generic paragraphs
 
@@ -207,8 +210,8 @@ class ParagraphAnalyzer:
 
         print(f"\nAnalysis Complete:")
         print(f"  Total Paragraphs: {total_paras}")
-        print(f"  Skipped (Too Short): {skipped_short}")
-        print(f"  Skipped (Weak Style < {MIN_STYLE_SCORE}): {skipped_style}")
+        print(f"  Skipped (Too Short < {self.min_sentences} sentences): {skipped_short}")
+        print(f"  Skipped (Weak Style < {self.min_style_score}): {skipped_style}")
         print(f"  Kept (High Quality): {kept_paras}")
 
         return raw_data, np.array(feature_matrix)
@@ -308,8 +311,20 @@ def main():
     parser.add_argument("--clusters", type=int, default=None)
     parser.add_argument("--min-clusters", type=int, default=8)
     parser.add_argument("--max-clusters", type=int, default=60)
+    parser.add_argument("--min-sentences", type=int, default=MIN_SENTENCES,
+                        help=f"Minimum sentences per paragraph (default: {MIN_SENTENCES})")
+    parser.add_argument("--min-style-score", type=int, default=MIN_STYLE_SCORE,
+                        help=f"Minimum style score (1-5 scale, default: {MIN_STYLE_SCORE})")
+    parser.add_argument("--relaxed", action="store_true",
+                        help="Use relaxed filtering (min-sentences=1, min-style-score=3)")
 
     args = parser.parse_args()
+
+    # Apply relaxed mode if requested
+    if args.relaxed:
+        args.min_sentences = 1
+        args.min_style_score = 3
+        print("⚠️  Using RELAXED mode: min-sentences=1, min-style-score=3")
 
     # Validate inputs
     if not os.path.exists(args.corpus_file):
@@ -329,14 +344,25 @@ def main():
     print(f"Author: {args.author} (Safe: {safe_author})")
     print(f"Output: {output_dir}")
 
-    # Initialize Analyzer
-    analyzer = ParagraphAnalyzer(config_path=args.config, author_name=args.author)
+    # Initialize Analyzer with configurable thresholds
+    analyzer = ParagraphAnalyzer(
+        config_path=args.config,
+        author_name=args.author,
+        min_sentences=args.min_sentences,
+        min_style_score=args.min_style_score
+    )
 
     # 1. Analyze & Audit
     raw_data, feature_matrix = analyzer.analyze_corpus([args.corpus_file])
 
     if len(raw_data) == 0:
-        raise ValueError("No valid paragraphs found (Check style scores or file format).")
+        error_msg = (
+            f"No valid paragraphs found.\n"
+            f"  Current filters: min-sentences={args.min_sentences}, min-style-score={args.min_style_score}\n"
+            f"  Try using --relaxed flag or lower thresholds with:\n"
+            f"    --min-sentences 1 --min-style-score 3"
+        )
+        raise ValueError(error_msg)
 
     # 1.5. Extract Style Profile from full corpus
     print("\nExtracting style profile...")
@@ -390,7 +416,8 @@ def main():
         "corpus_file": args.corpus_file,
         "num_clusters": num_clusters,
         "total_paragraphs": len(labeled_data),
-        "min_style_score": MIN_STYLE_SCORE,
+        "min_style_score": args.min_style_score,
+        "min_sentences": args.min_sentences,
         "global_averages": global_averages
     }
 
