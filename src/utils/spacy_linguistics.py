@@ -211,6 +211,9 @@ def is_imperative_sentence(doc: Doc) -> bool:
 def get_main_verbs_excluding_auxiliaries(doc: Doc) -> Set[str]:
     """Extract main verbs excluding auxiliaries and stopwords.
 
+    Uses spaCy's linguistic features to identify main verbs (not auxiliaries).
+    This catches that "weaving" and "wove" are the same action (lemma: "weave").
+
     Args:
         doc: Pre-processed spaCy Doc object
 
@@ -219,11 +222,19 @@ def get_main_verbs_excluding_auxiliaries(doc: Doc) -> Set[str]:
     """
     main_verbs = set()
     for token in doc:
-        if token.pos_ == "VERB" and not token.is_stop:
-            # Exclude auxiliary verbs by checking dependency and tag
-            # Auxiliaries typically have tags like "AUX" or dependencies like "aux", "auxpass"
-            # Note: In spaCy, auxiliaries can have pos_="AUX" or pos_="VERB" with dep_="aux"/"auxpass"
-            if token.pos_ != "AUX" and token.dep_ not in ["aux", "auxpass"]:
+        # Include verbs (pos_="VERB" or pos_="AUX" for some models)
+        # but exclude stopwords and auxiliary dependencies
+        if (token.pos_ in ["VERB", "AUX"]) and not token.is_stop:
+            # Exclude auxiliary verbs by checking dependency
+            # Auxiliaries have dependencies like "aux", "auxpass"
+            # Main verbs have dependencies like "ROOT", "xcomp", "ccomp", "advcl", "conj", etc.
+            # Participles like "weaving" in "I was weaving" are main verbs (dep="xcomp"), not auxiliaries
+            is_auxiliary = token.dep_ in ["aux", "auxpass"]
+
+            # Include if it's not an auxiliary
+            # Note: The auxiliary in "I was weaving" is "was" (dep="aux"), not "weaving" (dep="xcomp")
+            if not is_auxiliary:
+                # Add the lemma (base form) so "weaving" and "wove" both become "weave"
                 main_verbs.add(token.lemma_.lower())
     return main_verbs
 
