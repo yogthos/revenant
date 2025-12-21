@@ -63,7 +63,11 @@ class TestAntiStutterZipperMerge:
 
 
 class TestActionEchoDetection:
-    """Test action echo detection using spaCy lemmatization."""
+    """Test action echo detection using spaCy lemmatization.
+
+    Note: check_action_echo only uses spaCy, not LLM. StatisticalCritic doesn't
+    use LLMProvider, so no mocking needed.
+    """
 
     def setup_method(self):
         """Set up test fixtures."""
@@ -158,11 +162,39 @@ class TestActionEchoDetection:
 
 
 class TestGroundingValidation:
-    """Test grounding validation (anti-moralizing)."""
+    """Test grounding validation (anti-moralizing).
+
+    Note: check_ending_grounding uses spaCy, not LLM. We mock the LLM provider
+    to avoid requiring API keys in CI.
+    """
 
     def setup_method(self):
-        """Set up test fixtures."""
-        self.critic = SemanticCritic(config_path="config.json")
+        """Set up test fixtures with mocked LLM provider."""
+        from unittest.mock import patch
+        from tests.mocks.mock_llm_provider import get_mock_llm_provider
+
+        # Mock LLM provider since check_ending_grounding doesn't use it
+        # SemanticCritic tries to initialize LLMProvider, so we need to mock it
+        self.mock_llm = get_mock_llm_provider()
+
+        # Patch LLMProvider before SemanticCritic initialization
+        # Keep the patch active for the entire test
+        self.llm_patcher = patch('src.validator.semantic_critic.LLMProvider', return_value=self.mock_llm)
+        self.llm_patcher.start()
+
+        try:
+            self.critic = SemanticCritic(config_path="config.json")
+            # Ensure the critic uses the mock
+            self.critic.llm_provider = self.mock_llm
+        except Exception:
+            # If initialization fails, stop the patcher and re-raise
+            self.llm_patcher.stop()
+            raise
+
+    def teardown_method(self):
+        """Clean up patches after test."""
+        if hasattr(self, 'llm_patcher'):
+            self.llm_patcher.stop()
 
     def test_abstract_moralizing_fails(self):
         """Test that abstract/moralizing endings fail."""
@@ -188,12 +220,39 @@ class TestGroundingValidation:
 
 
 class TestPerspectiveLock:
-    """Test perspective locking verification."""
+    """Test perspective locking verification.
+
+    Note: These tests only use verify_perspective which uses spaCy, not LLM.
+    We mock the LLM provider to avoid requiring API keys in CI.
+    """
 
     def setup_method(self):
-        """Set up test fixtures."""
+        """Set up test fixtures with mocked LLM provider."""
         ensure_config_exists()
-        self.translator = StyleTranslator(config_path="config.json")
+        from unittest.mock import patch
+        from tests.mocks.mock_llm_provider import get_mock_llm_provider
+
+        # Create mock LLM provider
+        self.mock_llm = get_mock_llm_provider()
+
+        # Patch LLMProvider before StyleTranslator initialization
+        # Keep the patch active for the entire test
+        self.llm_patcher = patch('src.generator.translator.LLMProvider', return_value=self.mock_llm)
+        self.llm_patcher.start()
+
+        try:
+            self.translator = StyleTranslator(config_path="config.json")
+            # Ensure the translator uses the mock
+            self.translator.llm_provider = self.mock_llm
+        except Exception:
+            # If initialization fails, stop the patcher and re-raise
+            self.llm_patcher.stop()
+            raise
+
+    def teardown_method(self):
+        """Clean up patches after test."""
+        if hasattr(self, 'llm_patcher'):
+            self.llm_patcher.stop()
 
     def test_first_person_singular_lock(self):
         """Test that first person singular input locks perspective."""

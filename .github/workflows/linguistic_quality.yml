@@ -28,6 +28,10 @@ jobs:
         pip install jsonrepair || echo "jsonrepair not available, continuing without it"
         python -m spacy download en_core_web_sm
 
+    - name: Setup test config
+      run: |
+        python3 -c "from tests.test_helpers import ensure_config_exists; ensure_config_exists()"
+
     - name: Run deterministic unit tests
       run: |
         pytest tests/integration/test_linguistic_quality.py::TestAntiStutterZipperMerge -v
@@ -63,6 +67,10 @@ jobs:
         # Try to install jsonrepair if available (optional dependency)
         pip install jsonrepair || echo "jsonrepair not available, continuing without it"
         python -m spacy download en_core_web_sm
+
+    - name: Setup test config
+      run: |
+        python3 -c "from tests.test_helpers import ensure_config_exists; ensure_config_exists()"
 
     - name: Run structural integrity tests
       run: |
