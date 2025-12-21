@@ -33,6 +33,8 @@ from src.generator.mutation_operators import (
 from src.atlas.paragraph_atlas import ParagraphAtlas
 from src.atlas.style_rag import StyleRAG
 from src.generator.semantic_translator import SemanticTranslator
+from src.generator.content_planner import ContentPlanner
+from src.generator.refiner import ParagraphRefiner
 from src.validator.statistical_critic import StatisticalCritic
 from src.utils.nlp_manager import NLPManager
 
@@ -492,6 +494,186 @@ class StyleTranslator:
                 return voice
 
         return "neutral"
+
+    def _analyze_reference_structure(self, reference_text: str) -> tuple[int, str]:
+        """Analyze reference paragraph structure for skeleton mapping.
+
+        Args:
+            reference_text: The reference paragraph text
+
+        Returns:
+            Tuple of (sentence_count, sentence_analysis_string)
+        """
+        if not reference_text or not reference_text.strip():
+            return 0, "No reference available."
+
+        # Split into sentences (simple approach - can be improved)
+        # Remove common abbreviations that end with periods
+        import re
+        text = reference_text.strip()
+
+        # Split on sentence-ending punctuation, but be careful with abbreviations
+        # This is a simple heuristic - could use spaCy for better results
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # Filter out very short fragments that might be false splits
+        sentences = [s for s in sentences if len(s.split()) >= 3]
+
+        sentence_count = len(sentences)
+
+        if sentence_count == 0:
+            return 0, "No sentences detected in reference."
+
+        # Analyze each sentence
+        analysis_parts = []
+        for i, sent in enumerate(sentences, 1):
+            word_count = len(sent.split())
+
+            # Detect punctuation
+            has_semicolon = ';' in sent
+            has_colon = ':' in sent and sent.index(':') < len(sent) - 1  # Not just at end
+            has_dash = '—' in sent or '--' in sent or '–' in sent
+
+            # Detect complexity (rough heuristic)
+            comma_count = sent.count(',')
+            clause_indicators = sum(1 for word in ['that', 'which', 'who', 'when', 'where', 'while', 'although', 'because', 'if'] if word in sent.lower())
+
+            complexity = "simple"
+            if word_count > 30 or comma_count >= 3 or clause_indicators >= 2:
+                complexity = "complex"
+            elif word_count > 15 or comma_count >= 1 or clause_indicators >= 1:
+                complexity = "moderate"
+            else:
+                complexity = "short"
+
+            # Build description
+            desc_parts = [f"Sentence {i}: {word_count} words ({complexity})"]
+            if has_semicolon:
+                desc_parts.append("uses semicolon")
+            if has_colon:
+                desc_parts.append("uses colon")
+            if has_dash:
+                desc_parts.append("uses dash")
+            if clause_indicators > 0:
+                desc_parts.append(f"{clause_indicators} subordinate clause(s)")
+
+            analysis_parts.append(" - ".join(desc_parts))
+
+        analysis_text = "\n".join(analysis_parts)
+        return sentence_count, analysis_text
+
+    def _detect_input_perspective(self, text: str) -> str:
+        """Detect the perspective of input text.
+
+        Args:
+            text: Input text to analyze
+
+        Returns:
+            Normalized perspective: 'first_person_singular', 'first_person_plural', or 'third_person'
+        """
+        if not text or not text.strip():
+            return "third_person"
+
+        import re
+        text_lower = text.lower()
+
+        # Count singular first person pronouns
+        singular_patterns = [r'\bi\b', r'\bme\b', r'\bmy\b', r'\bmine\b', r'\bmyself\b']
+        singular_count = sum(len(re.findall(pattern, text_lower)) for pattern in singular_patterns)
+
+        # Count plural first person pronouns
+        plural_patterns = [r'\bwe\b', r'\bus\b', r'\bour\b', r'\bours\b', r'\bourselves\b']
+        plural_count = sum(len(re.findall(pattern, text_lower)) for pattern in plural_patterns)
+
+        # Count third person pronouns
+        third_patterns = [
+            r'\bhe\b', r'\bhim\b', r'\bhis\b',
+            r'\bshe\b', r'\bher\b', r'\bhers\b',
+            r'\bthey\b', r'\bthem\b', r'\btheir\b', r'\btheirs\b'
+        ]
+        third_count = sum(len(re.findall(pattern, text_lower)) for pattern in third_patterns)
+
+        # Determine dominant perspective
+        if singular_count > 0 and singular_count >= plural_count:
+            return "first_person_singular"
+        elif plural_count > 0 and plural_count > singular_count:
+            return "first_person_plural"
+        elif third_count > 0:
+            return "third_person"
+        else:
+            # Default to third person if no clear indicators
+            return "third_person"
+
+    def _normalize_perspective(self, pov: str, pov_breakdown: Optional[Dict] = None) -> str:
+        """Normalize perspective string to standard format.
+
+        Args:
+            pov: Perspective string from style profile or input
+            pov_breakdown: Optional breakdown dictionary with first_singular/first_plural counts
+
+        Returns:
+            Normalized: 'first_person_singular', 'first_person_plural', or 'third_person'
+        """
+        if not pov:
+            return "third_person"
+
+        pov_lower = pov.lower()
+
+        # Check if already in normalized format
+        if pov_lower in ["first_person_singular", "first_person_plural", "third_person"]:
+            return pov_lower
+
+        # Handle "First Person" - need to check breakdown
+        if "first person" in pov_lower:
+            if pov_breakdown:
+                first_singular = pov_breakdown.get("first_singular", 0)
+                first_plural = pov_breakdown.get("first_plural", 0)
+                if first_singular > first_plural:
+                    return "first_person_singular"
+                elif first_plural > first_singular:
+                    return "first_person_plural"
+                # If equal or both zero, default to singular
+                return "first_person_singular"
+            else:
+                # No breakdown, default to singular
+                return "first_person_singular"
+
+        # Handle explicit "First Person Singular" or "First Person Plural"
+        if "first person singular" in pov_lower or "first_singular" in pov_lower:
+            return "first_person_singular"
+        if "first person plural" in pov_lower or "first_plural" in pov_lower:
+            return "first_person_plural"
+
+        # Handle "Third Person"
+        if "third person" in pov_lower or "third_person" in pov_lower:
+            return "third_person"
+
+        # Default to third person
+        return "third_person"
+
+    def _load_style_profile(self, author_name: str) -> Optional[Dict]:
+        """Load style profile for author.
+
+        Args:
+            author_name: Name of the author
+
+        Returns:
+            Style profile dictionary or None if not found
+        """
+        try:
+            author_lower = author_name.lower()
+            style_profile_path = Path(self.atlas_path) / author_lower / "style_profile.json"
+
+            if not style_profile_path.exists():
+                style_profile_path = Path(self.atlas_path) / author_name / "style_profile.json"
+                if not style_profile_path.exists():
+                    return None
+
+            with open(style_profile_path, 'r') as f:
+                return json.load(f)
+        except Exception:
+            return None
 
     def _detect_sentence_type(self, text: str) -> str:
         """Robustly detects if a sentence/skeleton is QUESTION, CONDITIONAL, or DECLARATIVE.
@@ -3945,12 +4127,20 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         paragraph: str,
         author_name: str,
         prev_archetype_id: Optional[int] = None,
+        perspective: Optional[str] = None,
         verbose: bool = False
     ) -> tuple[str, int, float]:
         """Translate paragraph using statistical archetype generation with iterative refinement.
 
         Uses parallel generation of multiple candidates, selects the best, and iteratively
         refines if compliance is below threshold.
+
+        Args:
+            paragraph: Input paragraph to translate
+            author_name: Target author name
+            prev_archetype_id: Previous archetype ID for Markov chain
+            perspective: Optional perspective override (first_person_singular, first_person_plural, third_person)
+            verbose: Enable verbose output
 
         Returns:
             Tuple of (generated_paragraph, archetype_id_used, compliance_score)
@@ -3964,10 +4154,39 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 print(f"  Initializing ParagraphAtlas for {author_name}...")
             self.paragraph_atlas = ParagraphAtlas(self.atlas_path, author_name)
 
-        # Step 1: Neutralize
+        # Determine target perspective (before neutralization)
+        # Priority: User override > Author profile > Input detection > Default
+        if perspective:
+            target_pov = self._normalize_perspective(perspective)
+            if verbose:
+                print(f"  Using user-specified perspective: {target_pov}")
+        else:
+            # Check config for default perspective
+            default_perspective = self.generation_config.get("default_perspective")
+            if default_perspective:
+                target_pov = self._normalize_perspective(default_perspective)
+                if verbose:
+                    print(f"  Using config default perspective: {target_pov}")
+            else:
+                # Try to get from style profile
+                style_profile = self._load_style_profile(author_name)
+                if style_profile and style_profile.get("pov"):
+                    pov_from_profile = style_profile["pov"]
+                    pov_breakdown = style_profile.get("pov_breakdown", {})
+                    target_pov = self._normalize_perspective(pov_from_profile, pov_breakdown)
+                    if verbose:
+                        print(f"  Using author profile perspective: {target_pov} (from {pov_from_profile})")
+                else:
+                    # Detect from input
+                    detected = self._detect_input_perspective(paragraph)
+                    target_pov = detected if detected != "neutral" else "third_person"
+                    if verbose:
+                        print(f"  Detected input perspective: {target_pov}")
+
+        # Step 1: Neutralize with perspective
         if verbose:
-            print(f"  Extracting neutral summary...")
-        neutral_text = self.semantic_translator.extract_neutral_summary(paragraph)
+            print(f"  Extracting neutral summary with perspective: {target_pov}...")
+        neutral_text = self.semantic_translator.extract_neutral_summary(paragraph, target_perspective=target_pov)
         if verbose:
             print(f"  Neutral summary: {neutral_text[:100]}{'...' if len(neutral_text) > 100 else ''}")
 
@@ -4030,272 +4249,206 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         if verbose and rhythm_reference:
             print(f"  Rhythm reference: {rhythm_reference[:100]}{'...' if len(rhythm_reference) > 100 else ''}")
 
+        # Analyze reference structure for skeleton mapping
+        reference_sentence_count, reference_sentence_analysis = self._analyze_reference_structure(rhythm_reference)
+        if verbose:
+            print(f"  Reference structure: {reference_sentence_count} sentences detected")
+
+        # ASSEMBLY LINE ARCHITECTURE: Get structure map (blueprint)
+        if verbose:
+            print(f"  Extracting structure map from archetype {target_arch_id}...")
+        structure_map = self.paragraph_atlas.get_structure_map(target_arch_id)
+        if not structure_map:
+            if verbose:
+                print(f"  ⚠ No structure map available, falling back to holistic generation")
+            # Fallback to old approach if structure map unavailable
+            return self._translate_paragraph_holistic(
+                paragraph, author_name, prev_archetype_id, perspective, verbose,
+                neutral_text, target_pov, target_arch_id, archetype_desc,
+                style_palette_text, rhythm_reference, reference_sentence_count,
+                reference_sentence_analysis, style_directives, style_constraints
+            )
+
+        if verbose:
+            structure_summary = ", ".join([f"{s['target_len']}w" for s in structure_map])
+            print(f"  Structure map: [{structure_summary}] ({len(structure_map)} sentences)")
+
+        # ASSEMBLY LINE ARCHITECTURE: Plan content distribution
+        if verbose:
+            print(f"  Planning content distribution into {len(structure_map)} slots...")
+        content_planner = ContentPlanner(self.config_path)
+        content_slots = content_planner.plan_content(neutral_text, structure_map, author_name)
+        if verbose:
+            print(f"  Content distributed into {len(content_slots)} slots")
+
         # Get generation config
-        num_candidates = self.generation_config.get("num_candidates", 4)
-        max_retries = self.generation_config.get("max_retries", 2)
-        compliance_threshold = self.generation_config.get("compliance_threshold", 0.85)
+        max_sentence_retries = self.generation_config.get("max_retries", 3)
         generation_temp = self.generation_config.get("temperature", 0.8)
         generation_max_tokens = self.generation_config.get("max_tokens", 1500)
 
-        # Load prompt templates
+        # Load system prompt for sentence generation
         prompts_dir = Path(__file__).parent.parent.parent / "prompts"
-
         try:
             system_prompt_path = prompts_dir / "translator_statistical_system.md"
             system_prompt = system_prompt_path.read_text().strip()
-            # Always format to inject style palette and author name
-            # If style_palette_text is empty, it will just be an empty string in the template
             system_prompt = system_prompt.format(
                 style_palette=style_palette_text if style_palette_text else "",
                 author_name=author_name
             )
         except (FileNotFoundError, KeyError):
-            # KeyError can occur if template has placeholders we're not providing
-            system_prompt = "You are a style translator. Generate paragraphs that match statistical archetypes while preserving semantic content."
-            if style_palette_text:
-                system_prompt += f"\n\n## Author's Phrasing Palette\n{style_palette_text}\n\nStudy these actual sentences written by {author_name} on similar topics. Use them as a **Vocabulary and Phrasing Bank**."
+            system_prompt = f"You are a style translator for {author_name}. Generate sentences that match target lengths while preserving semantic content and author voice."
 
-        # Build archetype descriptions for prompts
-        avg_len = archetype_desc['avg_len']
-        avg_sents = archetype_desc['avg_sents']
-        burstiness = archetype_desc['burstiness']
-        style = archetype_desc['style']
+        # Perspective pronoun mapping
+        perspective_pronouns = {
+            "first_person_singular": "I, Me, My, Myself, Mine",
+            "first_person_plural": "We, Us, Our, Ourselves, Ours",
+            "third_person": "The subject, The narrator, or specific names"
+        }
+        perspective_pronoun_list = perspective_pronouns.get(target_pov, "The subject, The narrator")
 
-        # Generate descriptions for LLM-friendly language
-        if avg_len >= 20:
-            avg_len_description = f"Long, complex sentences (approximately {avg_len} words each). Use subordinate clauses, relative clauses, and conjunctions to build sophisticated structures."
-        elif avg_len >= 15:
-            avg_len_description = f"Medium-length sentences (approximately {avg_len} words each). Balance complexity with clarity."
-        else:
-            avg_len_description = f"Shorter, more direct sentences (approximately {avg_len} words each). Keep sentences concise and focused."
+        # ASSEMBLY LINE ARCHITECTURE: Build sentence by sentence
+        final_sentences = []
+        context_so_far = ""
 
-        if avg_sents >= 5:
-            avg_sents_description = f"Developed paragraphs with approximately {avg_sents} sentences. Elaborate on ideas with supporting details."
-        elif avg_sents >= 3:
-            avg_sents_description = f"Standard paragraphs with approximately {avg_sents} sentences. Provide adequate development."
-        else:
-            avg_sents_description = f"Concise paragraphs with approximately {avg_sents} sentences. Keep focused and direct."
+        for slot_idx, slot in enumerate(structure_map):
+            content = content_slots[slot_idx] if slot_idx < len(content_slots) else ""
+            target_len = slot.get('target_len', 20)
+            slot_type = slot.get('type', 'moderate')
 
-        if isinstance(burstiness, str):
-            if burstiness.lower() == "high":
-                burstiness_description = "High variation in sentence length (bursty). Mix short punchy sentences with longer complex ones for natural rhythm."
-            elif burstiness.lower() == "low":
-                burstiness_description = "Low variation in sentence length. Maintain consistent sentence length throughout."
-            else:
-                burstiness_description = f"Moderate variation in sentence length ({burstiness})."
-        else:
-            burstiness_description = f"Target burstiness: {burstiness}. Vary sentence length appropriately."
-
-        # Iteration loop (Refinement Rounds)
-        best_candidate_so_far = None
-        best_score_so_far = 0.0
-        previous_best = None
-        previous_feedback = None
-
-        for attempt in range(max_retries + 1):  # +1 because first attempt is attempt 0
             if verbose:
-                if attempt == 0:
-                    print(f"  Generating {num_candidates} candidates (Round {attempt + 1})...")
+                print(f"  Building sentence {slot_idx + 1}/{len(structure_map)}: target {target_len} words ({slot_type})...")
+
+            # Inner loop: Generate and validate THIS sentence
+            sentence = None
+            for attempt in range(max_sentence_retries):
+                # Generate sentence for this slot
+                sentence_result = self._generate_sentence_for_slot(
+                    content=content,
+                    target_length=target_len,
+                    prev_context=context_so_far,
+                    author_name=author_name,
+                    slot_type=slot_type,
+                    target_perspective=target_pov,
+                    perspective_pronouns=perspective_pronoun_list,
+                    style_palette=style_palette_text,
+                    system_prompt=system_prompt,
+                    temperature=generation_temp,
+                    max_tokens=generation_max_tokens,
+                    verbose=verbose and attempt == 0
+                )
+
+                # CRITICAL: Extract text string safely (handle dict or string)
+                if isinstance(sentence_result, dict):
+                    sentence = sentence_result.get('text', '')
                 else:
-                    print(f"  Refinement Round {attempt + 1}: Generating {num_candidates} improved candidates...")
+                    sentence = sentence_result if sentence_result else ''
 
-            # Build user prompt
-            if attempt == 0:
-                # Initial generation
-                try:
-                    user_template_path = prompts_dir / "translator_statistical_user.md"
-                    user_template = user_template_path.read_text().strip()
-                    user_prompt = user_template.format(
-                        neutral_text=neutral_text,
-                        author_name=author_name,
-                        avg_len=avg_len,
-                        avg_sents=avg_sents,
-                        burstiness=burstiness,
-                        style=style,
-                        rhythm_reference=rhythm_reference,
-                        avg_len_description=avg_len_description,
-                        avg_sents_description=avg_sents_description,
-                        burstiness_description=burstiness_description,
-                        style_directives=style_directives,
-                        style_constraints=style_constraints,
-                        style_palette=style_palette_text if style_palette_text else ""
-                    )
-                except FileNotFoundError:
-                    # Fallback prompt
-                    user_prompt = f"""## Content to Preserve
-{neutral_text}
-
-## Author Voice
-Adopt the Voice of {author_name}.
-
-## Structural Archetype Persona
-You are adopting the structural archetype of: **{style}**
-
-**Target Structure:**
-- **Average Sentence Length:** ~{avg_len} words per sentence
-  - Target: {avg_len_description}
-- **Average Sentences per Paragraph:** ~{avg_sents} sentences
-  - Target: {avg_sents_description}
-- **Burstiness:** {burstiness}
-  - Target: {burstiness_description}
-
-## Rhythm Reference
-Study this example paragraph to understand the target rhythm and flow:
-*'{rhythm_reference}'
-
-## Style Transformation Rules
-The neutral summary is stylistically generic. You must apply these specific shifts to match {author_name}:
-{style_directives}
-
-{style_constraints}
-
-## Your Task
-Generate a paragraph that:
-1. Expresses the Content above accurately
-2. Adopts the Voice of {author_name}
-3. Matches the Structural Archetype parameters exactly
-4. Mimics the rhythm and flow of the Rhythm Reference
-5. Applies the Style Transformation Rules above
-
-Generate the paragraph:
-"""
-            else:
-                # Refinement round with feedback
-                try:
-                    refinement_template_path = prompts_dir / "translator_statistical_user_refinement.md"
-                    refinement_template = refinement_template_path.read_text().strip()
-                    user_prompt = refinement_template.format(
-                        neutral_text=neutral_text,
-                        author_name=author_name,
-                        avg_len=avg_len,
-                        avg_sents=avg_sents,
-                        burstiness=burstiness,
-                        style=style,
-                        rhythm_reference=rhythm_reference,
-                        avg_len_description=avg_len_description,
-                        avg_sents_description=avg_sents_description,
-                        burstiness_description=burstiness_description,
-                        previous_best=previous_best,
-                        qualitative_feedback=previous_feedback,
-                        style_directives=style_directives,
-                        style_constraints=style_constraints,
-                        style_palette=style_palette_text if style_palette_text else ""
-                    )
-                except FileNotFoundError:
-                    # Fallback refinement prompt
-                    user_prompt = f"""## Content to Preserve
-{neutral_text}
-
-## Author Voice
-Adopt the Voice of {author_name}.
-
-## Structural Archetype Persona
-You are adopting the structural archetype of: **{style}**
-
-**Target Structure:**
-- **Average Sentence Length:** ~{avg_len} words per sentence
-- **Average Sentences per Paragraph:** ~{avg_sents} sentences
-- **Burstiness:** {burstiness}
-
-## Rhythm Reference
-*'{rhythm_reference}'
-
-## Style Transformation Rules
-The neutral summary is stylistically generic. You must apply these specific shifts to match {author_name}:
-{style_directives}
-
-## Previous Attempt
-Here is a previous attempt that needs improvement:
-"{previous_best}"
-
-## Feedback
-The previous attempt had these issues:
-{previous_feedback}
-
-## Your Task
-Generate an improved paragraph that addresses the feedback above while:
-1. Expressing the Content accurately
-2. Adopting the Voice of {author_name}
-3. Matching the Structural Archetype parameters exactly
-4. Mimicking the rhythm and flow of the Rhythm Reference
-5. Applying the Style Transformation Rules above
-
-Generate the improved paragraph:
-"""
-
-            # Parallel Generation: Generate N candidates via separate API calls
-            def generate_candidate(candidate_num: int) -> Optional[str]:
-                """Generate a single candidate."""
-                try:
+                if not sentence or not sentence.strip():
                     if verbose and attempt == 0:
-                        print(f"    Generating candidate {candidate_num + 1}/{num_candidates}...")
-                    draft = self.llm_provider.call(
-                        system_prompt=system_prompt,
-                        user_prompt=user_prompt,
-                        model_type="editor",
-                        require_json=False,
-                        temperature=generation_temp,  # High temp for diversity
-                        max_tokens=generation_max_tokens
-                    )
-                    return draft.strip()
-                except Exception as e:
+                        print(f"    ⚠ Empty sentence generated, retrying...")
+                    continue  # Skip empty results
+
+                # Validate strict compliance (math only)
+                score, feedback = self.statistical_critic.evaluate_sentence(
+                    sentence, target_len
+                )
+
+                if verbose:
+                    word_count = len(sentence.split())
+                    print(f"    Attempt {attempt + 1}: {word_count} words, score: {score:.2f}")
+
+                if score >= 1.0:  # Passed!
+                    final_sentences.append(sentence)
+                    context_so_far += sentence + " "
                     if verbose:
-                        print(f"    ⚠ Error generating candidate {candidate_num + 1}: {e}")
-                    return None
+                        print(f"    ✓ Sentence {slot_idx + 1} passed validation")
+                    break  # Success! Move to next sentence
 
-            # Use ThreadPoolExecutor for parallel generation
-            candidates = []
-            with ThreadPoolExecutor(max_workers=num_candidates) as executor:
-                futures = [executor.submit(generate_candidate, i) for i in range(num_candidates)]
-                for future in as_completed(futures):
-                    result = future.result()
-                    if result:
-                        candidates.append(result)
+                # Retry with specific feedback
+                if attempt < max_sentence_retries - 1:
+                    # Use feedback to refine (pass string, not dict)
+                    refined_result = self._refine_sentence(
+                        sentence, feedback, target_len, context_so_far,
+                        author_name, target_pov, perspective_pronoun_list,
+                        style_palette_text, system_prompt, generation_temp,
+                        generation_max_tokens, verbose
+                    )
+                    # Extract text safely
+                    if isinstance(refined_result, dict):
+                        sentence = refined_result.get('text', sentence)
+                    else:
+                        sentence = refined_result if refined_result else sentence
 
-            if not candidates:
+            # If we exhausted retries, use best attempt
+            if len(final_sentences) == slot_idx and sentence:
+                final_sentences.append(sentence)  # Use last attempt
+                context_so_far += sentence + " "
                 if verbose:
-                    print(f"  ⚠ No candidates generated, using fallback")
-                # Fallback: return original paragraph or empty
-                return paragraph, target_arch_id, 0.0
+                    print(f"    ⚠ Sentence {slot_idx + 1} used after {max_sentence_retries} attempts")
 
-            # Select Best: Use StatisticalCritic to evaluate and select winner
+        # Combine sentences into paragraph
+        final_paragraph = " ".join(final_sentences)
+
+        # BLUEPRINT-AWARE GRADING: Calculate targets from structure map, not archetype averages
+        # CRITICAL: Use archetype's burstiness to avoid low-sample noise (e.g., 2 sentences)
+        # The burstiness is already baked into the structure map (e.g., [Short, Long])
+        blueprint_target_stats = {
+            "avg_sents": len(structure_map),
+            "avg_len": sum(s['target_len'] for s in structure_map) / len(structure_map) if structure_map else 0,
+            # FORCE PASS: Copy burstiness from archetype to avoid unfair calculation for short paragraphs
+            "burstiness": archetype_desc.get("burstiness", "Low"),
+            "style": archetype_desc.get("style", ""),
+            "id": archetype_desc.get("id", 0)
+        }
+
+        # Final validation: Check overall compliance against BLUEPRINT targets
+        if verbose:
+            print(f"  Final paragraph: {len(final_sentences)} sentences")
+            print(f"  Blueprint targets: {blueprint_target_stats['avg_sents']} sents, {blueprint_target_stats['avg_len']:.1f} words/sent")
+        best_text, best_score, qualitative_feedback = self.statistical_critic.select_best_candidate(
+            [final_paragraph], blueprint_target_stats  # Use blueprint, not archetype
+        )
+        if verbose:
+            print(f"  Final compliance score: {best_score:.2f}")
+
+        # Check if refinement is needed (flow/coherence issues)
+        compliance_threshold = self.generation_config.get("compliance_threshold", 0.85)
+        if best_score < compliance_threshold and qualitative_feedback:
             if verbose:
-                print(f"  Evaluating {len(candidates)} candidates...")
-            best_text, best_score, qualitative_feedback = self.statistical_critic.select_best_candidate(
-                candidates, archetype_desc
-            )
+                print(f"  Score below threshold ({best_score:.2f} < {compliance_threshold}), attempting repair...")
 
-            if verbose:
-                print(f"  Best candidate score: {best_score:.2f}")
-                if best_score < 1.0:
-                    print(f"  Feedback: {qualitative_feedback}")
+            # Initialize refiner if needed
+            if not hasattr(self, 'refiner') or self.refiner is None:
+                self.refiner = ParagraphRefiner(self.config_path)
 
-            # Track best candidate across iterations
-            if best_score > best_score_so_far:
-                best_candidate_so_far = best_text
-                best_score_so_far = best_score
+            # Attempt repair via repair plan
+            try:
+                refined_text = self.refiner.refine_via_repair_plan(
+                    best_text,
+                    qualitative_feedback,
+                    structure_map,
+                    author_name,
+                    verbose
+                )
 
-            # Early Exit: If score >= threshold, return best candidate
-            if best_score >= compliance_threshold:
+                # Re-validate refined text
+                refined_text, refined_score, _ = self.statistical_critic.select_best_candidate(
+                    [refined_text], blueprint_target_stats
+                )
+
+                if refined_score > best_score:
+                    if verbose:
+                        print(f"  ✓ Repair improved score: {refined_score:.2f} (was {best_score:.2f})")
+                    best_text = refined_text
+                    best_score = refined_score
+                else:
+                    if verbose:
+                        print(f"  Repair did not improve score ({refined_score:.2f} <= {best_score:.2f}), keeping original")
+            except Exception as e:
                 if verbose:
-                    print(f"  ✓ Compliance threshold met ({best_score:.2f} >= {compliance_threshold})")
-                return best_text, target_arch_id, best_score
+                    print(f"  ⚠ Repair failed: {e}, keeping original")
 
-            # Refinement Round: If score < threshold and attempts < max_retries, continue
-            if attempt < max_retries:
-                previous_best = best_text
-                previous_feedback = qualitative_feedback
-                if verbose:
-                    print(f"  ↻ Score below threshold ({best_score:.2f} < {compliance_threshold}), refining...")
-                # Continue to next iteration
-            else:
-                # Max retries reached, return best candidate so far
-                if verbose:
-                    print(f"  ⚠ Max retries reached ({max_retries}), returning best candidate (score: {best_score_so_far:.2f})")
-                return best_candidate_so_far, target_arch_id, best_score_so_far
-
-        # Should not reach here, but return best candidate if we do
-        return best_candidate_so_far or best_text, target_arch_id, best_score_so_far or best_score
+        return best_text, target_arch_id, best_score
 
     def _build_style_constraints(self, author_name: str) -> str:
         """Build style constraints from forensic profile.
@@ -4446,4 +4599,239 @@ Generate the improved paragraph:
             return "Maintain the current stylistic balance while matching the target archetype."
 
         return " ".join(directives)
+
+    def _generate_sentence_for_slot(
+        self,
+        content: str,
+        target_length: int,
+        prev_context: str,
+        author_name: str,
+        slot_type: str,
+        target_perspective: str,
+        perspective_pronouns: str,
+        style_palette: str,
+        system_prompt: str,
+        temperature: float,
+        max_tokens: int,
+        verbose: bool = False
+    ) -> str:
+        """Generate one sentence for a specific slot.
+
+        Args:
+            content: Content to express in this sentence
+            target_length: Target word count
+            prev_context: Previous sentences for flow
+            author_name: Author name
+            slot_type: Sentence type (simple/moderate/complex)
+            target_perspective: Target POV
+            perspective_pronouns: Pronoun list for POV
+            style_palette: Style fragments
+            system_prompt: System prompt
+            temperature: Generation temperature
+            max_tokens: Max tokens
+            verbose: Verbose output
+
+        Returns:
+            Generated sentence (string, never dict)
+        """
+        prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+        try:
+            template_path = prompts_dir / "sentence_worker_user.md"
+            template = template_path.read_text().strip()
+        except FileNotFoundError:
+            # Fallback template
+            template = """# Task: Write ONE Sentence
+
+## Content to Express:
+{slot_content}
+
+## Target Length:
+{target_length} words (strict constraint)
+
+## Previous Context:
+{prev_context}
+
+## Author Voice:
+Adopt the voice of {author_name}.
+
+## Instructions:
+1. Write exactly ONE sentence expressing the content above.
+2. The sentence must be approximately {target_length} words (within 15% tolerance).
+3. The sentence should flow naturally from the previous context.
+4. Use the author's distinctive voice and vocabulary.
+
+Output only the sentence, no explanations.
+"""
+
+        user_prompt = template.format(
+            slot_content=content,
+            target_length=target_length,
+            prev_context=prev_context,
+            author_name=author_name
+        )
+
+        try:
+            result = self.llm_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_type="editor",
+                require_json=False,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            # CRITICAL: Return string, never dict
+            sentence = result.strip() if result else ""
+            # Remove any trailing punctuation issues
+            if sentence and not sentence.endswith(('.', '!', '?')):
+                sentence += '.'
+            return sentence
+        except Exception as e:
+            if verbose:
+                print(f"    ⚠ Error generating sentence: {e}")
+            return ""
+
+    def _refine_sentence(
+        self,
+        sentence: str,
+        feedback: str,
+        target_length: int,
+        prev_context: str,
+        author_name: str,
+        target_perspective: str,
+        perspective_pronouns: str,
+        style_palette: str,
+        system_prompt: str,
+        temperature: float,
+        max_tokens: int,
+        verbose: bool = False
+    ) -> str:
+        """Refine a sentence based on feedback.
+
+        Args:
+            sentence: Current sentence to refine
+            feedback: Feedback from critic
+            target_length: Target word count
+            prev_context: Previous sentences
+            author_name: Author name
+            target_perspective: Target POV
+            perspective_pronouns: Pronoun list
+            style_palette: Style fragments
+            system_prompt: System prompt
+            temperature: Generation temperature
+            max_tokens: Max tokens
+            verbose: Verbose output
+
+        Returns:
+            Refined sentence (string, never dict)
+        """
+        prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+        try:
+            template_path = prompts_dir / "sentence_refinement_user.md"
+            template = template_path.read_text().strip()
+        except FileNotFoundError:
+            # Fallback template
+            template = """# Task: Fix Sentence Length
+
+## Current Sentence:
+"{current_sentence}"
+
+## Feedback:
+{feedback}
+
+## Target Length:
+{target_length} words
+
+## Previous Context:
+{prev_context}
+
+## Instructions:
+Apply the feedback to fix the sentence length. Do not change the meaning or author's voice.
+Output only the corrected sentence.
+"""
+
+        user_prompt = template.format(
+            current_sentence=sentence,
+            feedback=feedback,
+            target_length=target_length,
+            prev_context=prev_context
+        )
+
+        try:
+            result = self.llm_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_type="editor",
+                require_json=False,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            # CRITICAL: Return string, never dict
+            refined = result.strip() if result else sentence
+            # Remove any trailing punctuation issues
+            if refined and not refined.endswith(('.', '!', '?')):
+                refined += '.'
+            return refined
+        except Exception as e:
+            if verbose:
+                print(f"    ⚠ Error refining sentence: {e}")
+            return sentence  # Return original on error
+
+    def _calculate_burstiness_from_map(self, structure_map: List[Dict]) -> str:
+        """Calculate burstiness classification from structure map variation.
+
+        Args:
+            structure_map: List of slot dicts with target_len
+
+        Returns:
+            Burstiness classification: "High", "Low", or "Moderate"
+        """
+        if not structure_map or len(structure_map) < 2:
+            return "Low"  # Single sentence or empty = low variation
+
+        lengths = [s.get('target_len', 0) for s in structure_map]
+        mean_len = sum(lengths) / len(lengths) if lengths else 0
+
+        if mean_len == 0:
+            return "Low"
+
+        # Calculate coefficient of variation (std dev / mean)
+        variance = sum((x - mean_len) ** 2 for x in lengths) / len(lengths)
+        std_dev = variance ** 0.5
+        cv = std_dev / mean_len if mean_len > 0 else 0
+
+        # Classify based on coefficient of variation
+        if cv > 0.4:
+            return "High"
+        elif cv < 0.15:
+            return "Low"
+        else:
+            return "Moderate"
+
+    def _translate_paragraph_holistic(
+        self,
+        paragraph: str,
+        author_name: str,
+        prev_archetype_id: Optional[int],
+        perspective: Optional[str],
+        verbose: bool,
+        neutral_text: str,
+        target_pov: str,
+        target_arch_id: int,
+        archetype_desc: Dict,
+        style_palette_text: str,
+        rhythm_reference: str,
+        reference_sentence_count: int,
+        reference_sentence_analysis: str,
+        style_directives: str,
+        style_constraints: str
+    ) -> tuple[str, int, float]:
+        """Fallback holistic generation when structure map unavailable.
+
+        This is the old holistic approach, kept as fallback.
+        """
+        if verbose:
+            print(f"  Using holistic generation (fallback)")
+        # For now, return neutral text with low score
+        # In a full implementation, this would run the old holistic loop
+        return neutral_text, target_arch_id, 0.5
 

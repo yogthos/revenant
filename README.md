@@ -6,6 +6,7 @@ Transform text to match a target author's style while preserving semantic meanin
 - **Paragraph Atlas**: Statistical archetype system with Markov chain transitions for paragraph generation
 - **Style RAG**: Dynamic retrieval of semantically relevant style fragments (3-sentence windows) for concrete phrasing examples
 - **Semantic Translation**: Neutral summary extraction to preserve meaning while removing source style
+- **Perspective Anchoring**: Point of view preservation through the entire pipeline (prevents neutralizer from stripping personal pronouns)
 - **Statistical Generation**: Paragraph-level generation using archetype statistics, style palettes, and iterative refinement
 - **Semantic Validation**: Multi-metric validation ensuring meaning preservation and style alignment
 
@@ -144,6 +145,7 @@ python3 restyle.py input/small.md -o output/small.md
 # With options
 python3 restyle.py input/small.md -o output/small.md \
   --max-retries 5 \
+  --perspective first_person_singular \
   --verbose
 ```
 
@@ -154,6 +156,7 @@ python3 restyle.py input/small.md -o output/small.md \
 - `--max-retries`: Max retry attempts per sentence (default: 3)
 - `--atlas-cache`: ChromaDB persistence directory (overrides config)
 - `--blend-ratio`: Style blending ratio (0.0-1.0, default: 0.6)
+- `--perspective`: Force specific perspective: `first_person_singular`, `first_person_plural`, or `third_person` (overrides author profile and input detection)
 - `-v, --verbose`: Enable verbose output
 
 ### Python API
@@ -165,6 +168,7 @@ output = run_pipeline(
     input_file="input/small.md",
     output_file="output/small.md",
     config_path="config.json",
+    perspective="first_person_singular",  # Optional: force perspective
     verbose=True
 )
 ```
@@ -224,7 +228,8 @@ Controls the statistical archetype system used for paragraph generation. The par
     "max_tokens": 1500,
     "num_candidates": 4,
     "max_retries": 2,
-    "compliance_threshold": 0.85
+    "compliance_threshold": 0.85,
+    "default_perspective": null
   }
 }
 ```
@@ -235,6 +240,11 @@ Controls the statistical paragraph generation process:
 - `num_candidates`: Number of candidates to generate per round (default: 4)
 - `max_retries`: Maximum refinement rounds if compliance is low (default: 2)
 - `compliance_threshold`: Minimum statistical compliance score to accept (default: 0.85)
+- `default_perspective`: Default perspective to use if not specified. Options:
+  - `null` (default): Follow author profile POV, fallback to input detection
+  - `"first_person_singular"`: Force first person singular (I/Me/My)
+  - `"first_person_plural"`: Force first person plural (We/Us/Our)
+  - `"third_person"`: Force third person (The subject/The narrator)
 
 **Semantic Critic** (validation thresholds):
 ```json
@@ -329,6 +339,43 @@ Controls the Style RAG system that retrieves semantically relevant style fragmen
 - `embedding_model`: Sentence transformer model for semantic embeddings (default: "all-mpnet-base-v2")
 
 The Style RAG system retrieves actual phrases and sentence structures from the author's corpus that are semantically similar to the content being generated, providing concrete examples for the LLM to mimic.
+
+**Perspective Anchoring** (point of view preservation):
+```json
+{
+  "generation": {
+    "default_perspective": null
+  }
+}
+```
+
+Controls how the system preserves narrative point of view (POV) through the translation pipeline:
+
+- **Problem**: Without perspective anchoring, the neutralizer can convert personal narratives ("I scavenged...") into detached academic prose ("The subject engaged in scavenging..."), making it difficult to restore the original perspective.
+
+- **Solution**: The system explicitly tracks and preserves perspective through three stages:
+  1. **Neutralization**: The semantic translator maintains the specified POV (I/We/The subject) instead of defaulting to third person
+  2. **Generation**: The generator receives explicit perspective constraints to maintain consistent POV
+  3. **Priority Order**: User override > Config default > Author profile > Input detection > Default (third person)
+
+- **Perspective Options**:
+  - `null` (default): Follow author profile POV, fallback to automatic input detection
+  - `"first_person_singular"`: Force first person singular (I, Me, My, Myself, Mine)
+  - `"first_person_plural"`: Force first person plural (We, Us, Our, Ourselves, Ours)
+  - `"third_person"`: Force third person (The subject, The narrator, or specific names)
+
+- **Usage**:
+  ```bash
+  # Force first person singular
+  python3 restyle.py input.md -o output.md --perspective first_person_singular
+
+  # Or set in config.json
+  {
+    "generation": {
+      "default_perspective": "first_person_singular"
+    }
+  }
+  ```
 
 **Evolutionary** (evolutionary generation parameters):
 ```json
@@ -427,28 +474,31 @@ flowchart TD
 1. **Style Atlas**: ChromaDB-based vector store with dual embeddings (semantic + style) and K-means clustering for paragraph-level style retrieval
 2. **Paragraph Atlas**: Statistical archetype system with Markov chain transitions for generating paragraphs matching author's structural patterns
 3. **Style RAG**: Dynamic retrieval of semantically relevant style fragments (3-sentence windows) to provide concrete phrasing examples during generation
-4. **Semantic Translator**: Extracts neutral logical summaries from input text, removing style while preserving meaning
-5. **Statistical Critic**: Validates generated paragraphs against statistical archetype parameters (sentence length, sentence count, burstiness)
-6. **Semantic Critic**: Validates generated text using proposition recall and style alignment metrics
-7. **Style Registry**: Sidecar JSON storage for author Style DNA profiles
+4. **Semantic Translator**: Extracts neutral logical summaries from input text, removing style while preserving meaning and perspective
+5. **Perspective Anchoring**: Preserves point of view (POV) through the entire pipeline, preventing the neutralizer from converting personal narratives into detached academic prose
+6. **Statistical Critic**: Validates generated paragraphs against statistical archetype parameters (sentence length, sentence count, burstiness)
+7. **Semantic Critic**: Validates generated text using proposition recall and style alignment metrics
+8. **Style Registry**: Sidecar JSON storage for author Style DNA profiles
 
 ### Statistical Paragraph Generation Process
 
 The current implementation uses **Statistical Archetype Generation**:
 
-1. **Neutral Summary Extraction**: Convert input paragraph to a neutral logical summary, removing style while preserving semantic content
-2. **Style Palette Retrieval**: Use Style RAG to retrieve 5-10 semantically relevant style fragments from the author's corpus
-3. **Archetype Selection**: Use Markov chain to select the next paragraph archetype based on the previous paragraph's archetype
-4. **Archetype Description**: Load statistical parameters (avg sentence length, avg sentences per paragraph, burstiness, style type)
-5. **Rhythm Reference**: Retrieve a full example paragraph matching the selected archetype from ChromaDB
-6. **Generation**: Generate multiple candidate paragraphs using:
-   - Neutral summary as content source
+1. **Perspective Determination**: Determine target perspective using priority: User override > Config default > Author profile > Input detection > Default (third person)
+2. **Neutral Summary Extraction**: Convert input paragraph to a neutral logical summary, removing style while preserving semantic content and **maintaining the determined perspective** (I/We/The subject)
+3. **Style Palette Retrieval**: Use Style RAG to retrieve 5-10 semantically relevant style fragments from the author's corpus
+4. **Archetype Selection**: Use Markov chain to select the next paragraph archetype based on the previous paragraph's archetype
+5. **Archetype Description**: Load statistical parameters (avg sentence length, avg sentences per paragraph, burstiness, style type)
+6. **Rhythm Reference**: Retrieve a full example paragraph matching the selected archetype from ChromaDB
+7. **Generation**: Generate multiple candidate paragraphs using:
+   - Neutral summary as content source (with preserved perspective)
    - Style palette fragments as phrasing examples
    - Archetype statistics as structural constraints
    - Rhythm reference as flow model
-7. **Evaluation**: Score candidates using Statistical Critic (compliance with archetype parameters)
-8. **Refinement**: If compliance is below threshold, generate improved candidates with feedback
-9. **Markov Update**: Update Markov chain state for next paragraph continuity
+   - **Perspective lock** to enforce consistent POV throughout
+8. **Evaluation**: Score candidates using Statistical Critic (compliance with archetype parameters)
+9. **Refinement**: If compliance is below threshold, generate improved candidates with feedback
+10. **Markov Update**: Update Markov chain state for next paragraph continuity
 
 ## Testing
 

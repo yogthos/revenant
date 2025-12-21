@@ -224,6 +224,7 @@ def process_text(
     style_dna: str,
     config_path: str = "config.json",
     max_retries: int = 3,
+    perspective: Optional[str] = None,
     verbose: bool = False,
     write_callback: Optional[Callable[[Optional[str], bool, bool], None]] = None
 ) -> List[str]:
@@ -421,6 +422,7 @@ def process_text(
             paragraph,
             author_name,
             prev_archetype_id=prev_archetype_id,
+            perspective=perspective,
             verbose=verbose
         )
 
@@ -458,6 +460,7 @@ def run_pipeline(
     max_retries: int = 3,
     atlas_cache_path: Optional[str] = None,
     blend_ratio: Optional[float] = None,
+    perspective: Optional[str] = None,
     verbose: bool = False
 ) -> List[str]:
     """Run the pipeline with file I/O.
@@ -605,6 +608,7 @@ def run_pipeline(
             style_dna=style_dna,
             config_path=config_path,
             max_retries=max_retries,
+            perspective=perspective,
             write_callback=write_callback
         )
     finally:
