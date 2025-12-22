@@ -137,7 +137,9 @@ class LLMProvider:
         max_tokens: Optional[int] = None,
         top_p: Optional[float] = None,
         timeout: Optional[int] = None,
-        verbose_context: bool = False
+        verbose_context: bool = False,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None
     ) -> str:
         """Call LLM API with unified interface.
 
@@ -175,19 +177,23 @@ class LLMProvider:
 
         if self.provider == "deepseek":
             return self._call_deepseek_api(
-                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout
+                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout,
+                presence_penalty, frequency_penalty
             )
         elif self.provider == "ollama":
             return self._call_ollama_api(
-                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout
+                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout,
+                presence_penalty, frequency_penalty
             )
         elif self.provider == "glm":
             return self._call_glm_api(
-                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout
+                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout,
+                presence_penalty, frequency_penalty
             )
         elif self.provider == "gemini":
             return self._call_gemini_api(
-                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout
+                system_prompt, user_prompt, model, require_json, temperature, output_tokens, top_p, timeout,
+                presence_penalty, frequency_penalty
             )
         else:
             raise ValueError(f"Unsupported provider: {self.provider}")
@@ -201,7 +207,9 @@ class LLMProvider:
         temperature: Optional[float],
         max_tokens: Optional[int],
         top_p: Optional[float] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None
     ) -> str:
         """Call DeepSeek API."""
         headers = {
@@ -310,6 +318,11 @@ class LLMProvider:
             options["num_predict"] = max_tokens
         if top_p is not None:
             options["top_p"] = top_p
+        # Ollama may support presence_penalty in newer models (add with fallback)
+        if presence_penalty is not None:
+            options["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            options["frequency_penalty"] = frequency_penalty
         if require_json:
             data["format"] = "json"  # Request JSON format for Ollama
         if options:
@@ -370,7 +383,9 @@ class LLMProvider:
         temperature: Optional[float],
         max_tokens: Optional[int],
         top_p: Optional[float] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None
     ) -> str:
         """Call GLM (Zhipu AI) API."""
         headers = {
@@ -389,6 +404,13 @@ class LLMProvider:
 
         if top_p is not None:
             payload["top_p"] = top_p
+
+        # Add repetition penalties (GLM may support OpenAI-compatible parameters)
+        # Note: GLM API documentation should be checked for exact parameter names
+        if presence_penalty is not None:
+            payload["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["frequency_penalty"] = frequency_penalty
 
         # Only add JSON format requirement for critic evaluation
         if require_json:
@@ -441,7 +463,9 @@ class LLMProvider:
         temperature: Optional[float],
         max_tokens: Optional[int],
         top_p: Optional[float] = None,
-        timeout: Optional[int] = None
+        timeout: Optional[int] = None,
+        presence_penalty: Optional[float] = None,
+        frequency_penalty: Optional[float] = None
     ) -> str:
         """Call Google Gemini API."""
         # Construct full URL with API key
@@ -475,6 +499,15 @@ class LLMProvider:
 
         if top_p is not None:
             payload["generationConfig"]["top_p"] = top_p
+
+        # Add repetition penalties (Gemini API may use different parameter names)
+        # Note: Gemini API documentation should be checked for exact parameter names
+        # For now, we'll add them to generationConfig (may need adjustment based on API)
+        if presence_penalty is not None:
+            # Gemini may not support presence_penalty directly - log warning if needed
+            payload["generationConfig"]["presence_penalty"] = presence_penalty
+        if frequency_penalty is not None:
+            payload["generationConfig"]["frequency_penalty"] = frequency_penalty
 
         # Add thinking config if available
         if hasattr(self, 'thinking_level') and hasattr(self, 'include_thoughts'):

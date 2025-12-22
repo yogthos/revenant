@@ -557,3 +557,49 @@ class StatisticalCritic:
 
         return issues
 
+    def check_phrase_repetition(self, text: str, n_gram_size: int = 3) -> List[str]:
+        """
+        Detects any phrase of n_gram_size that appears more than once.
+        Returns list of repeated phrases.
+
+        CRITICAL: Uses regex tokenization to ignore punctuation, so "creativity" matches "creativity."
+
+        Args:
+            text: Text to check for phrase repetition
+            n_gram_size: Size of n-grams to check (default: 3 for 3-grams)
+
+        Returns:
+            List of repeated phrases (strings)
+        """
+        if not text or not text.strip():
+            return []
+
+        # Use regex to extract only words, ignoring punctuation
+        words = re.findall(r'\b\w+\b', text.lower())
+
+        if len(words) < n_gram_size:
+            return []
+
+        # Generate n-grams
+        grams = [' '.join(words[i:i+n_gram_size]) for i in range(len(words)-n_gram_size+1)]
+        counts = Counter(grams)
+
+        # Filter for repeats (appears more than once)
+        repeats = [phrase for phrase, count in counts.items() if count > 1]
+
+        # Filter out common stop-phrases (grammar glue)
+        return [r for r in repeats if not self._is_common_connector(r)]
+
+    def _is_common_connector(self, phrase: str) -> bool:
+        """Check if phrase is common grammar glue that should be ignored.
+
+        Args:
+            phrase: Phrase to check
+
+        Returns:
+            True if phrase is a common connector that should be ignored
+        """
+        common = {"of the", "in the", "to the", "and the", "that the", "is a", "is the",
+                  "the the", "a the", "an the", "for the", "with the", "from the"}
+        return any(c in phrase for c in common)
+

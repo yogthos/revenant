@@ -144,8 +144,17 @@ class ParagraphRefiner:
                 instr["instruction"] = (original_instruction + " Condense content to remove repetition.").strip()
                 refined_instructions.append(instr)
 
-            # MODIFY: If rewriting due to repetition, try to merge
+            # MODIFY: If rewriting due to repetition, enhance with synonym injection
             elif action == "rewrite" and ("repetition" in reason or "repetition" in instruction_text):
+                # Extract repeated phrase from reason or instruction if available
+                repeated_phrase = ""
+                if "repeated phrase" in instruction_text.lower():
+                    # Try to extract phrase from instruction like "repeated phrase: 'mechanized creativity'"
+                    import re
+                    match = re.search(r"repeated phrase:?\s*['\"]([^'\"]+)['\"]", instruction_text, re.IGNORECASE)
+                    if match:
+                        repeated_phrase = match.group(1)
+
                 # Check if we can merge (not the last sentence)
                 sent_index = instr.get("sent_index", 0)
                 if sent_index < total_sentences:
@@ -155,7 +164,13 @@ class ParagraphRefiner:
                     refined_instructions.append(instr)
                 else:
                     original_instruction = instr.get("instruction", "")
-                    instr["instruction"] = (original_instruction + " Condense and remove repeated phrases.").strip()
+                    if repeated_phrase:
+                        # Specific synonym injection directive
+                        first_word = repeated_phrase.split()[0] if repeated_phrase else ""
+                        enhanced = f"Replace the repeated phrase '{repeated_phrase}' with a semantic synonym. Do not use the word '{first_word}'."
+                        instr["instruction"] = (original_instruction + " " + enhanced).strip()
+                    else:
+                        instr["instruction"] = (original_instruction + " Condense and remove repeated phrases. Use synonyms to avoid repetition.").strip()
                     refined_instructions.append(instr)
 
             # Keep other useful instructions (like remove, shorten, etc.)

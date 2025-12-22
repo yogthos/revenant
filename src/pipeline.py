@@ -330,16 +330,27 @@ def process_text(
         # Initialize vocabulary budget if enabled
         vocab_config = config.get("vocabulary_budget", {})
         if vocab_config.get("enabled", False):
-            restricted_words = vocab_config.get("restricted_words", [])
+            static_restricted = vocab_config.get("restricted_words", [])
+
+            # Get dynamic blocklist based on perspective (e.g., author name blocking)
+            dynamic_restricted = translator._get_dynamic_blocklist(author_name)
+
+            # Merge static and dynamic restricted words
+            all_restricted = static_restricted + dynamic_restricted
+
             max_per_chapter = vocab_config.get("max_per_chapter", 2)
             clustering_distance = vocab_config.get("clustering_distance", 50)
             vocabulary_budget = VocabularyBudget(
-                restricted_words=restricted_words,
+                restricted_words=all_restricted,
                 max_per_chapter=max_per_chapter,
                 clustering_distance=clustering_distance
             )
             if verbose:
-                print(f"  Vocabulary Budget: Tracking {len(restricted_words)} restricted words (max {max_per_chapter} per chapter)")
+                total_restricted = len(all_restricted)
+                if dynamic_restricted:
+                    print(f"  Vocabulary Budget: Tracking {total_restricted} restricted words ({len(static_restricted)} static + {len(dynamic_restricted)} dynamic, max {max_per_chapter} per chapter)")
+                else:
+                    print(f"  Vocabulary Budget: Tracking {total_restricted} restricted words (max {max_per_chapter} per chapter)")
         else:
             vocabulary_budget = None
     except Exception as e:

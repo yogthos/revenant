@@ -687,7 +687,7 @@ class StyleTranslator:
             pov_breakdown: Optional breakdown dictionary with first_singular/first_plural counts
 
         Returns:
-            Normalized: 'first_person_singular', 'first_person_plural', or 'third_person'
+            Normalized: 'first_person_singular', 'first_person_plural', 'third_person', or 'author_voice_third_person'
         """
         if not pov:
             return "third_person"
@@ -695,7 +695,7 @@ class StyleTranslator:
         pov_lower = pov.lower()
 
         # Check if already in normalized format
-        if pov_lower in ["first_person_singular", "first_person_plural", "third_person"]:
+        if pov_lower in ["first_person_singular", "first_person_plural", "third_person", "author_voice_third_person"]:
             return pov_lower
 
         # Handle "First Person" - need to check breakdown
@@ -723,8 +723,39 @@ class StyleTranslator:
         if "third person" in pov_lower or "third_person" in pov_lower:
             return "third_person"
 
+        # Handle "Author Voice Third Person" (new perspective mode)
+        if "author_voice_third_person" in pov_lower or "author voice third person" in pov_lower:
+            return "author_voice_third_person"
+
         # Default to third person
         return "third_person"
+
+    def _get_dynamic_blocklist(self, author_name: str) -> List[str]:
+        """
+        Returns a list of words strictly banned for the current run context.
+        Blocks author's name when using author_voice_third_person perspective.
+
+        Args:
+            author_name: Name of the author
+
+        Returns:
+            List of words to block (lowercase)
+        """
+        blocklist = []
+
+        # Get current perspective from config
+        generation_config = self.config.get("generation", {})
+        perspective = generation_config.get("default_perspective", "third_person")
+
+        # CRITICAL: If writing IN author voice, ban the author's own name
+        if perspective == "author_voice_third_person" and author_name:
+            # Ban full name and parts (e.g., "Charles", "Baudelaire", "Langan")
+            name_parts = author_name.split()
+            blocklist.extend([part.lower() for part in name_parts])
+            # Also add full name as phrase
+            blocklist.append(author_name.lower())
+
+        return blocklist
 
     def _load_style_profile(self, author_name: str) -> Optional[Dict]:
         """Load style profile for author.
@@ -4402,9 +4433,24 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         perspective_pronouns = {
             "first_person_singular": "I, Me, My, Myself, Mine",
             "first_person_plural": "We, Us, Our, Ourselves, Ours",
-            "third_person": "The subject, The narrator, or specific names"
+            "third_person": "The subject, The narrator, or specific names",
+            "author_voice_third_person": "The subject, The narrator, or specific names (write AS the author, not ABOUT the author)"
         }
         perspective_pronoun_list = perspective_pronouns.get(target_pov, "The subject, The narrator")
+
+        # Build author voice section for translator_statistical_user.md template
+        author_voice_section = ""
+        if target_pov == "author_voice_third_person":
+            author_voice_section = f"""## PERSPECTIVE LOCK (CRITICAL - AUTHOR VOICE MODE):
+1. You are writing **AS** {author_name}, not **ABOUT** {author_name}.
+2. **OBJECTIVE VOICE:** Do not refer to yourself. Do not use "I" (First Person).
+3. **NO SELF-ANALYSIS:** Never write sentences like "{author_name} argues..." or "The author believes...".
+4. **CORRECTION EXAMPLES:**
+   - BAD: "{author_name} views the machine as a threat."
+   - GOOD: "The machine is a threat."
+   - BAD: "He rejects the anti-AI stance..."
+   - GOOD: "The anti-AI stance is regressive and intellectually flawed."
+"""
 
         # ASSEMBLY LINE ARCHITECTURE: Build sentence by sentence
         final_sentences = []
@@ -4569,6 +4615,17 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             pass
 
         original_repetition_count = len(repetition_issues)  # Store count before repair
+
+        # Also check for 3-gram phrase repetition (stricter check)
+        phrase_repeats = self.statistical_critic.check_phrase_repetition(final_paragraph, n_gram_size=3)
+        if phrase_repeats:
+            phrase_issues = [f"Repeated phrase: '{phrase}' (appears multiple times)" for phrase in phrase_repeats]
+            repetition_issues.extend(phrase_issues)
+            if verbose:
+                print(f"  ⚠ 3-Gram phrase repetition detected: {len(phrase_repeats)} phrases")
+                for phrase in phrase_repeats[:3]:
+                    print(f"    - Repeated phrase: '{phrase}'")
+
         if repetition_issues:
             if verbose:
                 print(f"  ⚠ Lexical repetition detected: {len(repetition_issues)} issues")
@@ -5162,10 +5219,35 @@ Strictly follow the constraints below.
         else:
             final_instruction = "5. Use the author's distinctive voice and vocabulary."
 
+        # Add author voice instructions if using author_voice_third_person
+        author_voice_instruction = ""
+        if target_perspective == "author_voice_third_person":
+            author_voice_instruction = f"""
+## PERSPECTIVE LOCK (CRITICAL - AUTHOR VOICE MODE):
+1. You are writing **AS** {author_name}, not **ABOUT** {author_name}.
+2. **OBJECTIVE VOICE:** Do not refer to yourself. Do not use "I" (First Person).
+3. **NO SELF-ANALYSIS:** Never write sentences like "{author_name} argues..." or "The author believes...".
+4. **CORRECTION EXAMPLES:**
+   - BAD: "{author_name} views the machine as a threat."
+   - GOOD: "The machine is a threat."
+   - BAD: "He rejects the anti-AI stance..."
+   - GOOD: "The anti-AI stance is regressive and intellectually flawed."
+"""
+
+        # Add lexical diversity instructions
+        lexical_diversity_section = """
+## LEXICAL DIVERSITY:
+- **Do not repeat** distinctive phrases (e.g., "mechanized creativity") within the same paragraph.
+- Use synonyms. If you used "dismissal" once, use "rejection" or "scorn" next time.
+- Avoid looping on the same noun structures.
+- Vary your vocabulary to explore the full range of the author's style palette.
+"""
+
         user_content += f"""
 {anti_echo_section}
 {ending_constraint}
-
+{author_voice_instruction}
+{lexical_diversity_section}
 ## Author Voice:
 Adopt the voice of {author_name}.
 
@@ -5180,6 +5262,10 @@ Adopt the voice of {author_name}.
 Output only the sentence, no explanations.
 """
 
+        # Get repetition penalties from config
+        presence_penalty = self.generation_config.get("presence_penalty")
+        frequency_penalty = self.generation_config.get("frequency_penalty")
+
         try:
             response = self.llm_provider.call(
                 system_prompt=f"You are a sentence generator. Generate {n} variants. Output each on a new line with 'VAR:' prefix.",
@@ -5187,7 +5273,9 @@ Output only the sentence, no explanations.
                 model_type="editor",
                 require_json=False,
                 temperature=temperature,
-                max_tokens=max_tokens
+                max_tokens=max_tokens,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty
             )
 
             # Parse variants using shared utility
@@ -5239,6 +5327,16 @@ Output only the sentence, no explanations.
             if prev_context and check_zipper_merge(prev_context, v):
                 if verbose:
                     print(f"      Variant filtered (Zipper Check): {v[:50]}...")
+                continue
+
+            # 3. 3-GRAM REPETITION CHECK (Context-Aware)
+            # CRITICAL: Check against entire paragraph generated so far, not just current sentence
+            # This catches cross-sentence repetition (e.g., phrase in sentence 1 and sentence 4)
+            combined_text = prev_context + " " + v if prev_context else v
+            phrase_repeats = self.statistical_critic.check_phrase_repetition(combined_text, n_gram_size=3)
+            if phrase_repeats:
+                if verbose:
+                    print(f"      Variant filtered (3-Gram Repetition): {v[:50]}... (repeats: {phrase_repeats[:2]})")
                 continue
 
             valid_candidates.append(v)

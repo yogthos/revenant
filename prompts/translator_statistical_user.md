@@ -48,9 +48,17 @@ You MUST write this paragraph in **{target_perspective}** point of view.
 
 **Constraint:** Do NOT shift perspective. Maintain consistent POV throughout the paragraph.
 
+{author_voice_section}
+
 ## Style Transformation Rules
 The neutral summary is stylistically generic. You must apply these specific shifts to match {author_name}:
 {style_directives}
+
+## LEXICAL DIVERSITY:
+- **Do not repeat** distinctive phrases (e.g., "mechanized creativity") within the same paragraph.
+- Use synonyms. If you used "dismissal" once, use "rejection" or "scorn" next time.
+- Avoid looping on the same noun structures.
+- Vary your vocabulary to explore the full range of the author's style palette.
 
 ## Voice Constraints (Forensic Profile)
 {style_constraints}

@@ -79,7 +79,8 @@ class SemanticTranslator:
         perspective_guidance = {
             "first_person_singular": "Use 'I', 'Me', 'My', 'Myself', 'Mine'.",
             "first_person_plural": "Use 'We', 'Us', 'Our', 'Ourselves', 'Ours'.",
-            "third_person": "Use 'The subject', 'The narrator', or specific names."
+            "third_person": "Use 'The subject', 'The narrator', or specific names.",
+            "author_voice_third_person": "Use 'The subject', 'The narrator', or specific names. Write AS the author, not ABOUT the author."
         }
         pronoun_guidance = perspective_guidance.get(target_perspective, "Use 'The subject', 'The narrator', or specific names.")
 
@@ -108,14 +109,42 @@ class SemanticTranslator:
             if context_parts:
                 global_context_section = "\n\n".join(context_parts) + "\n\n"
 
+        # Add author voice sanitization instructions for author_voice_third_person
+        author_voice_instruction = ""
+        if target_perspective == "author_voice_third_person":
+            author_voice_instruction = """
+**CRITICAL INSTRUCTION FOR AUTHOR VOICE MODE:**
+Focus purely on the **ARGUMENTS** and **EVENTS**.
+- Do NOT attribute views to "The subject", "The author", or any author name.
+- State the arguments as facts.
+- BAD: "The subject argues that AI is theft."
+- GOOD: "AI is fundamentally a form of theft."
+- BAD: "The author believes that automation is socialization of labor."
+- GOOD: "Automation is, in its historical essence, the socialization of labor."
+"""
+
         try:
             user_template = _load_prompt_template("semantic_translator_user.md")
-            user_prompt = user_template.format(
-                text=text,
-                target_perspective=target_perspective,
-                pronoun_guidance=pronoun_guidance,
-                global_context_section=global_context_section
-            )
+            # Try to format with author_voice_instruction if template supports it
+            try:
+                user_prompt = user_template.format(
+                    text=text,
+                    target_perspective=target_perspective,
+                    pronoun_guidance=pronoun_guidance,
+                    global_context_section=global_context_section,
+                    author_voice_instruction=author_voice_instruction
+                )
+            except KeyError:
+                # Template doesn't have author_voice_instruction placeholder, append it
+                user_prompt = user_template.format(
+                    text=text,
+                    target_perspective=target_perspective,
+                    pronoun_guidance=pronoun_guidance,
+                    global_context_section=global_context_section
+                )
+                if author_voice_instruction:
+                    # Insert after global_context_section
+                    user_prompt = user_prompt.replace(global_context_section, global_context_section + author_voice_instruction)
         except (FileNotFoundError, KeyError):
             # Fallback prompt
             user_prompt = f"""Distill this text into a neutral, logical summary. Preserve causal links. Remove all rhetoric.
