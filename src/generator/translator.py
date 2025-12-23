@@ -5591,19 +5591,57 @@ Output only the sentence, no explanations.
                         print(f"      Variant filtered (Micro-Sentence Duplicate): {v[:50]}...")
                     continue
             else:
-                # Perform standard 3-GRAM REPETITION CHECK for normal sentences
+                # 3. 3-GRAM REPETITION CHECK (Differential)
                 # CRITICAL: Check against entire paragraph generated so far, not just current sentence
                 # This catches cross-sentence repetition (e.g., phrase in sentence 1 and sentence 4)
                 combined_text = prev_context + " " + v if prev_context else v
-                phrase_repeats = self.statistical_critic.check_phrase_repetition(
+
+                # Check repeats in the COMBINED text
+                current_repeats = self.statistical_critic.check_phrase_repetition(
                     combined_text,
                     n_gram_size=3,
                     whitelist=whitelist
                 )
-                if phrase_repeats:
-                    if verbose:
-                        print(f"      Variant filtered (3-Gram Repetition): {v[:50]}... (repeats: {phrase_repeats[:2]})")
-                    continue
+
+                if current_repeats:
+                    # CRITICAL FIX: Check if these repeats existed BEFORE this sentence.
+                    # If the repeat is entirely inside prev_context, this variant didn't cause it.
+
+                    # 1. Get repeats just from the context
+                    if prev_context:
+                        context_repeats = self.statistical_critic.check_phrase_repetition(
+                            prev_context,
+                            n_gram_size=3,
+                            whitelist=whitelist
+                        )
+
+                        # 2. Filter out repeats that were already there
+                        # We only care if the variant ADDED a new repeat instance
+                        new_repeats = []
+                        for r in current_repeats:
+                            # If it wasn't in context, it's new -> Reject
+                            if r not in context_repeats:
+                                new_repeats.append(r)
+                            else:
+                                # It WAS in context. Did we increase the count?
+                                # CRITICAL: check_phrase_repetition returns lowercased phrases,
+                                # so we must use .lower() for case-insensitive counting
+                                count_combined = combined_text.lower().count(r)
+                                count_context = prev_context.lower().count(r)
+
+                                if count_combined > count_context:
+                                    new_repeats.append(r)
+
+                        # If we have actual NEW repeats, reject.
+                        if new_repeats:
+                            if verbose:
+                                print(f"      Variant filtered (3-Gram Repetition): {v[:50]}... (repeats: {new_repeats[:2]})")
+                            continue
+                    else:
+                        # No context, so any repeat is the variant's fault
+                        if verbose:
+                            print(f"      Variant filtered (3-Gram Repetition): {v[:50]}... (repeats: {current_repeats[:2]})")
+                        continue
 
             valid_candidates.append(v)
 

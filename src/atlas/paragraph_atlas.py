@@ -336,6 +336,38 @@ class ParagraphAtlas:
         content_map = []  # Store which sentences go into which slot
         total_words = 0
 
+        # Determine Style Inflation Factor
+        # If author usually writes long sentences (>25 words), assume they will expand the input.
+        # If author is concise (<15 words), assume they might contract it.
+        if target_density > 25:
+            inflation_factor = 1.20  # +20% budget for verbose authors
+        elif target_density < 15:
+            inflation_factor = 0.90  # -10% budget for concise authors
+        else:
+            inflation_factor = 1.10  # +10% standard buffer for style overhead
+
+        # Helper function to avoid code duplication
+        def create_slot(word_count, grouping):
+            """Create a slot entry with inflation applied."""
+            # Apply Inflation
+            adjusted_target = int(word_count * inflation_factor)
+
+            # Ensure reasonable bounds (don't shrink below 3 or grow beyond 60)
+            final_target = max(3, min(adjusted_target, 60))
+
+            # Determine slot type based on FINAL target
+            if final_target < 10:
+                slot_type = "simple"
+            elif final_target < 25:
+                slot_type = "moderate"
+            else:
+                slot_type = "complex"
+
+            return {
+                'target_len': final_target,
+                'type': slot_type
+            }
+
         current_group = []
         current_word_count = 0
 
@@ -365,21 +397,9 @@ class ParagraphAtlas:
             else:
                 # Current group is full. Push it and start a new one.
                 if current_group:
-                    # Cap target length to reasonable limits (60 words max)
-                    capped_len = min(current_word_count, 60)
-
-                    # Determine slot type
-                    if capped_len < 10:
-                        slot_type = "simple"
-                    elif capped_len < 25:
-                        slot_type = "moderate"
-                    else:
-                        slot_type = "complex"
-
-                    structure_map.append({
-                        'target_len': capped_len,
-                        'type': slot_type
-                    })
+                    # Create slot with inflation applied
+                    slot = create_slot(current_word_count, current_group)
+                    structure_map.append(slot)
                     content_map.append(" ".join(current_group))
                     total_words += current_word_count
 
@@ -389,18 +409,8 @@ class ParagraphAtlas:
 
         # Flush remaining group
         if current_group:
-            capped_len = min(current_word_count, 60)
-            if capped_len < 10:
-                slot_type = "simple"
-            elif capped_len < 25:
-                slot_type = "moderate"
-            else:
-                slot_type = "complex"
-
-            structure_map.append({
-                'target_len': capped_len,
-                'type': slot_type
-            })
+            slot = create_slot(current_word_count, current_group)
+            structure_map.append(slot)
             content_map.append(" ".join(current_group))
             total_words += current_word_count
 
