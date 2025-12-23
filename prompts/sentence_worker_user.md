@@ -3,6 +3,8 @@
 ## Content to Express:
 {slot_content}
 
+**Note:** If the Content to Express above is a complete sentence, rewrite it in the author's style while preserving the core meaning. If it is a bullet point or fragment, expand it into a complete sentence.
+
 ## Target Length:
 {target_length} words (strict constraint)
 

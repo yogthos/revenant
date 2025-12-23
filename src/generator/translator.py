@@ -4393,14 +4393,15 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             if verbose:
                 print(f"  Selected archetype {target_arch_id}: {match_beats} sentences (divergence: {divergence})")
 
-            # If divergence is too large (>3 sentences), use synthetic fallback
-            if divergence > 3:
+            # If divergence is too large (>1 sentence), use synthetic fallback
+            if divergence > 1:
                 if verbose:
                     print(f"  ⚠ Archetype mismatch ({input_beats} vs {match_beats}). Using synthetic fallback to preserve meaning.")
                 synthetic_archetype = self.paragraph_atlas._create_synthetic_archetype(paragraph)
                 structure_map = synthetic_archetype['structure_map']
-                # Update archetype_desc for logging
+                # Update archetype_desc for logging - mark as synthetic
                 archetype_desc = synthetic_archetype['stats']
+                archetype_desc['id'] = "synthetic_fallback"  # Mark for direct mapping
                 if verbose:
                     print(f"  Synthetic structure: {len(structure_map)} sentences")
         else:
@@ -4410,6 +4411,7 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             synthetic_archetype = self.paragraph_atlas._create_synthetic_archetype(paragraph)
             structure_map = synthetic_archetype['structure_map']
             archetype_desc = synthetic_archetype['stats']
+            archetype_desc['id'] = "synthetic_fallback"  # Mark for direct mapping
 
         if not structure_map:
             if verbose:
@@ -4429,10 +4431,46 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         # ASSEMBLY LINE ARCHITECTURE: Plan content distribution
         if verbose:
             print(f"  Planning content distribution into {len(structure_map)} slots...")
-        content_planner = ContentPlanner(self.config_path)
-        content_slots = content_planner.plan_content(neutral_text, structure_map, author_name, source_text=paragraph)
-        if verbose:
-            print(f"  Content distributed into {len(content_slots)} slots")
+
+        # Check if we are using synthetic/exact match
+        is_synthetic = archetype_desc.get("id") == "synthetic_fallback"
+
+        if is_synthetic:
+            if verbose:
+                print(f"  ⚡ Using Direct Sentence Mapping (Lossless Mode)")
+
+            # 1. Tokenize input into sentences
+            try:
+                from nltk.tokenize import sent_tokenize
+                input_sentences = sent_tokenize(paragraph)
+            except (ImportError, Exception):
+                # Fallback: split by periods
+                input_sentences = [s.strip() for s in paragraph.split('.') if len(s.strip()) > 5]
+
+            # 2. Map 1:1 to structure (direct mapping)
+            content_slots = []
+            for i, slot in enumerate(structure_map):
+                # Safety: Ensure we don't go out of bounds
+                if i < len(input_sentences):
+                    source_sent = input_sentences[i].strip()
+                    # Use original sentence as content (will be rewritten in author's style)
+                    content_slots.append(source_sent)
+                else:
+                    # If structure has more slots than input sentences, mark as EMPTY
+                    content_slots.append("EMPTY")
+
+            # Ensure we have the right number of slots
+            while len(content_slots) < len(structure_map):
+                content_slots.append("EMPTY")
+
+            if verbose:
+                print(f"  Direct mapped {len([s for s in content_slots if s != 'EMPTY'])} sentences to {len(structure_map)} slots")
+        else:
+            # Standard LLM Planning for Library Archetypes
+            content_planner = ContentPlanner(self.config_path)
+            content_slots = content_planner.plan_content(neutral_text, structure_map, author_name, source_text=paragraph)
+            if verbose:
+                print(f"  Content distributed into {len(content_slots)} slots")
 
         # Get generation config
         max_sentence_retries = self.generation_config.get("max_retries", 3)

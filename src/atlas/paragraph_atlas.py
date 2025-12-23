@@ -280,15 +280,22 @@ class ParagraphAtlas:
                 continue
             # Calculate word count
             word_count = len(sent.split())
-            total_words += word_count
 
-            # Determine slot type based on length
-            if word_count < 10:
-                slot_type = "simple"
-            elif word_count < 25:
-                slot_type = "moderate"
+            # Cap target length to reasonable limits for the model
+            # (DeepSeek/OpenAI struggle to maintain coherence > 60 words in one go)
+            if word_count > 60:
+                word_count = 60
+                slot_type = "complex"  # Force complex type for capped sentences
             else:
-                slot_type = "complex"
+                # Determine slot type based on length
+                if word_count < 10:
+                    slot_type = "simple"
+                elif word_count < 25:
+                    slot_type = "moderate"
+                else:
+                    slot_type = "complex"
+
+            total_words += word_count
 
             structure_map.append({
                 'target_len': word_count,
