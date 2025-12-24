@@ -1248,14 +1248,19 @@ ORIGINAL TEXT (for content preservation check):
 - CRITICAL: All direct quotations (text in quotes) from Original Text must be preserved exactly
 - CRITICAL: ALL facts, concepts, details, and information from Original Text must be preserved in Generated Text
 - If Original Text contains multiple facts/concepts, ALL must appear in Generated Text
-- **CRITICAL - LIST PRESERVATION:** If Original Text contains lists (e.g., "birth, life, and decay"), ALL items must appear in Generated Text. Missing any item from a list is a CRITICAL FAILURE.
-- If any facts, concepts, details, or list items are missing, this is a CRITICAL FAILURE"""
+- **CRITICAL - LIST PRESERVATION:** If Original Text contains lists (e.g., "a tree, a smartphone, a government" or "lithium from Chile and cobalt from the Congo"), ALL items must appear in Generated Text. Missing any item from a list is a CRITICAL FAILURE.
+- **CRITICAL - SETUP PHRASES:** If Original Text uses setup phrases like "Most of us are conditioned to...", "Consider...", "Think of...", these must be preserved or their meaning must be clearly conveyed in Generated Text.
+- **CRITICAL - KEY NOUNS:** If Original Text introduces concrete nouns in the first sentence (e.g., "smartphone", "watch"), these must appear in Generated Text. Do not generalize them to "device" or "object" unless the specific noun was already introduced.
+- If any facts, concepts, details, list items, setup phrases, or key nouns are missing, this is a CRITICAL FAILURE"""
         preservation_instruction = """
 
 CRITICAL: Check that:
 1. All [^number] citations and direct quotations from Original Text are preserved exactly in Generated Text
 2. ALL facts, concepts, details, and information from Original Text are present in Generated Text
-If any citations, quotations, facts, concepts, or details are missing or modified, this is a critical failure. Mark "pass": false and "primary_failure_type": "meaning"."
+3. ALL items from lists in Original Text are present in Generated Text (e.g., if Original has "a tree, a smartphone, a government", ALL three must appear in Generated)
+4. Setup phrases and introductory statements from Original Text are preserved or their meaning is clearly conveyed in Generated Text
+5. Key concrete nouns introduced in Original Text (especially in the first sentence) are preserved in Generated Text, not generalized to generic terms
+If any citations, quotations, facts, concepts, list items, setup phrases, or key nouns are missing or modified, this is a critical failure. Mark "pass": false and "primary_failure_type": "meaning"."
 """
     else:
         original_section = ""

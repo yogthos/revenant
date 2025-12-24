@@ -164,12 +164,34 @@ This creates:
 - `atlas_cache/paragraph_atlas/{author}/style_fragments_chroma/` - ChromaDB collection with 3-sentence style fragments
 - Uses high-fidelity `all-mpnet-base-v2` embeddings for semantic retrieval
 
-**4. Generate Style DNA** (optional, for style profiling):
+**4. Build Syntactic Templates** (for proposition-based style transfer):
+```bash
+# Basic usage
+python3 scripts/build_syntactic_templates.py styles/sample_mao.txt --author mao
+
+# Adjust sentence length filters
+python3 scripts/build_syntactic_templates.py styles/sample_mao.txt --author mao --min-length 8 --max-length 40
+
+# Custom output directory
+python3 scripts/build_syntactic_templates.py styles/sample_mao.txt --author mao --output-dir custom/path
+```
+
+This creates:
+- `atlas_cache/paragraph_atlas/{author}/syntactic_templates.json` - Pre-computed syntactic skeleton library
+- Templates organized by: `{rhetoric: {mood: {capacity: [templates]}}}`
+- **Rhetoric types**: contrast, list, causal, general
+- **Moods**: narrative, imperative, definition, interrogative
+- **Capacity**: Number of content slots (bracketed placeholders) in each template
+
+**What are Syntactic Templates?**
+Syntactic templates are abstract grammatical skeletons extracted from the author's corpus. They preserve structural elements (conjunctions, punctuation, negations, structural verbs) while masking content words with placeholders like `[Noun]`, `[Action]`, `[Adj]`. The system uses **topological matching** to find templates that mathematically fit the number of propositions being expressed, ensuring content fits the style container without deformation.
+
+**5. Generate Style DNA** (optional, for style profiling):
 ```bash
 python3 scripts/generate_style_dna.py --author "Mao"
 ```
 
-**5. List Loaded Styles**:
+**6. List Loaded Styles**:
 ```bash
 python3 scripts/list_styles.py
 ```
@@ -337,6 +359,7 @@ The paragraph atlas contains:
 - **Archetypes**: Statistical patterns (sentence length, sentence count, burstiness, style type)
 - **Transition Matrix**: Markov chain probabilities for archetype transitions
 - **ChromaDB Collection**: Full example paragraphs for each archetype
+- **Syntactic Templates**: Pre-computed grammatical skeletons organized by rhetoric, mood, and capacity (if built)
 
 ### Generation Configuration
 
@@ -610,6 +633,7 @@ text-style-transfer/
 │   ├── load_style.py           # Load author styles into Style Atlas
 │   ├── build_paragraph_atlas.py # Build paragraph archetype atlas
 │   ├── build_rag_index.py      # Build Style RAG fragment index
+│   ├── build_syntactic_templates.py # Build syntactic template library
 │   ├── generate_style_dna.py   # Generate Style DNA profiles
 │   ├── list_styles.py          # List loaded authors
 │   └── clear_chromadb.py       # Clear ChromaDB collections
@@ -653,16 +677,42 @@ flowchart TD
 
 1. **Style Atlas**: ChromaDB-based vector store with dual embeddings (semantic + style) and K-means clustering for paragraph-level style retrieval
 2. **Paragraph Atlas**: Statistical archetype system with Markov chain transitions for generating paragraphs matching author's structural patterns
-3. **Style RAG**: Dynamic retrieval of semantically relevant style fragments (3-sentence windows) to provide concrete phrasing examples during generation
-4. **Semantic Translator**: Extracts neutral logical summaries from input text, removing style while preserving meaning and perspective
-5. **Perspective Anchoring**: Preserves point of view (POV) through the entire pipeline, preventing the neutralizer from converting personal narratives into detached academic prose
-6. **Statistical Critic**: Validates generated paragraphs against statistical archetype parameters (sentence length, sentence count, burstiness)
-7. **Semantic Critic**: Validates generated text using proposition recall and style alignment metrics
-8. **Style Registry**: Sidecar JSON storage for author Style DNA profiles
+3. **Syntactic Templates**: Pre-computed grammatical skeletons organized by rhetoric, mood, and capacity for topological template matching in proposition-based generation
+4. **Style RAG**: Dynamic retrieval of semantically relevant style fragments (3-sentence windows) to provide concrete phrasing examples during generation
+5. **Semantic Translator**: Extracts neutral logical summaries from input text, removing style while preserving meaning and perspective
+6. **Perspective Anchoring**: Preserves point of view (POV) through the entire pipeline, preventing the neutralizer from converting personal narratives into detached academic prose
+7. **Statistical Critic**: Validates generated paragraphs against statistical archetype parameters (sentence length, sentence count, burstiness)
+8. **Semantic Critic**: Validates generated text using proposition recall and style alignment metrics
+9. **Style Registry**: Sidecar JSON storage for author Style DNA profiles
 
-### Statistical Paragraph Generation Process
+### Paragraph Generation Process
 
-The current implementation uses **Statistical Archetype Generation**:
+The system supports two generation modes:
+
+#### 1. Proposition-Based Generation (Recommended)
+
+Uses **Syntactic Templates** with topological matching for precise structural alignment:
+
+1. **Proposition Extraction**: Break input text into atomic logical units (propositions) and classify rhetorical structure (Contrast, List, Definition, Cause-Effect, Narrative, General)
+2. **Template Matching**: Use topological matching to find syntactic templates that mathematically fit the proposition count:
+   - Estimates required capacity from word count (heuristic: total_words / 3)
+   - Finds closest capacity bucket (penalizes undersizing 3x, oversizing 1x)
+   - Selects template matching rhetoric type and grammatical mood
+3. **Template Selection**: Randomly selects from best-fit capacity bucket
+4. **Generation**: Fills template placeholders with proposition content:
+   - Preserves all structural words (is, not, but, must, etc.)
+   - Replaces `[Noun]`, `[Action]`, `[Adj]`, etc. with actual content
+   - Maintains exact punctuation and structure of template
+5. **Validation**: Verifies meaning preservation and style alignment
+
+**Benefits**:
+- **Precision**: Matches template capacity to proposition count, preventing content loss
+- **Authenticity**: Uses actual author grammatical patterns, filtered by fit
+- **Safety**: Reduces hallucination by matching capacity exactly
+
+#### 2. Statistical Archetype Generation (Fallback)
+
+Uses statistical patterns when syntactic templates are unavailable:
 
 1. **Perspective Determination**: Determine target perspective using priority: User override > Config default > Author profile > Input detection > Default (third person)
 2. **Neutral Summary Extraction**: Convert input paragraph to a neutral logical summary, removing style while preserving semantic content and **maintaining the determined perspective** (I/We/The subject)
@@ -844,6 +894,8 @@ For more details, see `tests/integration/README.md`.
 - Check that your corpus file has paragraphs separated by blank lines
 
 **Style RAG collection not found**: Build RAG index using `scripts/build_rag_index.py --author <name> --corpus-file <file>` or use `scripts/init_author.py`
+
+**Syntactic templates not found**: Build templates using `scripts/build_syntactic_templates.py <corpus-file> --author <name>`. The system will fall back to statistical archetype generation if templates are unavailable.
 
 **Author not found**: Check `blend.authors` in config.json matches loaded author names
 

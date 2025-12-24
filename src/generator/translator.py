@@ -10,7 +10,7 @@ import re
 import time
 import requests
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional, Set, TYPE_CHECKING
+from typing import List, Tuple, Dict, Optional, Set, TYPE_CHECKING, Any
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -87,7 +87,7 @@ def _normalize_for_counting(text: str) -> str:
     """Normalize text for counting by stripping punctuation and lowercasing.
 
     This matches the behavior of check_phrase_repetition which uses
-    re.findall(r'\b\w+\b', text.lower()) to extract words.
+    re.findall(r'\\b\\w+\\b', text.lower()) to extract words.
 
     Args:
         text: Text to normalize
@@ -164,6 +164,15 @@ class StyleTranslator:
         # Initialize statistical critic
         self.statistical_critic = StatisticalCritic(config_path=config_path)
 
+        # Initialize structure analyzer for structural fidelity checking
+        try:
+            from src.analysis.structure_analyzer import StructureAnalyzer
+            self.structure_analyzer = StructureAnalyzer()
+        except (ImportError, OSError) as e:
+            # If spaCy model not available, structure analyzer will be None
+            self.structure_analyzer = None
+            # Note: Warning will be printed when structure analyzer is first used if needed
+
         # Initialize skeleton cache for atlas memorization
         self._skeleton_cache = {}  # Key: (author, rhetorical_type, prop_count_bucket) -> (teacher_example, templates)
 
@@ -177,6 +186,62 @@ class StyleTranslator:
                 # If spaCy not available, return None (check will be skipped)
                 self._nlp_cache = False
         return self._nlp_cache if self._nlp_cache is not False else None
+
+    def _detect_mood(self, text: str) -> str:
+        """
+        Detects the grammatical mood of the proposition.
+
+        Args:
+            text: Input text to analyze
+
+        Returns:
+            'narrative', 'imperative', 'definition', or 'general'
+        """
+        if not text or not text.strip():
+            return "general"
+
+        text_lower = text.lower()
+        nlp = self._get_nlp()
+
+        if not nlp:
+            # Fallback: simple keyword-based detection if spaCy unavailable
+            if any(word in text_lower for word in ["must", "should", "let us", "need", "ought"]):
+                return "imperative"
+            if any(word in text_lower for word in ["is", "means", "refers to", "defined as"]):
+                return "definition"
+            if any(word in text_lower for word in ["was", "were", "had", "did", "went", "came"]):
+                return "narrative"
+            return "general"
+
+        try:
+            doc = nlp(text)
+
+            # Check for Imperative (Must, Should, Let us)
+            if any(token.lemma_ in ["must", "should", "let", "need", "ought"] for token in doc):
+                return "imperative"
+
+            # Check for Definition (Is, Means, Refers to)
+            # Often starts with "X is..." or "X means..."
+            roots = [t for t in doc if t.dep_ == "ROOT"]
+            if roots and roots[0].lemma_ in ["be", "mean", "refer"]:
+                # Check if it's a definition pattern: "X is Y" or "X means Y"
+                if any(token.lemma_ == "be" for token in doc) or any(token.lemma_ == "mean" for token in doc):
+                    return "definition"
+
+            # Check for Narrative (Past Tense Verbs)
+            if any(token.tag_ in ["VBD", "VBN"] for token in doc):
+                return "narrative"
+
+            return "general"
+        except Exception:
+            # Fallback to simple keyword detection on error
+            if any(word in text_lower for word in ["must", "should", "let us", "need"]):
+                return "imperative"
+            if any(word in text_lower for word in ["is", "means", "defined"]):
+                return "definition"
+            if any(word in text_lower for word in ["was", "were", "had", "did"]):
+                return "narrative"
+            return "general"
 
     def _is_blueprint_incomplete(self, blueprint: SemanticBlueprint) -> bool:
         """Check if blueprint is semantically incomplete (missing critical nouns).
@@ -4312,7 +4377,7 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                         if verbose:
                             print(f"  Detected title-case header, returning as-is: {paragraph[:50]}{'...' if len(paragraph) > 50 else ''}")
                         # Return as-is with perfect compliance score
-                        return paragraph, 0, 1.0
+            return paragraph, 0, 1.0
 
         # Initialize ParagraphAtlas for this author if needed
         if self.paragraph_atlas is None or getattr(self.paragraph_atlas, 'author', None) != author_name:
@@ -4360,6 +4425,56 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             if ent.label_ in ["PERSON", "ORG", "NORP", "WORK_OF_ART", "EVENT"]:
                 must_include.append(ent.text)
 
+        # NEW: ANCHOR NOUNS - Extract concrete nouns from the first sentence
+        # If the paragraph starts with "Consider a smartphone...", we must force "smartphone"
+        sentences = list(source_doc.sents)
+        if sentences:
+            first_sent = sentences[0]
+            nlp = self._get_nlp()
+
+            def is_generic_noun(token):
+                """Check if a noun is generic using spaCy vocabulary properties."""
+                if not nlp:
+                    # Fallback: use a minimal hardcoded list if spaCy unavailable
+                    generic_fallback = {"term", "concept", "idea", "way", "example", "thing", "object", "device", "tool", "item", "element", "aspect", "part", "piece"}
+                    return token.text.lower() in generic_fallback
+
+                # Check if token is in vocabulary
+                if token.text.lower() not in nlp.vocab:
+                    return False
+
+                vocab_token = nlp.vocab[token.text.lower()]
+
+                # Method 1: Check if it's a stopword (very common words)
+                if vocab_token.is_stop:
+                    return True
+
+                # Method 2: Check log probability (very common words have high prob)
+                # Lower prob values = more common words. Generic nouns tend to be very common.
+                # Typical generic nouns have prob > -10 (very common)
+                # Specific nouns like "smartphone" have prob < -12 (less common)
+                if hasattr(vocab_token, 'prob'):
+                    # Very common words (prob > -10) are likely generic
+                    if vocab_token.prob > -10:
+                        return True
+
+                # Method 3: Check if it's a very short word (often generic)
+                if len(token.text) <= 3:
+                    return True
+
+                return False
+
+            for token in first_sent:
+                # Capture the root noun or subject/object nouns
+                if token.dep_ in ["nsubj", "dobj", "attr", "pobj"] and token.pos_ == "NOUN":
+                    # Filter out generic nouns using spaCy
+                    if not is_generic_noun(token):
+                        must_include.append(token.text)
+                # Also capture nouns that are direct objects of verbs like "consider", "think", "imagine"
+                elif token.head.lemma_.lower() in ["consider", "think", "imagine", "visualize", "picture"] and token.pos_ == "NOUN":
+                    if not is_generic_noun(token):
+                        must_include.append(token.text)
+
         # Deduplicate
         must_include = sorted(list(set(must_include)))
 
@@ -4367,20 +4482,23 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         entity_instruction = ""
         if must_include:
             entity_list = ", ".join(must_include)
-            entity_instruction = f"\n**CONTENT MANDATE:** You MUST include these exact terms: {entity_list}.\n**RULE:** Do not paraphrase, abbreviate, or reword them. Use them exactly as written.\n**CONSTRAINT:** Use these names as the SUBJECT or OBJECT of your sentences when possible. Do not bury them in subordinate clauses."
-            if verbose:
+            entity_instruction = f"\n**CONTENT MANDATE:** You MUST include these exact terms: {entity_list}.\n**RULE:** Do not paraphrase, abbreviate, or reword them. Use them exactly as written.\n**CONSTRAINT:** Use these names as the SUBJECT or OBJECT of your sentences when possible. Do not bury them in subordinate clauses.\n**PACING:** Do not cram all names into one sentence. Give each major entity its own sentence."
+        if verbose:
                 print(f"  Extracted entities to preserve: {entity_list}")
 
-        # Step 1: Neutralize with perspective
+        # Step 1: EXTRACT PROPOSITIONS (The "What") - Proposition-Based Pipeline
         if verbose:
-            print(f"  Extracting neutral summary with perspective: {target_pov}...")
-        neutral_text = self.semantic_translator.extract_neutral_summary(
-            paragraph,
-            target_perspective=target_pov,
-            global_context=global_context
-        )
+            print(f"  🔍 Extracting atomic propositions...")
+        content_planner = ContentPlanner(self.config_path)
+        prop_data = content_planner.extract_propositions(paragraph)
+        propositions = prop_data.get('propositions', [])
+        rhetorical_type = prop_data.get('rhetorical_type', 'General')
+
         if verbose:
-            print(f"  Neutral summary: {neutral_text[:100]}{'...' if len(neutral_text) > 100 else ''}")
+            print(f"  📊 Rhetorical Type: {rhetorical_type}")
+            print(f"  📝 Extracted {len(propositions)} propositions")
+            if propositions:
+                print(f"  📋 Sample propositions: {propositions[0][:50]}{'...' if len(propositions[0]) > 50 else ''}")
 
         # Calculate logical beats (sentence count) of input for structure matching
         from src.utils.text_processing import count_logical_beats
@@ -4388,7 +4506,7 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         if verbose:
             print(f"  Input logical beats: {input_beats} sentences")
 
-        # Step 1.5: Retrieve style palette using StyleRAG
+        # Step 1.5: Retrieve style palette using StyleRAG (using propositions for retrieval)
         style_palette_fragments = []
         if author_name not in self.style_rag:
             try:
@@ -4401,7 +4519,9 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         if self.style_rag.get(author_name):
             style_rag_config = self.config.get("style_rag", {})
             num_fragments = style_rag_config.get("num_fragments", 8)
-            style_palette_fragments = self.style_rag[author_name].retrieve_palette(neutral_text, n=num_fragments)
+            # Use propositions text for retrieval instead of neutral summary
+            propositions_text = " ".join(propositions) if propositions else paragraph
+            style_palette_fragments = self.style_rag[author_name].retrieve_palette(propositions_text, n=num_fragments)
             if verbose:
                 if style_palette_fragments:
                     print(f"  Retrieved {len(style_palette_fragments)} style fragments")
@@ -4411,10 +4531,51 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         # Format style palette as newline-joined string
         style_palette_text = "\n".join([f'"{fragment}"' for fragment in style_palette_fragments]) if style_palette_fragments else ""
 
-        # Step 2: Select next archetype
+        # Step 2: FIND TEMPLATE (The "How") - Rhetorical Matching
         if verbose:
-            print(f"  Selecting next archetype (prev: {prev_archetype_id})...")
-        target_arch_id = self.paragraph_atlas.select_next_archetype(prev_archetype_id)
+            print(f"  🎯 Finding rhetorical match for type: {rhetorical_type}...")
+
+        # Try to find a rhetorical match in the Atlas
+        template_chunk = self.paragraph_atlas.find_rhetorical_match(rhetorical_type, llm_provider=self.llm_provider)
+
+        template_text = ""
+        target_arch_id = None
+        rhythm_reference = ""
+
+        if template_chunk:
+            template_text = template_chunk.get('text', '')
+            # Extract archetype_id from metadata if available
+            template_metadata = template_chunk.get('metadata', {})
+            target_arch_id = template_metadata.get('archetype_id')
+            rhythm_reference = template_text
+            if verbose:
+                print(f"  🎨 Found Rhetorical Match in Corpus: '{template_text[:50]}{'...' if len(template_text) > 50 else ''}'")
+        else:
+            # Fallback to Centroid - get representative archetype
+            if verbose:
+                print(f"  ⚠ No specific rhetorical match found. Using centroid archetype...")
+            centroid = self.paragraph_atlas.get_centroid_archetype()
+            if centroid:
+                target_arch_id = centroid.get('id', 0)
+                # Get example paragraph from centroid archetype
+                rhythm_reference = self.paragraph_atlas.get_example_paragraph(target_arch_id) or ""
+                if rhythm_reference:
+                    template_text = rhythm_reference
+                if verbose:
+                    print(f"  📍 Using centroid archetype {target_arch_id}")
+            else:
+                # Ultimate fallback: use previous archetype selection
+                if verbose:
+                    print(f"  ⚠ No centroid available, falling back to Markov chain selection")
+                target_arch_id = self.paragraph_atlas.select_next_archetype(prev_archetype_id)
+                rhythm_reference = self.paragraph_atlas.get_example_paragraph(target_arch_id) or ""
+                if rhythm_reference:
+                    template_text = rhythm_reference
+
+        if not target_arch_id:
+            # Final fallback
+            target_arch_id = self.paragraph_atlas.select_next_archetype(prev_archetype_id)
+
         if verbose:
             print(f"  Selected archetype: {target_arch_id}")
 
@@ -4423,8 +4584,9 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
         if verbose:
             print(f"  Archetype stats: {archetype_desc['avg_len']} words/sent, {archetype_desc['avg_sents']} sents, {archetype_desc['burstiness']} burstiness")
 
-        # Step 3.5: Generate style directives by comparing neutral text vs target archetype
-        style_directives = self._generate_style_directives(neutral_text, archetype_desc)
+        # Step 3.5: Generate style directives (using propositions text for comparison)
+        propositions_text = " ".join(propositions) if propositions else paragraph
+        style_directives = self._generate_style_directives(propositions_text, archetype_desc)
         if verbose and style_directives:
             print(f"  Style directives: {style_directives[:100]}{'...' if len(style_directives) > 100 else ''}")
 
@@ -4532,8 +4694,8 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                     author_profile = self._load_style_profile(author_name)
                     # Get target author density for elastic reshaping
                     target_density = self.paragraph_atlas.get_author_avg_sentence_length()
-                    if verbose:
-                        print(f"  Target author density: {target_density:.1f} words/sentence")
+                if verbose:
+                    print(f"  Target author density: {target_density:.1f} words/sentence")
 
                 synthetic_archetype = self.paragraph_atlas._create_synthetic_archetype(
                     paragraph,
@@ -4647,8 +4809,8 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 author_profile = self._load_style_profile(author_name)
                 # Get target author density for elastic reshaping
                 target_density = self.paragraph_atlas.get_author_avg_sentence_length()
-                if verbose:
-                    print(f"  Target author density: {target_density:.1f} words/sentence")
+            if verbose:
+                print(f"  Target author density: {target_density:.1f} words/sentence")
 
             synthetic_archetype = self.paragraph_atlas._create_synthetic_archetype(
                 paragraph,
@@ -4739,9 +4901,15 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             if verbose:
                 print(f"  ⚠ No structure map available after fallback, falling back to holistic generation")
             # Fallback to old approach if structure map still unavailable
+            # Fallback: extract neutral text for holistic generation
+            neutral_text_fallback = self.semantic_translator.extract_neutral_summary(
+                paragraph,
+                target_perspective=target_pov,
+                global_context=global_context
+            )
             return self._translate_paragraph_holistic(
                 paragraph, author_name, prev_archetype_id, perspective, verbose,
-                neutral_text, target_pov, target_arch_id, archetype_desc,
+                neutral_text_fallback, target_pov, target_arch_id, archetype_desc,
                 style_palette_text, rhythm_reference, reference_sentence_count,
                 reference_sentence_analysis, style_directives, style_constraints
             )
@@ -4750,69 +4918,114 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             structure_summary = ", ".join([f"{s['target_len']}w" for s in structure_map])
             print(f"  Structure map: [{structure_summary}] ({len(structure_map)} sentences)")
 
-        # ASSEMBLY LINE ARCHITECTURE: Plan content distribution
+        # ASSEMBLY LINE ARCHITECTURE: Map propositions directly to structure (Proposition-Based)
         if verbose:
-            print(f"  Planning content distribution into {len(structure_map)} slots...")
+            print(f"  📋 Mapping {len(propositions)} propositions to {len(structure_map)} slots...")
+
+        # Map propositions directly to structure slots
+        # Since propositions are already atomic, we can map them 1:1 or group them as needed
+        content_slots = []
+
+        if propositions:
+            # Distribute propositions across slots
+            # If we have more propositions than slots, group them
+            # If we have fewer propositions than slots, some slots will be EMPTY
+            prop_idx = 0
+            for slot_idx, slot in enumerate(structure_map):
+                if prop_idx < len(propositions):
+                    # Map proposition to slot
+                    content_slots.append(propositions[prop_idx])
+                    prop_idx += 1
+                else:
+                    # No more propositions, mark as EMPTY
+                    content_slots.append("EMPTY")
+
+            # If we have leftover propositions, append them to the last slot
+            if prop_idx < len(propositions):
+                remaining = " ".join(propositions[prop_idx:])
+                if content_slots and content_slots[-1] != "EMPTY":
+                    # Append to last slot
+                    content_slots[-1] = content_slots[-1] + " " + remaining
+                else:
+                    # Add as new slot if last was EMPTY
+                    content_slots[-1] = remaining
+
+            if verbose:
+                print(f"  ✅ Mapped {len([s for s in content_slots if s != 'EMPTY'])} propositions to {len(structure_map)} slots")
+        else:
+            # Fallback: if no propositions extracted, use old method
+            if verbose:
+                print(f"  ⚠ No propositions extracted, falling back to neutral summary method")
+
+            # Fallback to neutral summary
+            neutral_text = self.semantic_translator.extract_neutral_summary(
+                paragraph,
+                target_perspective=target_pov,
+                global_context=global_context
+            )
 
         # Check if we are using synthetic/exact match
         is_synthetic = archetype_desc.get("id") == "synthetic_fallback"
 
-        if is_synthetic:
-            if verbose:
-                print(f"  ⚡ Using Direct Sentence Mapping (Lossless Mode)")
-
-            # Use the pre-calculated grouped content from the Atlas
-            # This contains merged/split sentences based on target author density
-            grouped_content = archetype_desc.get("content_map", [])
-
-            if grouped_content:
-                try:
-                    from nltk.tokenize import sent_tokenize
-                    input_sentence_count = len(sent_tokenize(paragraph))
-                except (ImportError, Exception):
-                    input_sentence_count = len([s.strip() for s in paragraph.split('.') if len(s.strip()) > 5])
-
+        # Only populate content_slots if not already done (from propositions)
+        if not content_slots:
+            if is_synthetic:
                 if verbose:
-                    print(f"  Using elastic content mapping: {len(grouped_content)} slots from {input_sentence_count} input sentences")
+                    print(f"  ⚡ Using Direct Sentence Mapping (Lossless Mode)")
 
-                content_slots = []
-                for i, slot in enumerate(structure_map):
-                    if i < len(grouped_content):
-                        content_slots.append(grouped_content[i])
-                    else:
+                # Use the pre-calculated grouped content from the Atlas
+                grouped_content = archetype_desc.get("content_map", [])
+
+                if grouped_content:
+                    content_slots = []
+                    for i, slot in enumerate(structure_map):
+                        if i < len(grouped_content):
+                            content_slots.append(grouped_content[i])
+                        else:
+                            content_slots.append("EMPTY")
+                    while len(content_slots) < len(structure_map):
                         content_slots.append("EMPTY")
+                else:
+                        # Fallback to 1:1 mapping
+                    try:
+                        from nltk.tokenize import sent_tokenize
+                        input_sentences = sent_tokenize(paragraph)
+                    except (ImportError, Exception):
+                        input_sentences = [s.strip() for s in paragraph.split('.') if len(s.strip()) > 5]
 
-                # Ensure we have the right number of slots
-                while len(content_slots) < len(structure_map):
-                    content_slots.append("EMPTY")
+                    content_slots = []
+                    for i, slot in enumerate(structure_map):
+                        if i < len(input_sentences):
+                            content_slots.append(input_sentences[i].strip())
+                        else:
+                            content_slots.append("EMPTY")
+                    while len(content_slots) < len(structure_map):
+                        content_slots.append("EMPTY")
             else:
-                # Fallback to old 1:1 mapping if content_map not available
+                # Standard LLM Planning for Library Archetypes
+                # neutral_text should be defined in the else block above (when propositions don't exist)
+                # If we reach here without propositions, we need to extract neutral_text
+                if not propositions:
+                    # This should have been done above, but ensure it's done
+                    neutral_text = self.semantic_translator.extract_neutral_summary(
+                        paragraph,
+                        target_perspective=target_pov,
+                        global_context=global_context
+                    )
+                else:
+                    # If we have propositions but reached here, something went wrong
+                    # Extract neutral_text as fallback
+                    neutral_text = self.semantic_translator.extract_neutral_summary(
+                        paragraph,
+                        target_perspective=target_pov,
+                        global_context=global_context
+                    )
+
+                content_planner = ContentPlanner(self.config_path)
+                content_slots = content_planner.plan_content(neutral_text, structure_map, author_name, source_text=paragraph)
+
                 if verbose:
-                    print(f"  ⚠ No content_map available, falling back to 1:1 mapping")
-                try:
-                    from nltk.tokenize import sent_tokenize
-                    input_sentences = sent_tokenize(paragraph)
-                except (ImportError, Exception):
-                    input_sentences = [s.strip() for s in paragraph.split('.') if len(s.strip()) > 5]
-
-                content_slots = []
-                for i, slot in enumerate(structure_map):
-                    if i < len(input_sentences):
-                        content_slots.append(input_sentences[i].strip())
-                    else:
-                        content_slots.append("EMPTY")
-
-                while len(content_slots) < len(structure_map):
-                    content_slots.append("EMPTY")
-
-            if verbose:
-                print(f"  Direct mapped {len([s for s in content_slots if s != 'EMPTY'])} content groups to {len(structure_map)} slots")
-        else:
-            # Standard LLM Planning for Library Archetypes
-            content_planner = ContentPlanner(self.config_path)
-            content_slots = content_planner.plan_content(neutral_text, structure_map, author_name, source_text=paragraph)
-            if verbose:
-                print(f"  Content distributed into {len(content_slots)} slots")
+                    print(f"  Content distributed into {len(content_slots)} slots (fallback mode)")
 
         # Get generation config
         max_sentence_retries = self.generation_config.get("max_retries", 3)
@@ -4909,6 +5122,8 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 # LOGIC OVERRIDE: Jagged means NO smooth connectors
                 structure_type = style_dna.get("sentence_structure", "balanced")
                 if structure_type == "jagged":
+                    # Add plain English vocabulary instruction for jagged style
+                    human_texture_instructions.append("- **VOCABULARY:** Use simple, concrete words. (Bad: 'remuneration', 'comprehending'. Good: 'pay', 'knowing').")
                     # Force the ban instructions even if profile says "True"
                     human_texture_instructions.append("- **NO ACADEMIC STARTERS:** Do not start sentences with 'While', 'Although', 'Despite', 'Though'. Start directly with the Subject or Action.")
                     human_texture_instructions.append("- **CONNECTOR BAN:** Do not use academic transitions like 'Moreover', 'Thus', 'Therefore', 'Hence', 'Thereby'. Use strong, direct connectors: 'But', 'And', 'Yet', 'So'.")
@@ -5056,9 +5271,17 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             # Inner loop: Generate and validate THIS sentence
             sentence = None
             for attempt in range(max_sentence_retries):
+                # NEW: For proposition-based generation, add instruction to preserve logical connectors
+                proposition_context = ""
+                if propositions and slot_idx < len(propositions):
+                    # Add context about preserving logical flow
+                    prop = propositions[slot_idx]
+                    if any(connector in prop.lower() for connector in ["however", "because", "but", "although", "therefore", "thus"]):
+                        proposition_context = f"\n**LOGICAL FLOW:** This proposition contains a logical connector. Preserve the connection (e.g., 'However', 'Because') in your output.\n"
+
                 # 1. Generate batch of variants
                 variants = self._generate_sentence_variants(
-                    content=content,
+                    content=content + proposition_context,  # Add proposition context to content
                     target_length=target_len,
                     raw_length=raw_len,  # NEW: Pass raw_length
                     prev_context=context_so_far,
@@ -5154,13 +5377,18 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                             refined_syntax_violations = self.statistical_critic.validate_syntax_constraints(refined_sentence, style_dna)
 
                             # Check vocabulary if budget is provided
+                            # BUT: Whitelist words from source propositions
                             refined_has_vocab_violation = False
                             if vocabulary_budget:
                                 forbidden_words = vocabulary_budget.get_forbidden_words()
                                 if forbidden_words:
                                     refined_lower = refined_sentence.lower()
+                                    proposition_whitelist = getattr(self, '_proposition_words_whitelist', set())
                                     for word in forbidden_words:
                                         if re.search(r'\b' + re.escape(word.lower()) + r'\b', refined_lower):
+                                            # OVERRIDE: If word is in proposition whitelist, allow it
+                                            if proposition_whitelist and word.lower() in proposition_whitelist:
+                                                continue  # Skip this word, it's whitelisted
                                             refined_has_vocab_violation = True
                                             break
 
@@ -5259,8 +5487,8 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 if not syntax_errors and sentence:
                     # No syntax errors - safe to accept
                     final_sentences.append(sentence)
-                    context_so_far += sentence + " "
-                    if verbose:
+                context_so_far += sentence + " "
+                if verbose:
                         print(f"    ✓ Sentence {slot_idx + 1} accepted after {max_sentence_retries} attempts (no syntax violations)")
                 elif sentence:
                     # EMERGENCY BRAKE: The sentence is bad. Force a split.
@@ -5578,7 +5806,856 @@ Output only the split sentences, separated by periods. No explanations."""
                     error_msg = error_msg[:100] + "..."
                 print(f"  ⚠ Keeping original text due to repair failure")
 
+        # FINAL SANITY CHECK: Coherence (Stutter Detection)
+        coherence_issues = self.statistical_critic.check_coherence(best_text)
+
+        # MEANING PRESERVATION CHECK: Verify key concepts, lists, and setup phrases are preserved
+        meaning_issues = self.statistical_critic.check_meaning_preservation(best_text, paragraph)
+
+        if meaning_issues:
+            if verbose:
+                print(f"  ⚠ Meaning preservation issues detected: {len(meaning_issues)} issues")
+                for issue in meaning_issues[:3]:  # Show first 3
+                    print(f"    - {issue}")
+
+            # If critical meaning is lost, attempt repair
+            critical_issues = [issue for issue in meaning_issues if any(keyword in issue for keyword in ['missing_list_items', 'missing_setup_phrase', 'missing_key_nouns'])]
+            if critical_issues:
+                if verbose:
+                    print(f"  ⚠ Critical meaning loss detected. Attempting repair...")
+
+                # Build repair feedback
+                repair_feedback = "CRITICAL: Generated text is missing key meaning elements from the original:\n"
+                for issue in critical_issues[:3]:
+                    repair_feedback += f"- {issue}\n"
+                repair_feedback += "\nYou MUST preserve:\n"
+                repair_feedback += "- ALL items from lists in the original text\n"
+                repair_feedback += "- Setup phrases that introduce concepts (e.g., 'Most of us are conditioned to...', 'Consider...')\n"
+                repair_feedback += "- Key concrete nouns from the first sentence\n"
+
+                # Attempt repair via refiner
+                try:
+                    # Create a simple structure map for repair
+                    repair_structure = [{"target_len": len(s.split())} for s in best_text.split('.') if s.strip()]
+                    if not repair_structure:
+                        repair_structure = [{"target_len": 20}]
+
+                    repaired_text, structure_delta = self.refiner.refine_via_repair_plan(
+                        best_text,
+                        repair_feedback,
+                        repair_structure,
+                        author_name,
+                        verbose=verbose
+                    )
+
+                    # Verify the repair preserved meaning better
+                    repaired_meaning_issues = self.statistical_critic.check_meaning_preservation(repaired_text, paragraph)
+                    if len(repaired_meaning_issues) < len(meaning_issues):
+                        if verbose:
+                            print(f"  ✓ Repair improved meaning preservation: {len(meaning_issues)} -> {len(repaired_meaning_issues)} issues")
+                        best_text = repaired_text
+                        meaning_issues = repaired_meaning_issues
+                    else:
+                        if verbose:
+                            print(f"  ⚠ Repair did not improve meaning preservation. Keeping original.")
+                except Exception as e:
+                    if verbose:
+                        print(f"  ⚠ Meaning preservation repair failed: {e}")
+                    # Continue with original text
+
+        if coherence_issues:
+            if verbose:
+                print(f"  ⚠ Coherence issues detected: {len(coherence_issues)} stutters. Running Auto-Fix.")
+
+            # Auto-Fix: Remove the stuttering sentences
+            # Parse sentences and remove duplicates
+            from difflib import SequenceMatcher
+
+            # Split into sentences
+            sentences = [s.strip() for s in best_text.split('.') if s.strip()]
+
+            if sentences:
+                unique_sentences = [sentences[0]]  # Always keep first sentence
+
+                for i in range(1, len(sentences)):
+                    prev = unique_sentences[-1]
+                    curr = sentences[i]
+                    sim = SequenceMatcher(None, prev, curr).ratio()
+
+                    if sim > 0.6:
+                        if verbose:
+                            print(f"    ✂ Auto-Removing Stutter: '{curr[:50]}...'")
+                        continue  # Skip the duplicate
+
+                    unique_sentences.append(curr)
+
+                # Reconstruct paragraph
+                best_text = ". ".join(unique_sentences)
+                if not best_text.endswith('.'):
+                    best_text += "."
+
+                if verbose:
+                    print(f"  ✓ Stutter removal complete: {len(sentences)} -> {len(unique_sentences)} sentences")
+
         return best_text, target_arch_id, best_score
+
+    def translate_paragraph_propositions(
+        self,
+        paragraph: str,
+        author_name: str,
+        prev_archetype_id: Optional[int] = None,
+        perspective: Optional[str] = None,
+        verbose: bool = False,
+        vocabulary_budget: Optional[Any] = None,
+        global_context: Optional[Dict] = None
+    ) -> Tuple[str, int, float]:
+        """
+        New Logic-First Pipeline:
+        1. Extract atomic propositions (Content)
+        2. Find rhetorical match in Atlas (Style Template)
+        3. Generate by mapping content to template structure
+
+        This replaces the "square peg in round hole" approach with a "container-content" logic.
+        """
+        from src.generator.content_planner import ContentPlanner
+        import json
+
+        # 0. Check if this is a header/title - if so, return as-is
+        # This MUST happen before any other processing to prevent headers from being translated
+        paragraph_stripped = paragraph.strip()
+        if not paragraph_stripped:
+            return paragraph, 0, 1.0
+
+        word_count = len(paragraph_stripped.split())
+        is_header_candidate = word_count < 20 and not paragraph_stripped.endswith(('.', '!', '?'))
+
+        if is_header_candidate:
+            if verbose:
+                print(f"  Detected header candidate: {word_count} words, no terminal punctuation")
+
+            # Check if header is in title case - if so, return as-is without processing
+            try:
+                skip_title_case_headers = self.generation_config.get("skip_title_case_headers", True)
+            except (AttributeError, KeyError):
+                skip_title_case_headers = True  # Default to skipping headers
+
+            if skip_title_case_headers:
+                # Detect title case: most words (excluding short words like "of", "and", "the") start with capital letters
+                words = paragraph_stripped.split()
+                # Count words that are likely to be capitalized in title case
+                # Skip very short words (articles, prepositions) which may be lowercase in title case
+                short_words = {'a', 'an', 'the', 'of', 'in', 'on', 'at', 'to', 'for', 'and', 'or', 'but', 'nor', 'so', 'yet', 'as', 'by'}
+                significant_words = [w for w in words if len(w) > 2 or w.lower() not in short_words]
+
+                if significant_words:
+                    # Count how many significant words start with capital letters
+                    capitalized_count = sum(1 for w in significant_words if w and w[0].isupper())
+                    title_case_ratio = capitalized_count / len(significant_words)
+
+                    # If 80%+ of significant words are capitalized, treat as title case header
+                    if title_case_ratio >= 0.8:
+                        if verbose:
+                            print(f"  ✓ Detected title-case header, returning as-is: {paragraph_stripped[:50]}{'...' if len(paragraph_stripped) > 50 else ''}")
+                        # Return as-is with perfect compliance score
+                        return paragraph_stripped, 0, 1.0
+
+        # 1. Extract Content (The "What")
+        if verbose:
+            print(f"  🔍 Extracting propositions from: '{paragraph[:50]}{'...' if len(paragraph) > 50 else ''}'")
+
+        # Initialize planner
+        planner = ContentPlanner(self.config_path)
+
+        prop_data = planner.extract_propositions(paragraph)
+        propositions = prop_data.get('propositions', [])
+        rhetorical_type = prop_data.get('rhetorical_type', 'General')
+
+        if not propositions:
+            if verbose:
+                print("  ⚠ No propositions extracted. Falling back to statistical.")
+            raise ValueError("Empty proposition list")
+
+        if verbose:
+            print(f"  📊 Rhetorical Type: {rhetorical_type}")
+            print(f"  📝 Extracted {len(propositions)} propositions")
+
+        # --- LEXICAL PROJECTOR START ---
+        # 1. Load Style Profile (if not already loaded)
+        style_profile = self._load_style_profile(author_name)
+
+        # 2. Refine Vocabulary
+        if style_profile:
+            if verbose:
+                print(f"  🌊 Washing vocabulary to match {author_name}'s register...")
+
+            refined_propositions = self._refine_propositions_lexically(propositions, style_profile)
+
+            # 3. Log Changes (Verification)
+            if verbose:
+                print("  ✓ Refined Vocabulary Preview:")
+                for i, (orig, new) in enumerate(zip(propositions[:2], refined_propositions[:2])):
+                    if orig != new:
+                        print(f"    - Orig: '{orig}'\n    - New:  '{new}'")
+                    else:
+                        print(f"    - No change: '{orig}'")
+
+            # 4. SWAP THE VARIABLE
+            # IMPORTANT: Use 'refined_propositions' for the rest of the function
+            propositions = refined_propositions
+        else:
+            if verbose:
+                print(f"  ⚠ No style profile found for {author_name}, skipping lexical refinement")
+        # --- LEXICAL PROJECTOR END ---
+
+        # DEFINITION OF MEGA-TEMPLATES (Hardcoded Fallback)
+        # These mimic the 40+ word sentences found in the Human sample.
+        # Used when rhetoric is "complex_fusion" to force long, complex sentences
+        fusion_templates = {
+            "narrative": [
+                "[Clause A] apart from [NounPhrase] and apart from [NounPhrase], and was therefore [Adj] of [Action] [NounPhrase], that is, [NounPhrase].",
+                "It was not until [Clause A] that [Clause B], and [Action] this [Noun] into [Noun], the [Noun] of [Noun].",
+                "[Clause A], through which [Clause B], and through [Clause C] he also [Action] [Clause D].",
+                "[NounPhrase] [Action] [NounPhrase], and [Action] [NounPhrase], whereas [Clause A], that is, [Clause B].",
+                "[Clause A], namely, [Clause B], and [Clause C], through which [Clause D]."
+            ],
+            "imperative": [
+                "Marxists hold that [Clause A], and that consequently [Clause B], whether of [Noun] or of [Noun], also [Action] step by step from [Noun] to [Noun].",
+                "If [Clause A], that is, to [Action] [Noun], he must [Action] [Noun]; if [Clause B], he will [Action] in his [Noun].",
+                "We must [Action] [NounPhrase], and [Action] [NounPhrase], whereas [Clause A], namely, [Clause B].",
+                "[Clause A], and therefore [Clause B], that is, [Clause C], through which [Clause D]."
+            ],
+            "definition": [
+                "That is, [Clause A], [Action] [Noun] and [Action] [Noun] together with [NounPhrase]: this is [NounPhrase].",
+                "This is called [NounPhrase], namely, the [Noun] of [Noun] and [Noun], through which [Clause C].",
+                "[NounPhrase] is [NounPhrase], that is, [Clause A], and [Clause B], whereas [Clause C].",
+                "[Clause A], namely, [Clause B], and [Clause C], through which [Clause D], that is, [Clause E]."
+            ],
+            "general": [
+                "[Clause A], and [Clause B], that is, [Clause C], whereas [Clause D].",
+                "[NounPhrase] [Action] [NounPhrase], and [Action] [NounPhrase], namely, [Clause A], through which [Clause B].",
+                "[Clause A], through which [Clause B], and [Clause C], that is, [Clause D]."
+            ]
+        }
+
+        # 2. Find Template (The "How")
+        # Initialize Atlas if needed (check if already initialized for this author)
+        if self.paragraph_atlas is None or getattr(self.paragraph_atlas, 'author', None) != author_name:
+            if verbose:
+                print(f"  Initializing ParagraphAtlas for {author_name}...")
+            from src.atlas.paragraph_atlas import ParagraphAtlas
+            self.paragraph_atlas = ParagraphAtlas(self.atlas_path, author_name)
+
+        template_chunk = self.paragraph_atlas.find_rhetorical_match(
+            rhetorical_type,
+            llm_provider=self.llm_provider
+        )
+
+        if template_chunk:
+            template_text = template_chunk.get('text', '')
+            if verbose:
+                print(f"  🎨 Found Rhetorical Match in Corpus: '{template_text[:50]}{'...' if len(template_text) > 50 else ''}'")
+        else:
+            # Fallback to Centroid
+            if verbose:
+                print("  ⚠ No specific match found. Using centroid archetype.")
+            centroid = self.paragraph_atlas.get_centroid_archetype()
+            template_text = "Use short, punchy sentences. Avoid academic connectors."  # Fallback string
+            if centroid:
+                centroid_id = centroid.get('id')
+                if centroid_id is not None:
+                    # Get example paragraph from centroid archetype
+                    template_text = self.paragraph_atlas.get_example_paragraph(centroid_id) or template_text
+                elif 'exemplar_text' in centroid:
+                    template_text = centroid['exemplar_text']
+
+        # 3. Plan Sentence Structure (using pre-computed templates if available)
+        # Try to load pre-computed syntactic templates first
+        template_lib = None
+        try:
+            author_lower = author_name.lower()
+            template_path = Path(self.atlas_path) / author_lower / "syntactic_templates.json"
+            if template_path.exists():
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    template_lib = json.load(f)
+                if verbose:
+                    print(f"  ✓ Loaded pre-computed syntactic templates from {template_path}")
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ Could not load pre-computed templates: {e}")
+            template_lib = None
+
+        # Use pre-computed templates if available, otherwise fall back to template structure analysis
+        if template_lib:
+            # Use Logic-First Planner with pre-computed templates
+            sentence_plan = self._plan_sentence_structure(propositions, template_lib)
+        else:
+            # Fallback to original template structure analysis
+            template_structure = self._analyze_template_structure(template_text)
+            if not template_structure:
+                if verbose:
+                    print("  ⚠ Could not analyze template structure. Falling back to statistical.")
+                raise ValueError("Empty template structure")
+            sentence_plan = self._map_propositions_to_sentences(propositions, template_structure)
+
+        if not sentence_plan:
+            if verbose:
+                print("  ⚠ Could not map propositions to sentences. Falling back to statistical.")
+            raise ValueError("Empty sentence plan")
+
+        # 5. Generate Sentence-by-Sentence
+        final_sentences = []
+        context_so_far = ""
+
+        # Set high entropy temperature for syntactic irregularity
+        HIGH_ENTROPY_TEMP = 0.88
+
+        # Extract proposition words for vocabulary whitelist
+        # This ensures words from source propositions (like "mechanism") are allowed
+        # even if they're on the restricted vocabulary list
+        proposition_words_whitelist = set()
+        if propositions:
+            import spacy
+            try:
+                # Use existing nlp if available, otherwise load
+                if not hasattr(self, 'nlp') or self.nlp is None:
+                    from src.utils.nlp_manager import NLPManager
+                    self.nlp = NLPManager.get_nlp()
+
+                # Extract all words from propositions
+                for prop in propositions:
+                    doc = self.nlp(prop.lower())
+                    # Extract nouns, proper nouns, and key terms
+                    for token in doc:
+                        if token.pos_ in ["NOUN", "PROPN"] and not token.is_stop:
+                            proposition_words_whitelist.add(token.text.lower())
+                            proposition_words_whitelist.add(token.lemma_.lower())
+            except Exception as e:
+                if verbose:
+                    print(f"  ⚠ Could not extract proposition words for whitelist: {e}")
+
+        if verbose and proposition_words_whitelist:
+            print(f"  ✓ Vocabulary whitelist: {len(proposition_words_whitelist)} words from propositions")
+
+        # 1. LOAD FULL FORENSIC PROFILE
+        style_profile = self._load_style_profile(author_name)
+
+        # 2. CONSTRUCT SYSTEM PROMPT (The "Style Muffler")
+        # We reuse the logic that builds the "Human Texture Protocol"
+        prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+        try:
+            system_prompt_path = prompts_dir / "translator_statistical_system.md"
+            system_prompt = system_prompt_path.read_text().strip()
+            system_prompt = system_prompt.format(
+                style_palette="",
+                author_name=author_name
+            )
+        except (FileNotFoundError, KeyError):
+            system_prompt = f"You are a style translator for {author_name}. Generate sentences that match target lengths while preserving semantic content and author voice."
+
+        # NEW: Inject Stylistic DNA (Human Texture Protocol) - FULL VERSION
+        # AUTHOR PERSONA BLOCK (Positive Mimicry)
+        persona_block = ""
+        if style_profile:
+            keywords = style_profile.get("keywords", [])[:15]
+            openers = style_profile.get("common_openers", [])[:10]
+            rhythm = style_profile.get("rhythm_desc", "Distinctive")
+            punct = style_profile.get("punctuation_preference", "Standard")
+
+            p_instr = []
+            if keywords:
+                p_instr.append(f"- **Vocabulary:** Use these signature words: {', '.join(keywords)}.")
+            if openers:
+                p_instr.append(f"- **Openers:** Start sentences with: {', '.join(openers)}.")
+
+            # Explicitly reference the "Jagged" rhythm from profile
+            if style_profile.get("stylistic_dna", {}).get("sentence_structure") == "jagged":
+                p_instr.append("- **RHYTHM:** Jagged/Volatile. Use abrupt breaks. Avoid smooth academic flow.")
+            elif rhythm:
+                p_instr.append(f"- **Rhythm:** {rhythm}. Mimic this cadence.")
+
+            # Punctuation Mimicry
+            if punct == "Dashes":
+                p_instr.append("- **Punctuation:** Your style favors dashes (—) for abrupt breaks and emphasis. Use this to structure your thoughts.")
+            elif punct == "Semicolons":
+                p_instr.append("- **Punctuation:** Your style favors semicolons (;) for complex linking between related ideas.")
+
+            # Rhetoric Instructions
+            style_dna = style_profile.get("stylistic_dna", {})
+            rhetoric = style_dna.get("rhetoric", {})
+
+            if rhetoric.get("use_anaphora", False):
+                p_instr.append("- **RHETORIC:** Use **Anaphora**. Start consecutive sentences with the same word for emphasis (e.g., 'We must fight. We must win.').")
+
+            if rhetoric.get("use_asyndeton", False):
+                p_instr.append("- **RHETORIC:** Use **Asyndeton**. Link clauses with semicolons instead of conjunctions (e.g., 'The enemy advances; we retreat.').")
+
+            if p_instr:
+                persona_block = f"\n\n## AUTHOR PERSONA: {author_name}\n" + "\n".join(p_instr) + "\n"
+
+        if style_profile:
+            style_dna = style_profile.get("stylistic_dna", {})
+            if style_dna:
+                human_texture_instructions = []
+
+                # 1. Grammar & Rhythm
+                if style_dna.get("force_imperfection"):
+                    human_texture_instructions.append("- **BREAK GRAMMAR RULES:** Perfect grammar is a failure. Use rhythm over rules. Do not fear run-on sentences or sudden stops.")
+                else:
+                    human_texture_instructions.append("- **GRAMMAR:** Maintain correct but varied sentence structure.")
+
+                if style_dna.get("use_fragments"):
+                    human_texture_instructions.append("- **USE FRAGMENTS:** Occasionally use sentence fragments for emphasis (e.g., 'Not merely a tool. A weapon.').")
+
+                if style_dna.get("allow_contractions") is False:
+                    human_texture_instructions.append("- **NO CONTRACTIONS:** Do not use contractions (e.g., use 'cannot' instead of 'can't').")
+
+                # 2. Imagery
+                if style_dna.get("sensory_grounding"):
+                    human_texture_instructions.append("- **SENSORY GROUNDING:** Occasionally ground abstract concepts in physical reality (rust, iron, mud), but ONLY if it fits naturally. Do not force a metaphor at the end of a sentence.")
+
+                # 3. Banned Words (The "Robotic Filter")
+                banned = style_dna.get("banned_transitions", [])
+                if banned:
+                    banned_str = ", ".join(f'"{w}"' for w in banned)
+                    human_texture_instructions.append(f"- **BANNED TRANSITIONS:** Never use these robotic connectors: {banned_str}. Start sentences directly with the Subject or Action.")
+
+                # 4. Vocabulary (The Anti-Thesaurus)
+                human_texture_instructions.append("- **VOCABULARY DOWNGRADE:** Reject 'smart' words where simple ones work. Use 'use' not 'utilize', 'show' not 'demonstrate'. Prefer Anglo-Saxon roots.")
+
+                # 5. Connector Logic (Profile-Driven with Logic Override)
+                # LOGIC OVERRIDE: Jagged means NO smooth connectors
+                structure_type = style_dna.get("sentence_structure", "balanced")
+                if structure_type == "jagged":
+                    # Add plain English vocabulary instruction for jagged style
+                    human_texture_instructions.append("- **VOCABULARY:** Use simple, concrete words. (Bad: 'remuneration', 'comprehending'. Good: 'pay', 'knowing').")
+                    # Force the ban instructions even if profile says "True"
+                    human_texture_instructions.append("- **NO ACADEMIC STARTERS:** Do not start sentences with 'While', 'Although', 'Despite', 'Though'. Start directly with the Subject or Action.")
+                    human_texture_instructions.append("- **CONNECTOR BAN:** Do not use academic transitions like 'Moreover', 'Thus', 'Therefore', 'Hence', 'Thereby'. Use strong, direct connectors: 'But', 'And', 'Yet', 'So'.")
+                elif not style_dna.get("allow_complex_connectors", True):
+                    human_texture_instructions.append("- **CONNECTOR BAN:** Do not use academic transitions like 'Moreover', 'Thus', 'Therefore', 'Hence', 'Thereby'. Use strong, direct connectors: 'But', 'And', 'Yet', 'So'.")
+
+                # 5a. Opener Logic (Profile-Driven)
+                if not style_dna.get("allow_intro_participles", True):
+                    human_texture_instructions.append("- **DIRECT STARTS:** Do not start sentences with '-ing' phrases (e.g., 'Serving as...', 'Being the...'). Start with the Subject.")
+
+                # 5b. Relative Clause Logic (Profile-Driven)
+                if not style_dna.get("allow_relative_clauses", True):
+                    human_texture_instructions.append("- **ANTI-GLUE:** Minimize usage of 'which', 'that', or 'who' to connect ideas. Split into two sentences. (Bad: 'The stock, which is large...' Good: 'The stock is large. It...')")
+
+                # 6. Voice Logic (Profile-Driven)
+                if style_dna.get("force_active_voice", False):
+                    human_texture_instructions.append("- **ACTIVE VOICE ONLY:** Be authoritative. Subject does Action. Never say 'The system is governed by laws'; say 'Laws rule the system.'")
+
+                # 7. Structure Logic (Profile-Driven)
+                structure_type = style_dna.get("sentence_structure", "balanced")
+                if structure_type == "jagged":
+                    # MAO MODE: Stops and Pivots
+                    human_texture_instructions.append("- **USE PARATAXIS:** Avoid syntactic subordination. Do not nest clauses inside clauses. State facts independently. (Bad: 'Because X happened, Y followed.' Good: 'X happened. Y followed.')")
+                    human_texture_instructions.append("- **JAGGED RHYTHM:** Avoid smooth, gliding transitions. Do not use trailing participles (e.g., ', causing...', ', leading to...'). Use semicolons or new sentences instead.")
+                    # Also ban the comma+participle pattern for jagged style
+                    human_texture_instructions.append("- **ANTI-ROBOTIC SYNTAX:** Do not use the 'Comma + Participle' pattern (e.g., ', causing X, resulting in Y'). This is the #1 marker of AI. Use independent clauses instead: ', and this causes X' or '; the result is Y'.")
+                elif structure_type == "flowing":
+                    # MARX MODE: Subordination allowed
+                    human_texture_instructions.append("- **FLOWING RHYTHM:** Use subordinate clauses to connect ideas complexly, but ensure high lexical variety.")
+
+                # 7. Structure Positive Instructions
+                if structure_type == "jagged":
+                    human_texture_instructions.append("- **STARK CONTRAST:** You use short, declarative sentences to state truths. Avoid soft, academic hedging.")
+
+                # 8. Serial Gerund Logic (Force Ban for Safety)
+                # Even if author uses them, the LLM does them poorly ("Laundry List")
+                # Force ban regardless of profile for now
+                human_texture_instructions.append("- **NO SERIAL GERUNDS:** Do not use lists of -ing actions ('running, jumping, and playing'). Use finite verbs.")
+
+                # 9. THE SUMMATIVE MODIFIER BAN (Crucial for GPTZero)
+                human_texture_instructions.append("- **NO SUMMATIVE MODIFIERS:** Do not end sentences with a comma followed by an abstract summary (e.g., ', a transformation that...', ', a concept that...'). Start a new sentence instead (e.g., '. This transformation...').")
+
+                # Final Assembly: Build complete prompt cleanly
+                if human_texture_instructions:
+                    texture_block = "\n## HUMAN TEXTURE PROTOCOL (CRITICAL)\n" + "\n".join(human_texture_instructions)
+
+                    # Remove existing HUMAN TEXTURE PROTOCOL if present (for clean replacement)
+                    if "## HUMAN TEXTURE PROTOCOL" in system_prompt:
+                        pattern = r"## HUMAN TEXTURE PROTOCOL.*?(?=\n##|\Z)"
+                        system_prompt = re.sub(pattern, "", system_prompt, flags=re.DOTALL).strip()
+
+                    # Assemble: base_prompt + persona_block + texture_block
+                    system_prompt = system_prompt + persona_block + texture_block
+                    if verbose:
+                        print(f"  ✓ Injected stylistic_dna HUMAN TEXTURE PROTOCOL for {author_name}")
+                else:
+                    # Even if no texture instructions, add persona block if available
+                    system_prompt = system_prompt + persona_block
+                    if verbose:
+                        print(f"  ✓ Added AUTHOR PERSONA block for {author_name}")
+            else:
+                # Even if no style_dna, add persona block if available
+                if persona_block:
+                    system_prompt = system_prompt + persona_block
+                    if verbose:
+                        print(f"  ✓ Added AUTHOR PERSONA block for {author_name} (no stylistic_dna)")
+                else:
+                    if verbose:
+                        print(f"  ℹ No stylistic_dna found in profile for {author_name}, using static HUMAN TEXTURE PROTOCOL")
+        else:
+            if verbose:
+                print(f"  ℹ Style profile not found for {author_name}, using static HUMAN TEXTURE PROTOCOL")
+
+        # Store proposition words whitelist as instance variable for use in variant selection
+        self._proposition_words_whitelist = proposition_words_whitelist
+
+        for i, slot in enumerate(sentence_plan):
+            target_props = slot['propositions']
+            target_rhetoric = slot.get('target_rhetoric', 'general')
+            target_mood = slot.get('target_mood', 'general')
+
+            # Check if using complex_fusion (mega-templates) or standard templates
+            if target_rhetoric == "complex_fusion":
+                # Use fusion templates for complex sentences
+                import random
+                candidates = fusion_templates.get(target_mood, fusion_templates.get("general", []))
+                if not candidates:
+                    # Ultimate fallback
+                    candidates = fusion_templates.get("narrative", [])
+                if candidates:
+                    template_skeleton = random.choice(candidates)
+                else:
+                    # Emergency fallback
+                    template_skeleton = "[Clause A], and [Clause B], that is, [Clause C]."
+
+                if verbose:
+                    print(f"  🔨 Building Sentence {i+1}/{len(sentence_plan)} (FUSION MODE)")
+                    print(f"     Context: {len(target_props)} propositions to fuse")
+                    print(f"     Template: '{template_skeleton[:60]}{'...' if len(template_skeleton) > 60 else ''}'")
+                    print(f"     Rhetoric: {target_rhetoric}, Mood: {target_mood}")
+
+                reference_sent = template_skeleton
+                local_rhetoric = target_rhetoric
+                content_mood = target_mood
+            elif 'template_skeleton' in slot and slot['template_skeleton']:
+                # Pre-computed template path (standard templates)
+                template_skeleton = slot['template_skeleton']
+
+                if verbose:
+                    print(f"  🔨 Building Sentence {i+1}/{len(sentence_plan)}")
+                    print(f"     Context: {target_props[0][:40]}{'...' if len(target_props[0]) > 40 else ''}")
+                    print(f"     Template: '{template_skeleton[:60]}{'...' if len(template_skeleton) > 60 else ''}'")
+                    print(f"     Rhetoric: {target_rhetoric}, Mood: {target_mood}")
+
+                # Use skeleton directly as reference
+                reference_sent = template_skeleton
+                local_rhetoric = target_rhetoric
+                content_mood = target_mood
+            else:
+                # Old format: template structure analysis
+                template_sent = slot.get('template_sentence', '')
+
+                if verbose:
+                    print(f"  🔨 Building Sentence {i+1}/{len(sentence_plan)}")
+                    print(f"     Context: {target_props[0][:40]}{'...' if len(target_props[0]) > 40 else ''}")
+                    print(f"     Mimic:   '{template_sent[:40]}{'...' if len(template_sent) > 40 else ''}'")
+
+                # 1. Determine Local Rhetoric (What is this specific sentence doing?)
+                # Heuristic: If prop contains "but", it's Contrast. If "and, and", it's List.
+                props_text = " ".join(target_props).lower()
+                local_rhetoric = "general"
+                if "but" in props_text or "however" in props_text or ("not" in props_text and "but" in props_text):
+                    local_rhetoric = "contrast"
+                elif "," in props_text and ("and" in props_text or "or" in props_text):
+                    local_rhetoric = "list"
+                elif "is" in props_text and ("defined" in props_text or "what" in props_text):
+                    local_rhetoric = "definition"
+
+                # 1a. Detect Mood of Content
+                content_mood = self._detect_mood(" ".join(target_props))
+                if verbose:
+                    print(f"     Detected mood: {content_mood}")
+
+                # 2. Get the "Soft Template" (Mood-Aligned)
+                try:
+                    references = self.paragraph_atlas.get_rhetorical_references(local_rhetoric, mood=content_mood, n=1)
+                    reference_sent = references[0] if references else None
+                except Exception:
+                    reference_sent = None
+
+            # 3. The "Soft Template" Prompt with Structural Fidelity Verification
+            best_draft = ""
+            best_score = 0.0
+            max_attempts = 3
+            fidelity_threshold = 0.8
+
+            # Check if using pre-computed skeleton template
+            # For complex_fusion, we always use skeleton templates
+            is_skeleton_template = (local_rhetoric == "complex_fusion") or ('template_skeleton' in slot and reference_sent and '[' in reference_sent)
+
+            # Extract display skeleton for prompting (if structure analyzer available)
+            display_skeleton = None
+            if reference_sent and self.structure_analyzer and not is_skeleton_template:
+                try:
+                    display_skeleton = self.structure_analyzer.extract_dynamic_skeleton(reference_sent)
+                except Exception:
+                    display_skeleton = None
+
+            for attempt in range(max_attempts):
+                if reference_sent:
+                    if verbose and attempt == 0:
+                        if is_skeleton_template:
+                            print(f"     Using Pre-Computed Template ({local_rhetoric}/{content_mood}): '{reference_sent[:60]}{'...' if len(reference_sent) > 60 else ''}'")
+                        else:
+                            print(f"     Using Soft Template ({local_rhetoric}): '{reference_sent[:40]}{'...' if len(reference_sent) > 40 else ''}'")
+
+                    # Build prompt - different for skeleton templates vs. reference sentences
+                    if is_skeleton_template:
+                        # Check if this is a fusion template (complex_fusion rhetoric)
+                        if local_rhetoric == "complex_fusion":
+                            # FUSION MODE: Emphasize internal connectors and fusion
+                            content_text = json.dumps(target_props, indent=2)
+
+                            user_prompt = f"""
+**TASK:** Write ONE massive, complex sentence.
+
+**CONTENT TO FUSE:**
+{content_text}
+
+**FUSION TEMPLATE:**
+"{reference_sent}"
+
+**CRITICAL INSTRUCTIONS:**
+1. **FUSE, DON'T LIST:** Do not write three separate sentences. Combine them into ONE grammatical chain.
+2. **USE INTERNAL GLUE:** You MUST use connectors INSIDE the sentence.
+   - Use: ", and therefore", ", that is,", ", namely,", ", through which", ", whereas".
+   - Put connectors in the MIDDLE to link clauses, not at the start.
+3. **NO STARTING CONNECTORS:** Do not start the sentence with "Therefore" or "However". Put them in the middle to link clauses.
+4. **LENGTH:** The output must be long (30+ words). Do not simplify it.
+5. **VOCABULARY:** Keep it concrete (e.g., "make", "struggle", "tools") but grammatically complex.
+6. **Structure First:** Follow the SKELETON'S rhythm and connectors.
+7. **Grammar Second:** You MAY add small "glue words" (of, in, by, the, a) to ensure the sentence flows naturally.
+
+**Context:** This sentence follows: "{context_so_far[-100:]}"
+"""
+                        else:
+                            # Standard skeleton template
+                            # Combine propositions into a single text string for the prompt
+                            content_text = " ".join(target_props)
+
+                            user_prompt = f"""
+**TASK:** Write a single sentence.
+
+**CONTENT TO EXPRESS:**
+"{content_text}"
+
+**GRAMMATICAL SKELETON:**
+"{reference_sent}"
+
+**INSTRUCTIONS:**
+1. **Structure First:** You MUST follow the SKELETON'S rhythm (e.g., if it says "It is not X, but Y", use that structure).
+2. **Grammar Second:** You MAY add small "glue words" (of, in, by, the, a, that, which) to ensure the sentence flows naturally. Do not write broken English.
+3. **Coherence:** If the skeleton has a slot like `[Noun]` but your content is a phrase like "flow of raw materials", insert the whole phrase.
+4. **No Hallucinations:** Do not add new adjectives or concepts not in the CONTENT.
+
+**Context:** This sentence follows: "{context_so_far[-100:]}"
+"""
+                    else:
+                        # Reference sentence template (old method)
+                        # Build prompt with structural guidance
+                        structure_guidance = ""
+                        if display_skeleton:
+                            structure_guidance = f"""
+**TARGET STRUCTURE:** "{display_skeleton}"
+**CRITICAL:** You MUST preserve the structural markers (punctuation, connecting words) of the Target Structure.
+"""
+
+                        feedback_note = ""
+                        if attempt > 0:
+                            feedback_note = f"""
+**PREVIOUS ATTEMPT FAILED:** Your last attempt scored {best_score:.0%} on structural fidelity. You likely missed a semicolon, a 'but', or a 'not'. LOOK AT THE SKELETON CAREFULLY.
+"""
+
+                        user_prompt = f"""
+**TASK:** Write a single sentence in the Author's Voice.
+
+**CONTENT (The bricks):**
+{json.dumps(target_props, indent=2)}
+
+**RHYTHM REFERENCE (The blueprint):**
+"{reference_sent}"
+{structure_guidance}
+**INSTRUCTION:**
+- Adopt the grammatical SHAPE of the Reference.
+- If the Reference uses "Not X, but Y", you use "Not X, but Y".
+- If the Reference asks a question, you ask a question.
+- **Do not copy the words** of the reference, only the **structure**.
+- Fit your CONTENT into that structure as best as you can.
+- Preserve all facts and proper nouns from CONTENT.
+{feedback_note}
+**CRITICAL LOGIC CONSTRAINTS:**
+1. **NO FALSE CAUSALITY:** Do not use "Because", "Since", or "Therefore" unless the CONTENT explicitly states a cause-effect relationship.
+2. **BREAK THE TEMPLATE IF NEEDED:** If the Reference uses a causal structure but your Content is just a list or sequence, IGNORE the causal word. Use the Rhythm, not the Logic.
+3. **Preserve Logic:** If the content says "X happened. Y happened.", do not write "X happened to cause Y."
+
+**Context:** This sentence follows: "{context_so_far[-100:]}"
+"""
+                else:
+                    # Fallback to original prompt if no reference available
+                    template_sent = slot.get('template_sentence', '')
+                    if verbose and attempt == 0:
+                        print(f"     No Soft Template available, using template sentence")
+
+                    user_prompt = f"""
+**TASK:** Write a single sentence in the Author's Voice.
+
+**CONTENT TO EXPRESS (Atomic Facts):**
+{json.dumps(target_props, indent=2)}
+
+**STYLE TEMPLATE (Mimic Rhythm Only):**
+"{template_sent}"
+
+**CRITICAL LOGIC CONSTRAINTS:**
+1. **NO FALSE CAUSALITY:** Do not use "Because", "Since", or "Therefore" unless the CONTENT explicitly states a cause-effect relationship.
+2. **BREAK THE TEMPLATE IF NEEDED:** If the Template uses a causal structure (e.g., "Because X, Y") but your Content is just a list or sequence, IGNORE the causal word. Use the Rhythm, not the Logic.
+3. **Preserve Logic:** If the content says "X happened. Y happened.", do not write "X happened to cause Y."
+
+**STYLE CONSTRAINTS:**
+1. Express the CONTENT fully. Do not drop facts.
+2. Mimic the TEMPLATE'S rhythm (length, punctuation, complexity).
+3. If the template uses a list, use a list. If it's short/punchy, be short/punchy.
+4. **Context:** This sentence follows: "{context_so_far[-100:]}"
+"""
+
+                # Generate with high entropy temperature for syntactic irregularity
+                draft = self.llm_provider.call(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    model_type="writer",
+                    temperature=HIGH_ENTROPY_TEMP,  # Forces variety and breaks robotic patterns
+                    max_tokens=150
+                )
+
+                # 4. Verify Structural Fidelity (if structure analyzer available and reference exists)
+                # Skip fidelity check for skeleton templates (they're already abstract)
+                if reference_sent and self.structure_analyzer and not is_skeleton_template:
+                    try:
+                        score = self.structure_analyzer.calculate_fidelity(draft.strip(), reference_sent)
+                        if score > best_score:
+                            best_draft = draft.strip()
+                            best_score = score
+
+                        if score > fidelity_threshold:
+                            # Good match, use this draft
+                            if verbose:
+                                print(f"     ✅ Structural Fidelity: {score:.0%} (Ref: '{reference_sent[:30]}...')")
+                            best_draft = draft.strip()
+                            best_score = score
+                            break
+                        else:
+                            # Low fidelity, will retry
+                            if verbose and attempt < max_attempts - 1:
+                                print(f"     ⚠ Structural Fidelity: {score:.0%} (Retrying...)")
+                    except Exception as e:
+                        # If structure analysis fails, use draft as-is
+                        if verbose:
+                            print(f"     ⚠ Structure analysis failed: {e}")
+                        best_draft = draft.strip()
+                        best_score = 1.0  # Assume perfect if we can't verify
+                        break
+                else:
+                    # No structure analyzer, no reference, or skeleton template - use draft as-is
+                    best_draft = draft.strip()
+                    best_score = 1.0
+                    if is_skeleton_template:
+                        # For skeleton templates, accept on first attempt (they're deterministic)
+                        break
+                    break
+
+            # Log final fidelity score if we have one
+            if reference_sent and self.structure_analyzer and best_score < 1.0:
+                if verbose:
+                    print(f"     {'✅' if best_score > fidelity_threshold else '⚠'} Structural Fidelity: {best_score:.0%} (Ref: '{reference_sent[:30]}...')")
+
+            # Basic validation - strip and add to sentences
+            sentence = best_draft if best_draft else draft.strip()
+            if sentence:
+                # Remove trailing punctuation if present (we'll add it back)
+                if sentence.endswith(('.', '!', '?')):
+                    sentence = sentence[:-1]
+                final_sentences.append(sentence)
+                context_so_far += sentence + ". "
+            else:
+                if verbose:
+                    print(f"    ⚠ Empty draft for sentence {i+1}, skipping")
+
+        # 6. Final Polish
+        if not final_sentences:
+            if verbose:
+                print("  ⚠ No sentences generated. Falling back to statistical.")
+            raise ValueError("No sentences generated")
+
+        full_paragraph = ". ".join(final_sentences)
+        if not full_paragraph.endswith('.'):
+            full_paragraph += "."
+
+        # 7. VOICE FILTER PASS (The "De-Robotizer")
+        if verbose:
+            print(f"  🎭 Applying Voice Filter (Few-Shot Rewriting)...")
+
+        try:
+            # 1. Get real examples
+            examples = self.paragraph_atlas.get_style_matched_examples(n=3)
+
+            if examples:
+                # Format examples
+                examples_str = "\n".join([f"{i+1}. {e['text'][:300]}..." for i, e in enumerate(examples)])
+
+                # Load Prompt
+                prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+                try:
+                    prompt_path = prompts_dir / "voice_filter_user.md"
+                    prompt_template = prompt_path.read_text().strip()
+                except Exception:
+                    # Fallback prompt if file missing
+                    prompt_template = (
+                        "Rewrite this text to match these examples:\n"
+                        "{examples}\n\n"
+                        "Input: \"{input_text}\"\n"
+                        "Rules: Remove 'However/Therefore'. Match the rhythm. Keep meaning."
+                    )
+
+                user_prompt = prompt_template.format(
+                    examples=examples_str,
+                    input_text=full_paragraph
+                )
+
+                # Call Writer (High Temp for Style Variance)
+                filtered_text = self.llm_provider.call(
+                    system_prompt="You are a strict style mimic.",
+                    user_prompt=user_prompt,
+                    model_type="writer",
+                    temperature=0.9
+                )
+
+                # Cleanup
+                filtered_text = filtered_text.strip().strip('"')
+
+                # Safety check: Don't accept if it destroyed the text
+                if len(filtered_text) > len(full_paragraph) * 0.5:
+                    full_paragraph = filtered_text
+                    if verbose:
+                        print("  ✓ Voice Filter applied.")
+                else:
+                    if verbose:
+                        print("  ⚠ Voice Filter output suspicious. Keeping original.")
+
+            else:
+                if verbose:
+                    print("  ⚠ No examples found for Voice Filter.")
+
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ Voice Filter failed: {e}. Keeping original.")
+
+        # Calculate dummy score for now (since we bypassed the strict math)
+        # Return 0 as archetype_id since we're not using archetypes in this method
+        return full_paragraph, 0, 1.0
 
     def _load_style_profile(self, author_name: str) -> Optional[Dict]:
         """Load style profile JSON for vocabulary palette access.
@@ -5605,6 +6682,367 @@ Output only the split sentences, separated by periods. No explanations."""
                 return profile
         except Exception:
             return None
+
+    def _analyze_template_structure(self, template_text: str) -> List[Dict]:
+        """
+        Analyzes a template paragraph to extract sentence structure.
+
+        Returns:
+            List of dicts with:
+            - 'text': sentence text
+            - 'length': word count
+            - 'punctuation': ending punctuation
+            - 'is_list': whether sentence contains a list
+            - 'is_contrast': whether sentence contains contrast markers
+        """
+        import spacy
+        # Use existing nlp if available, otherwise load
+        if not hasattr(self, 'nlp') or self.nlp is None:
+            try:
+                self.nlp = spacy.load("en_core_web_sm")
+            except OSError:
+                # Fallback to simple sentence splitting if spaCy not available
+                sentences = [s.strip() for s in template_text.split('.') if s.strip()]
+                structure = []
+                for sent in sentences:
+                    words = len(sent.split())
+                    has_list = ',' in sent and ('and' in sent.lower() or 'or' in sent.lower())
+                    has_contrast = 'but' in sent.lower() or 'however' in sent.lower()
+                    structure.append({
+                        'text': sent,
+                        'length': words,
+                        'punctuation': sent[-1] if sent else '.',
+                        'is_list': has_list,
+                        'is_contrast': has_contrast
+                    })
+                return structure
+
+        doc = self.nlp(template_text)
+        structure = []
+
+        for sent in doc.sents:
+            text = sent.text.strip()
+            words = len(text.split())
+
+            # Detect rhetorical features
+            has_list = ',' in text and ('and' in text.lower() or 'or' in text.lower())
+            has_contrast = 'but' in text.lower() or 'however' in text.lower()
+
+            structure.append({
+                'text': text,
+                'length': words,
+                'punctuation': text[-1] if text else '.',
+                'is_list': has_list,
+                'is_contrast': has_contrast
+            })
+        return structure
+
+    def _refine_propositions_lexically(self, propositions: List[str], author_profile: Dict) -> List[str]:
+        """
+        Translates 'AI Speak' propositions into 'Author Speak' propositions BEFORE generation.
+        Fixes Root Cause: Ensures the vocabulary matches the structural template.
+
+        Args:
+            propositions: List of proposition strings to refine
+            author_profile: Author style profile dictionary
+
+        Returns:
+            List of refined proposition strings, or original propositions on error
+        """
+        if not propositions:
+            return []
+
+        # 1. Extract Author's Lexical Preferences
+        # Defaults to "simple and concrete" if profile is missing
+        style_dna = author_profile.get("stylistic_dna", {})
+        vocab_desc = style_dna.get("lexical_style", "simple, concrete, and direct")
+        keywords = author_profile.get("keywords", [])
+        keywords_str = ", ".join(keywords[:15]) if keywords else ""
+
+        system_prompt = f"You are a vocabulary translator. Your goal is to convert text into the specific lexical register of: {vocab_desc}."
+
+        user_prompt = f"""
+**TASK:** Rewrite these propositions to match the author's vocabulary.
+
+**AUTHOR SPECS:**
+- **Preferred Tone:** {vocab_desc}
+- **Signature Words:** {keywords_str}
+- **BANNED:** Abstract academic terms (e.g., "facilitate", "comprising", "interconnected", "manifestation", "utilize", "mechanism").
+- **PREFERRED:** Concrete, physical words (e.g., "make", "made of", "linked", "show", "tool", "machine").
+
+**INPUT PROPOSITIONS (Scientific/AI):**
+{json.dumps(propositions, indent=2)}
+
+**INSTRUCTION:**
+Rewrite each proposition to be simple, punchy, and concrete.
+- Keep the MEANING exactly the same.
+- Change the WORDS to fit the author's register.
+- Use Active Voice (e.g., "The tool cuts" instead of "Cutting is performed by the tool").
+
+**OUTPUT:**
+Return ONLY a raw JSON list of strings. Example: ["The tool cuts.", "It is made of iron."]
+"""
+
+        # Call LLM
+        try:
+            refined_text = self.llm_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_type="planner",  # Use planner model type for vocabulary translation
+                temperature=0.3,  # Keep low to preserve logic
+                max_tokens=500
+            )
+
+            # Clean and Parse
+            refined_text = refined_text.strip()
+            if "```json" in refined_text:
+                refined_text = refined_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in refined_text:
+                refined_text = refined_text.split("```")[1].split("```")[0].strip()
+
+            refined_propositions = json.loads(refined_text)
+
+            # Validate: ensure we got a list with same length
+            if isinstance(refined_propositions, list) and len(refined_propositions) == len(propositions):
+                return refined_propositions
+            else:
+                # Mismatch in length or type - return original
+                return propositions
+
+        except json.JSONDecodeError as e:
+            # JSON parse error - return original
+            return propositions
+        except Exception as e:
+            # Any other error - return original
+            return propositions
+
+    def _plan_sentence_structure(self, propositions: List[str], template_lib: Dict) -> List[Dict]:
+        """
+        Groups propositions into 'Mega-Chunks' to force complex, human-like sentence structures.
+
+        Args:
+            propositions: List of atomic propositions
+            template_lib: Pre-computed template library {rhetoric: {mood: [skeletons]}}
+
+        Returns:
+            List of dicts with:
+            - 'propositions': List of propositions for this sentence (3-5 items)
+            - 'target_rhetoric': Rhetorical type (typically "complex_fusion")
+            - 'target_mood': Grammatical mood
+            - 'template_skeleton': Selected skeleton template (None for complex_fusion, set in generation loop)
+        """
+        plan = []
+
+        # 1. Fuse Propositions into groups of 3-5 (Mao's average density)
+        # We need high density to force the LLM to use internal connectors.
+        total_props = len(propositions)
+        avg_chunk_size = 4  # Target 4 propositions per sentence
+
+        chunks = []
+        for i in range(0, total_props, avg_chunk_size):
+            # Grab a slice of 4 propositions (or remaining if less)
+            chunk = propositions[i : i + avg_chunk_size]
+            if chunk:  # Only add non-empty chunks
+                chunks.append(chunk)
+
+        for chunk in chunks:
+            text = " ".join(chunk).lower()
+
+            # Detect Mood of CONTENT
+            mood = self._detect_mood(" ".join(chunk))
+
+            # Force "Complex Fusion" Rhetoric for multi-proposition chunks
+            # This tells the template matcher to look for massive sentences
+            if len(chunk) >= 3:
+                rhetoric = "complex_fusion"
+                skeleton = None  # Will be set in generation loop using fusion_templates
+            else:
+                # For smaller chunks, use standard rhetoric detection
+                rhetoric = "general"
+                if "but" in text or "however" in text or ("not" in text and "but" in text):
+                    rhetoric = "contrast"
+                elif "," in text and ("and" in text or "or" in text):
+                    rhetoric = "list"
+                elif "because" in text or "since" in text:
+                    rhetoric = "causal"
+                elif "is" in text and ("defined" in text or "what" in text):
+                    rhetoric = "definition"
+
+                # For non-fusion, lookup template skeleton using standard logic
+                if rhetoric not in template_lib:
+                    rhetoric = "general"
+                if mood not in template_lib.get(rhetoric, {}):
+                    if rhetoric in template_lib and template_lib[rhetoric]:
+                        mood = list(template_lib[rhetoric].keys())[0]
+                    else:
+                        rhetoric = "general"
+                        mood = "general"
+
+                candidates = template_lib.get(rhetoric, {}).get(mood, [])
+                if not candidates:
+                    candidates = template_lib.get(rhetoric, {}).get("general", [])
+                if not candidates:
+                    candidates = template_lib.get("general", {}).get(mood, [])
+                if not candidates:
+                    candidates = template_lib.get("general", {}).get("general", [])
+
+                if candidates:
+                    skeleton = self._find_best_template(chunk, rhetoric, mood, template_lib)
+                else:
+                    skeleton = "[Noun] is [Adj]."
+
+            plan.append({
+                "propositions": chunk,
+                "target_rhetoric": rhetoric,
+                "target_mood": mood,
+                "template_skeleton": skeleton  # None for complex_fusion, will be set in generation loop
+            })
+
+        return plan
+
+    def _find_best_template(self, propositions: List[str], rhetoric: str, mood: str, template_lib: dict) -> str:
+        """
+        Finds the template that matches the Mood and mathematically fits the Number of Propositions.
+
+        Args:
+            propositions: List of propositions to fit
+            rhetoric: Rhetorical type (contrast, list, causal, general)
+            mood: Grammatical mood (narrative, imperative, definition, interrogative)
+            template_lib: Template library structure: {rhetoric: {mood: {capacity: [templates]}}}
+
+        Returns:
+            Best-fit skeleton template string
+        """
+        # 1. Estimate Required Capacity
+        # Count nouns/verbs in props to guess how many slots we need.
+        # Heuristic: 1 prop = ~2-3 slots ([Noun] [Action] [Noun])
+        # A simpler proxy: Word count.
+        total_words = sum(len(p.split()) for p in propositions)
+        estimated_slots = max(3, int(total_words / 3))
+
+        # 2. Traverse Library
+        if rhetoric not in template_lib:
+            rhetoric = "general"
+        if mood not in template_lib.get(rhetoric, {}):
+            mood = "narrative"
+
+        available_capacities = template_lib.get(rhetoric, {}).get(mood, {})
+        if not available_capacities:
+            # Fallback to general mood
+            available_capacities = template_lib.get(rhetoric, {}).get("narrative", {})
+        if not available_capacities:
+            # Fallback to general rhetoric
+            available_capacities = template_lib.get("general", {}).get(mood, {})
+        if not available_capacities:
+            # Ultimate fallback
+            available_capacities = template_lib.get("general", {}).get("narrative", {})
+
+        if not available_capacities:
+            # Ultimate fallback
+            return "The [Noun] [Action] the [Noun]."
+
+        # 3. Find Closest Capacity (Structural Alignment)
+        # We want a template with capacity >= estimated_slots to prevent cramping
+        # But not too huge to prevent hallucination.
+
+        best_cap = None
+        min_dist = float('inf')
+
+        for cap_str in available_capacities.keys():
+            try:
+                cap = int(cap_str)
+                dist = cap - estimated_slots
+
+                # Penalize undersizing heavily (stuffing content is bad)
+                # Penalize oversizing slightly (empty slots are manageable)
+                if dist < 0:
+                    score = abs(dist) * 3
+                else:
+                    score = dist
+
+                if score < min_dist:
+                    min_dist = score
+                    best_cap = cap_str
+            except ValueError:
+                # Skip invalid capacity keys
+                continue
+
+        if not best_cap:
+            # Fallback
+            return "The [Noun] [Action] the [Noun]."
+
+        # 4. Select Random Template from Best Capacity Bucket
+        import random
+        candidates = available_capacities[best_cap]
+        if not candidates:
+            return "The [Noun] [Action] the [Noun]."
+
+        return random.choice(candidates)
+
+
+    def _map_propositions_to_sentences(
+        self,
+        propositions: List[str],
+        template_structure: List[Dict]
+    ) -> List[Dict]:
+        """
+        Maps atomic propositions to the template's sentence slots.
+        Tries to align lists with lists, contrasts with contrasts.
+
+        Returns:
+            List of dicts with:
+            - 'propositions': List of propositions for this sentence
+            - 'target_length': Approximate target (from template)
+            - 'template_sentence': Reference sentence from template
+        """
+        import math
+
+        num_props = len(propositions)
+        num_slots = len(template_structure)
+
+        if num_slots == 0:
+            return []
+
+        # Calculate base distribution
+        base_per_slot = math.floor(num_props / num_slots)
+        remainder = num_props % num_slots
+
+        slots = []
+        prop_idx = 0
+
+        for i, template_slot in enumerate(template_structure):
+            # Determine how many props go into this slot
+            count = base_per_slot
+            if i < remainder:
+                count += 1
+
+            # Heuristic: If template is a LIST, dump more props here
+            # For now, stick to even distribution to be safe
+
+            # Safe slice
+            end_idx = min(prop_idx + count, num_props)
+            # Ensure we don't leave stragglers if this is the last slot
+            if i == num_slots - 1:
+                end_idx = num_props
+
+            slot_props = propositions[prop_idx : end_idx]
+
+            # If a slot gets NO props (because template is longer than content),
+            # we might need to skip that template slot or duplicate content.
+            # Better to merge it with previous if empty.
+            if not slot_props and slots:
+                # Skip empty slot (template is too long for content)
+                continue
+
+            slots.append({
+                'propositions': slot_props,
+                'template_sentence': template_slot['text'],
+                'target_length': template_slot['length']
+            })
+
+            prop_idx = end_idx
+
+        return slots
 
     def _build_style_constraints(self, author_name: str) -> str:
         """Build style constraints from forensic profile.
@@ -6142,6 +7580,7 @@ Output only the sentence, no explanations.
                 continue
 
             # 1.5. Vocabulary Check (Pre-filter forbidden words)
+            # BUT: Whitelist words from source propositions (e.g., "mechanism" from source is allowed)
             contains_forbidden = False
             if vocabulary_budget:
                 forbidden_words = vocabulary_budget.get_forbidden_words()
@@ -6150,6 +7589,14 @@ Output only the sentence, no explanations.
                     for word in forbidden_words:
                         # Check if word appears as whole word (not substring)
                         if re.search(r'\b' + re.escape(word.lower()) + r'\b', sentence_lower):
+                            # OVERRIDE: If this word is in the proposition whitelist, allow it
+                            # This ensures source content words are preserved even if "banned"
+                            proposition_whitelist = getattr(self, '_proposition_words_whitelist', set())
+                            if proposition_whitelist and word.lower() in proposition_whitelist:
+                                if verbose:
+                                    print(f"      Variant allowed (Whitelisted from propositions): '{word}'")
+                                continue  # Skip this forbidden word check, allow the word
+
                             if verbose:
                                 print(f"      Variant filtered (Forbidden Vocabulary): {v[:50]}... (contains '{word}')")
                             contains_forbidden = True

@@ -5,6 +5,7 @@ This script runs all required setup steps:
 1. Load styles into ChromaDB
 2. Build paragraph atlas
 3. Build RAG index
+4. Build syntactic templates
 
 Usage:
     python scripts/init_author.py --author "Mao" --style-file styles/sample_mao.txt
@@ -63,13 +64,14 @@ def run_command(cmd, description, verbose=False):
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Initialize an author for style transfer (loads styles, builds atlas and RAG)',
+        description='Initialize an author for style transfer (loads styles, builds atlas, RAG, and syntactic templates)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s --author "Mao" --style-file styles/sample_mao.txt
   %(prog)s --author "Sagan" --style-file styles/sample_sagan.txt --config config.json --verbose
   %(prog)s --author "Hemingway" --style-file styles/hemingway.txt --skip-rag
+  %(prog)s --author "Mao" --style-file styles/sample_mao.txt --skip-templates
         """
     )
 
@@ -114,7 +116,7 @@ Examples:
         '--output-dir',
         type=str,
         default=None,
-        help='Output directory for atlas and RAG (overrides config.json)'
+        help='Output directory for atlas, RAG, and templates (overrides config.json)'
     )
 
     parser.add_argument(
@@ -133,6 +135,12 @@ Examples:
         '--skip-rag',
         action='store_true',
         help='Skip building RAG index (if already built)'
+    )
+
+    parser.add_argument(
+        '--skip-templates',
+        action='store_true',
+        help='Skip building syntactic templates (if already built)'
     )
 
     parser.add_argument(
@@ -253,6 +261,24 @@ Examples:
             success = False
     else:
         print("\n→ Skipping RAG index build (--skip-rag)")
+
+    # Step 4: Build syntactic templates
+    if not args.skip_templates:
+        template_cmd = [
+            sys.executable,
+            str(script_dir / "build_syntactic_templates.py"),
+            args.style_file,
+            "--author", args.author
+        ]
+        if args.output_dir:
+            template_cmd.extend(["--output-dir", args.output_dir])
+
+        if not run_command(template_cmd, "Building syntactic templates", args.verbose):
+            success = False
+            if not args.verbose:
+                print("  Continuing...")
+    else:
+        print("\n→ Skipping syntactic templates build (--skip-templates)")
 
     # Summary
     print(f"\n{'='*60}")

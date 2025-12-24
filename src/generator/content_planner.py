@@ -107,7 +107,10 @@ Output only the content for each slot, one per line. Do not include slot numbers
                 "Your content plan must map STRICTLY to the events present in the Source Text. "
                 "Do NOT invent sequel events, future timelines, abstract theoretical conclusions, "
                 "or generic 'machinery' descriptions to meet a length target. "
-                "If the source text ends, your plan must end."
+                "If the source text ends, your plan must end.\n"
+                "**LOGIC RULE:** If the text introduces a new object or concept (e.g., 'smartphone', 'watch', 'hammer'), "
+                "you MUST explicitly name it in Slot 1 or Slot 2. Do not refer to 'it', 'the device', 'the object', "
+                "or 'the tool' until you have first named the specific object. Definitions and introductions must come before references."
             )
             response = self.llm_provider.call(
                 system_prompt=system_prompt,
@@ -203,6 +206,107 @@ Output only the content for each slot, one per line. Do not include slot numbers
                 # If spaCy not available, return None (check will be skipped)
                 self._nlp = False
         return self._nlp if self._nlp is not False else None
+
+    def extract_propositions(self, text: str) -> Dict[str, any]:
+        """
+        Breaks text into atomic logical beats and classifies rhetorical structure.
+        Crucially, it preserves the LOGICAL FLOW (cause-effect, contrast) between propositions.
+
+        Args:
+            text: Input text to analyze
+
+        Returns:
+            Dict with:
+            - "rhetorical_type": "Contrast" | "List" | "Definition" | "Cause-Effect" | "Narrative" | "General"
+            - "propositions": List of proposition strings with logical connectors preserved
+        """
+        if not text or not text.strip():
+            return {
+                "rhetorical_type": "General",
+                "propositions": []
+            }
+
+        system_prompt = (
+            "You are a logic analyzer. Break the text into atomic propositions and identify the primary rhetorical structure.\n"
+            "CRITICAL RULES:\n"
+            "1. **PRESERVE LOGIC:** Do not just list facts. If A causes B, say 'Because A, B'. If A contrasts B, say 'A, however B'.\n"
+            "2. **PRESERVE NOUNS:** Keep all proper nouns (Marx, Stalin), technical terms (Dialectics), and concrete lists (Lithium, Cobalt) exactly as written.\n"
+            "3. **PRESERVE DEFINITIONS:** If the text defines a term ('X is Y'), that definition must be a proposition.\n"
+            "4. **ATOMICITY:** Each proposition should be one distinct thought/claim.\n"
+            "5. **PRESERVE SETUP PHRASES:** Keep introductory phrases like 'Most of us are conditioned to...', 'Consider...', 'Think of...' as part of propositions."
+        )
+
+        user_prompt = f"""
+Analyze this text: "{text}"
+
+1. List the atomic propositions in logical order.
+   - Format: [Logical Connector] [Proposition Content]
+   - Example: "The phone appears static." -> "However, it is actually a dynamic process." -> "This creates a contradiction."
+   - Preserve logical connectors (However, Because, But, etc.) that show relationships between propositions.
+
+2. Classify the structure as ONE of:
+   - 'Contrast' (It is not X, but Y)
+   - 'List' (It consists of A, B, and C)
+   - 'Definition' (X is defined as Y)
+   - 'Cause-Effect' (Because X, Y happens)
+   - 'Narrative' (First X, then Y)
+   - 'General' (Complex or mixed)
+
+Output JSON: {{ "propositions": ["prop1", "prop2"...], "rhetorical_type": "type" }}
+"""
+
+        try:
+            response = self.llm_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                model_type="editor",
+                require_json=True,
+                temperature=0.3,  # Low temperature for factual extraction
+                max_tokens=1000
+            )
+
+            # Parse JSON response
+            if isinstance(response, str):
+                # Try to extract JSON from response if it's wrapped in markdown or text
+                import re
+                json_match = re.search(r'\{[^{}]*"propositions"[^{}]*\}', response, re.DOTALL)
+                if json_match:
+                    response = json_match.group(0)
+                data = json.loads(response)
+            else:
+                data = response
+
+            # Validate structure
+            if not isinstance(data, dict):
+                raise ValueError("Response is not a dictionary")
+
+            propositions = data.get("propositions", [])
+            rhetorical_type = data.get("rhetorical_type", "General")
+
+            # Validate rhetorical type
+            valid_types = ["Contrast", "List", "Definition", "Cause-Effect", "Narrative", "General"]
+            if rhetorical_type not in valid_types:
+                rhetorical_type = "General"
+
+            # Ensure propositions is a list
+            if not isinstance(propositions, list):
+                propositions = []
+
+            return {
+                "rhetorical_type": rhetorical_type,
+                "propositions": propositions
+            }
+
+        except (json.JSONDecodeError, ValueError, KeyError, Exception) as e:
+            # Fallback: Treat sentences as propositions
+            print(f"Warning: Proposition extraction failed ({e}), using sentence fallback")
+            sentences = [s.strip() for s in text.split('.') if s.strip()]
+            # Remove empty sentences
+            sentences = [s for s in sentences if s]
+            return {
+                "rhetorical_type": "General",
+                "propositions": sentences if sentences else [text]
+            }
 
     def _prune_hallucinated_slots(self, plan: List[str], source_text: str) -> List[str]:
         """

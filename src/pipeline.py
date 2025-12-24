@@ -442,20 +442,39 @@ def process_text(
                         is_first_paragraph = False
                 continue  # Skip restyling for this paragraph
 
-        # Use statistical paragraph generation
-        if verbose:
-            print(f"  Using statistical paragraph generation mode")
+        # Try Proposition-Based Method First
+        method_used = "statistical"
+        try:
+            if verbose:
+                print(f"  🔹 Using proposition-based generation mode")
 
-        # Translate paragraph using statistical archetype generation
-        generated_paragraph, arch_id, compliance_score = translator.translate_paragraph_statistical(
-            paragraph,
-            author_name,
-            prev_archetype_id=prev_archetype_id,
-            perspective=perspective,
-            verbose=verbose,
-            global_context=global_context,
-            vocabulary_budget=vocabulary_budget
-        )
+            generated_paragraph, arch_id, compliance_score = translator.translate_paragraph_propositions(
+                paragraph,
+                author_name,
+                prev_archetype_id=prev_archetype_id,
+                perspective=perspective,
+                verbose=verbose,
+                global_context=global_context,
+                vocabulary_budget=vocabulary_budget
+            )
+            method_used = "proposition"
+
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ Proposition-based translation failed: {e}. Falling back to statistical method.")
+            # Fallback to Statistical Method
+            if verbose:
+                print(f"  Using statistical paragraph generation mode")
+
+            generated_paragraph, arch_id, compliance_score = translator.translate_paragraph_statistical(
+                paragraph,
+                author_name,
+                prev_archetype_id=prev_archetype_id,
+                perspective=perspective,
+                verbose=verbose,
+                global_context=global_context,
+                vocabulary_budget=vocabulary_budget
+            )
 
         # Update previous archetype ID for Markov chain continuity
         prev_archetype_id = arch_id

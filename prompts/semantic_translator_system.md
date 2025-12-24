@@ -5,6 +5,8 @@ Your goal is to produce a neutral, factual summary that preserves:
 - Logical connections
 - Core facts and propositions
 - Argument structure
+- **Lists and enumerations** (e.g., "a tree, a smartphone, a government" - preserve ALL items)
+- **Setup and introductory phrases** (e.g., "Most of us are conditioned to...", "Consider...", "Think of...")
 - **Point of view perspective** (as specified in the user prompt)
 - **Argumentative stance** (the author's position vs. cited counter-arguments)
 

@@ -755,3 +755,149 @@ class StatisticalCritic:
 
         return violations
 
+    def check_meaning_preservation(self, generated_text: str, original_text: str) -> List[str]:
+        """
+        Checks that generated text preserves key meaning elements from original:
+        - Lists and enumerations (all items must be present)
+        - Setup phrases (e.g., "Most of us are conditioned to...", "Consider...")
+        - Key concrete nouns introduced in the original
+
+        Args:
+            generated_text: The generated/translated text
+            original_text: The original source text
+
+        Returns:
+            List of issues found (empty if all meaning is preserved)
+        """
+        issues = []
+        if not original_text or not generated_text:
+            return issues
+
+        # Normalize for comparison
+        orig_lower = original_text.lower()
+        gen_lower = generated_text.lower()
+
+        # 1. Check for lists (patterns like "X, Y, and Z" or "X, Y, Z")
+        # Extract lists from original using regex
+        import re
+        # Pattern for lists: word(s), word(s), (and|or) word(s)
+        list_pattern = r'\b([a-z][a-z\s]+?)(?:\s*,\s*([a-z][a-z\s]+?))+\s*(?:and|or)\s*([a-z][a-z\s]+?)\b'
+        orig_lists = re.findall(list_pattern, orig_lower)
+
+        # Also check for simpler patterns: "X, Y, Z" (without and/or)
+        simple_list_pattern = r'\b([a-z][a-z\s]+?)(?:\s*,\s*([a-z][a-z\s]+?)){2,}\b'
+        simple_lists = re.findall(simple_list_pattern, orig_lower)
+
+        # Check if list items are preserved
+        for list_match in orig_lists + simple_lists:
+            if isinstance(list_match, tuple):
+                # Extract individual items from tuple
+                items = [item.strip() for item in list_match if item.strip()]
+            else:
+                items = [list_match.strip()]
+
+            # Check if all items appear in generated text
+            missing_items = []
+            for item in items:
+                # Check if item or a close synonym appears
+                if item not in gen_lower:
+                    # Try checking individual words
+                    item_words = item.split()
+                    if len(item_words) > 1:
+                        # Check if at least 70% of words appear
+                        found_words = sum(1 for word in item_words if word in gen_lower)
+                        if found_words / len(item_words) < 0.7:
+                            missing_items.append(item)
+                    else:
+                        missing_items.append(item)
+
+            if missing_items:
+                issues.append(f"missing_list_items: {', '.join(missing_items[:3])}")
+
+        # 2. Check for setup phrases
+        setup_phrases = [
+            "most of us are",
+            "consider",
+            "think of",
+            "imagine",
+            "visualize",
+            "suppose",
+            "picture"
+        ]
+
+        for phrase in setup_phrases:
+            if phrase in orig_lower and phrase not in gen_lower:
+                # Check if the concept is still introduced (maybe with different wording)
+                # Extract the object being introduced after the setup phrase
+                pattern = rf'{re.escape(phrase)}\s+([a-z\s]+?)(?:\.|,|;|$)'
+                matches = re.findall(pattern, orig_lower)
+                if matches:
+                    introduced_object = matches[0].strip().split()[0]  # First word after phrase
+                    # If the object is missing, flag it
+                    if introduced_object not in gen_lower:
+                        issues.append(f"missing_setup_phrase: '{phrase}' introducing '{introduced_object}'")
+
+        # 3. Check for key concrete nouns from first sentence
+        # Extract nouns from first sentence of original
+        try:
+            first_sent = list(self.nlp(original_text).sents)[0] if self.nlp else None
+            if first_sent:
+                # Get concrete nouns (not generic words like "thing", "way", "concept")
+                concrete_nouns = []
+                generic_words = {"thing", "concept", "idea", "way", "term", "notion", "view"}
+
+                for token in first_sent:
+                    if (token.pos_ == "NOUN" and
+                        token.text.lower() not in generic_words and
+                        len(token.text) > 3):  # Skip very short words
+                        concrete_nouns.append(token.text.lower())
+
+                # Check if these nouns appear in generated text
+                missing_nouns = [noun for noun in concrete_nouns if noun not in gen_lower]
+                if missing_nouns and len(missing_nouns) > len(concrete_nouns) * 0.3:  # If >30% missing
+                    issues.append(f"missing_key_nouns: {', '.join(missing_nouns[:3])}")
+        except Exception:
+            # If NLP fails, skip this check
+            pass
+
+        return issues
+
+    def check_coherence(self, paragraph: str) -> List[str]:
+        """
+        Checks for structural coherence issues like 'stuttering' (adjacent repetition).
+
+        Detects when adjacent sentences are too similar (>60% similarity), which indicates
+        the AI got confused and repeated itself (a "stutter").
+
+        Args:
+            paragraph: Paragraph text to check
+
+        Returns:
+            List of issue strings describing coherence problems found
+        """
+        from difflib import SequenceMatcher
+
+        if not paragraph or not paragraph.strip():
+            return []
+
+        # Split into sentences (simple approach using periods)
+        sentences = [s.strip() for s in paragraph.split('.') if s.strip()]
+
+        if len(sentences) < 2:
+            return []
+
+        issues = []
+
+        for i in range(1, len(sentences)):
+            prev = sentences[i-1]
+            curr = sentences[i]
+
+            # Check similarity ratio (0.0 to 1.0)
+            similarity = SequenceMatcher(None, prev, curr).ratio()
+
+            # If > 60% identical, it's likely a stutter/hallucination
+            if similarity > 0.6:
+                issues.append(f"stutter_detected: sentence_{i}")
+
+        return issues
+

@@ -313,6 +313,353 @@ class ParagraphAtlas:
                 ]
             return []
 
+    def find_rhetorical_match(self, rhetorical_type: str, n_candidates: int = 10, llm_provider: Optional[any] = None) -> Optional[Dict]:
+        """
+        Finds a paragraph in the author's corpus that structurally matches the input's logic.
+        Uses JIT (Just-In-Time) matching: selects random candidates and uses heuristic or LLM to find best match.
+
+        Args:
+            rhetorical_type: The rhetorical structure type to match ("Contrast", "List", "Definition", etc.)
+            n_candidates: Number of random candidates to sample (default: 10)
+            llm_provider: Optional LLM provider for intelligent matching. If None, uses heuristic only.
+
+        Returns:
+            Dict with 'text' and metadata, or None if no match found
+        """
+        if not self.collection:
+            return None
+
+        try:
+            # Get random candidates from ChromaDB collection
+            # We'll get all documents and sample randomly
+            all_results = self.collection.get(limit=1000)  # Get up to 1000 for sampling
+            documents = all_results.get("documents", [])
+            metadatas = all_results.get("metadatas", [])
+
+            if not documents:
+                return None
+
+            # Sample random candidates
+            n_candidates = min(n_candidates, len(documents))
+            if n_candidates == 0:
+                return None
+
+            indices = random.sample(range(len(documents)), n_candidates)
+            candidates = []
+            for idx in indices:
+                candidates.append({
+                    "text": documents[idx],
+                    "metadata": metadatas[idx] if idx < len(metadatas) else {}
+                })
+
+            # Try LLM-based matching if provider is available
+            if llm_provider:
+                try:
+                    system_prompt = "You are a structural analyst. Match the requested Rhetorical Type to the best available Text Structure."
+
+                    candidates_str = "\n".join([
+                        f"{i}. {c['text'][:200]}{'...' if len(c['text']) > 200 else ''}"
+                        for i, c in enumerate(candidates)
+                    ])
+
+                    user_prompt = f"""
+Target Rhetorical Type: {rhetorical_type}
+
+Available Author Paragraphs:
+{candidates_str}
+
+Which paragraph above best supports a "{rhetorical_type}" structure?
+(e.g., if 'List', find a paragraph with commas/semicolons. If 'Contrast', find one with 'but/however').
+
+Return ONLY the index number (0-{n_candidates-1}). If none fit well, return -1.
+"""
+
+                    response = llm_provider.call(
+                        system_prompt=system_prompt,
+                        user_prompt=user_prompt,
+                        model_type="editor",
+                        require_json=False,
+                        temperature=0.3,
+                        max_tokens=50
+                    )
+
+                    # Try to extract index from response
+                    import re
+                    index_match = re.search(r'-?\d+', str(response))
+                    if index_match:
+                        best_idx = int(index_match.group(0))
+                        if 0 <= best_idx < len(candidates):
+                            return candidates[best_idx]
+                except Exception as e:
+                    # Fall back to heuristic if LLM fails
+                    print(f"Warning: LLM matching failed ({e}), using heuristic")
+
+            # Heuristic keyword matching fallback
+            best_idx = -1
+            best_score = 0
+
+            for i, candidate in enumerate(candidates):
+                text_lower = candidate["text"].lower()
+                score = 0
+
+                if rhetorical_type == "Contrast":
+                    # Look for contrast indicators
+                    if "but" in text_lower or "however" in text_lower or "although" in text_lower:
+                        score += 3
+                    if "not" in text_lower and ("but" in text_lower or "yet" in text_lower):
+                        score += 2
+                elif rhetorical_type == "List":
+                    # Look for list indicators (high comma count, semicolons)
+                    comma_count = text_lower.count(',')
+                    semicolon_count = text_lower.count(';')
+                    if comma_count > 3:
+                        score += 2
+                    if semicolon_count > 0:
+                        score += 1
+                    if "and" in text_lower or "or" in text_lower:
+                        score += 1
+                elif rhetorical_type == "Definition":
+                    # Look for definition indicators
+                    if " is " in text_lower or " means " in text_lower or " defined as " in text_lower:
+                        score += 3
+                    if "refers to" in text_lower or "denotes" in text_lower:
+                        score += 2
+                elif rhetorical_type == "Cause-Effect":
+                    # Look for cause-effect indicators
+                    if "because" in text_lower or "since" in text_lower or "as a result" in text_lower:
+                        score += 3
+                    if "therefore" in text_lower or "thus" in text_lower or "consequently" in text_lower:
+                        score += 2
+                elif rhetorical_type == "Narrative":
+                    # Look for narrative indicators (temporal words)
+                    if "first" in text_lower or "then" in text_lower or "next" in text_lower:
+                        score += 2
+                    if "after" in text_lower or "before" in text_lower or "when" in text_lower:
+                        score += 1
+
+                if score > best_score:
+                    best_score = score
+                    best_idx = i
+
+            if best_idx >= 0 and best_score > 0:
+                return candidates[best_idx]
+
+            return None
+
+        except Exception as e:
+            print(f"Warning: Could not find rhetorical match: {e}")
+            return None
+
+    def get_centroid_archetype(self) -> Optional[Dict]:
+        """
+        Returns a 'safe' archetype (median sentence count/length) for fallback.
+        This represents the author's typical/representative style.
+
+        Returns:
+            Dict with archetype description, or None if no archetypes available
+        """
+        if not self.archetypes:
+            return None
+
+        # Get all archetypes with their sentence counts
+        archetype_list = []
+        for arch_id, arch_data in self.archetypes.items():
+            avg_sents = arch_data.get('avg_sents', 0)
+            if avg_sents > 0:
+                archetype_list.append({
+                    'id': arch_id,
+                    'avg_sents': avg_sents,
+                    'data': arch_data
+                })
+
+        if not archetype_list:
+            return None
+
+        # Sort by sentence count and find median
+        archetype_list.sort(key=lambda x: x['avg_sents'])
+        mid_index = len(archetype_list) // 2
+        centroid = archetype_list[mid_index]
+
+        # Return in same format as get_archetype_description
+        return {
+            "id": centroid['id'],
+            "avg_sents": centroid['avg_sents'],
+            "avg_len": centroid['data'].get('avg_len', 20),
+            "burstiness": centroid['data'].get('burstiness', 'Low'),
+            "style": centroid['data'].get('style', ''),
+            "example": centroid['data'].get('example', '')
+        }
+
+    def get_style_matched_examples(self, n: int = 3, style_characteristics: Optional[Dict] = None) -> List[Dict]:
+        """
+        Retrieves random examples from the corpus to use as few-shot style targets.
+
+        Args:
+            n: Number of examples to retrieve
+            style_characteristics: Optional dict with style filters (for future enhancement)
+
+        Returns:
+            List of dicts with 'text' and 'metadata'
+        """
+        if not self.collection:
+            return []
+
+        try:
+            # Get all documents from ChromaDB collection
+            all_results = self.collection.get(limit=1000)  # Get up to 1000 for sampling
+            documents = all_results.get("documents", [])
+            metadatas = all_results.get("metadatas", [])
+
+            if not documents:
+                return []
+
+            # Build candidates list (similar to find_rhetorical_match)
+            candidates = []
+            for idx, doc in enumerate(documents):
+                meta = metadatas[idx] if idx < len(metadatas) else {}
+                candidates.append({
+                    "text": doc,
+                    "metadata": meta
+                })
+
+            # Safety check
+            if not candidates:
+                return []
+
+            # Get n random samples
+            sample_size = min(n, len(candidates))
+            if sample_size == 0:
+                return []
+
+            return random.sample(candidates, sample_size)
+
+        except Exception as e:
+            print(f"Error fetching style examples: {e}")
+            return []
+
+    def get_rhetorical_references(self, rhetorical_type: str, mood: Optional[str] = None, n: int = 1) -> List[str]:
+        """
+        Retrieves sentences from the corpus that match the requested rhetorical type and mood.
+        Used as 'Soft Templates' for the generator.
+
+        Args:
+            rhetorical_type: The rhetorical type ("contrast", "list", "definition", "general")
+            mood: Optional grammatical mood ("narrative", "imperative", "definition", "general")
+            n: Number of references to return (default: 1)
+
+        Returns:
+            List of reference sentences (strings)
+        """
+        # Expanded Library with Moods
+        library = {
+            "contrast": {
+                "general": [
+                    "It is not the consciousness of men that determines their being, but, on the contrary, their social being that determines their consciousness.",
+                    "The metaphysical or vulgar evolutionist world outlook sees things as isolated, static and one-sided.",
+                    "We must not look at problems one-sidedly, but must look at them all-sidedly."
+                ],
+                "narrative": [
+                    "The old system failed, but the new system succeeded.",
+                    "They attacked, but we retreated.",
+                    "The revolution began in the cities, but it spread to the countryside."
+                ],
+                "imperative": [
+                    "We must not look at problems one-sidedly, but must look at them all-sidedly.",
+                    "Do not see things as isolated, but see them as connected."
+                ]
+            },
+            "list": {
+                "imperative": [
+                    "The Red Army needs grain, the Red Army needs clothes, the Red Army needs oil.",
+                    "We must have faith in the masses and we must have faith in the Party.",
+                    "We must fight, we must win, we must change."
+                ],
+                "narrative": [
+                    "There was grain, there was clothing, and there was oil.",
+                    "They brought tools, they brought weapons, and they brought supplies.",
+                    "The revolution had leaders, it had followers, and it had momentum."
+                ],
+                "general": [
+                    "Qualitative change, quantitative change, and the negation of the negation—these are the laws.",
+                    "The Red Army needs grain, the Red Army needs clothes, the Red Army needs oil."
+                ]
+            },
+            "definition": {
+                "general": [
+                    "What is knowledge? It is the reflection of the objective world.",
+                    "A revolution is not a dinner party, or writing an essay, or painting a picture.",
+                    "This process, the practice of changing the world, is determined by scientific knowledge."
+                ],
+                "narrative": [
+                    "Dialectics was the method Marx used to analyze reality.",
+                    "The term was coined by Joseph Stalin to describe the Marxist approach."
+                ]
+            },
+            "general": {
+                "imperative": [
+                    "We must act.",
+                    "Let us look at the facts.",
+                    "We must have faith in the masses and we must have faith in the Party."
+                ],
+                "narrative": [
+                    "He named it Dialectical Materialism.",
+                    "The revolution began in 1917.",
+                    "Marx wrote the Communist Manifesto."
+                ],
+                "general": [
+                    "The fundamental cause of the development of a thing is not external but internal.",
+                    "Marxism-Leninism is the microscope and telescope of our political work.",
+                    "Everything divides into two."
+                ]
+            }
+        }
+
+        # Normalize type
+        key = rhetorical_type.lower()
+        if key not in library:
+            key = "general"
+
+        # 1. Try to find specific Rhetoric + Mood match
+        candidates = []
+        if mood and mood.lower() in library.get(key, {}):
+            candidates = library[key][mood.lower()]
+        elif key in library:
+            # Flatten all moods for this rhetoric if no mood match
+            for m in library[key]:
+                candidates.extend(library[key][m])
+
+        if not candidates:
+            # Fallback: Ignore rhetoric, match Mood (Critical for edge cases)
+            if mood == "narrative":
+                candidates = [
+                    "The revolution emerged from the contradictions of capitalism.",
+                    "He wrote the book on dialectical materialism.",
+                    "It happened yesterday, and it changed everything."
+                ]
+            elif mood == "imperative":
+                candidates = [
+                    "We must fight.",
+                    "Let us analyze the situation.",
+                    "We need faith in the masses."
+                ]
+            elif mood == "definition":
+                candidates = [
+                    "What is dialectics? It is a method of analysis.",
+                    "Materialism means that matter is primary."
+                ]
+            else:
+                candidates = [
+                    "It is a fact.",
+                    "This is true.",
+                    "The fundamental cause of the development of a thing is not external but internal."
+                ]
+
+        if not candidates:
+            # Ultimate fallback
+            candidates = ["Everything divides into two."]
+
+        return random.sample(candidates, min(n, len(candidates)))
+
     def _create_synthetic_archetype(self, input_text: str, target_density: float = 25.0, author_profile: Optional[Dict] = None) -> Dict:
         """
         Creates a temporary archetype based on the input text's structure,
