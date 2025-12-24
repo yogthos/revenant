@@ -589,13 +589,14 @@ def is_grammatically_complete(text: str) -> bool:
         return True
 
 
-def check_repetition(text: str, max_bigram_repeats: int = 3, max_sentence_start_repeats: int = 2) -> Optional[Dict[str, any]]:
+def check_repetition(text: str, max_bigram_repeats: int = 3, max_sentence_start_repeats: int = 2, allow_anaphora: bool = False) -> Optional[Dict[str, any]]:
     """Check for excessive word repetition in text.
 
     Args:
         text: Text to check for repetition.
         max_bigram_repeats: Maximum allowed bigram repetitions (default: 3).
         max_sentence_start_repeats: Maximum consecutive sentences starting with same word (default: 2).
+        allow_anaphora: If True, skip sentence-start repetition check (default: False).
 
     Returns:
         None if no repetition issues, or failure dict with feedback if repetition detected.
@@ -623,7 +624,8 @@ def check_repetition(text: str, max_bigram_repeats: int = 3, max_sentence_start_
             }
 
     # Check 2: Sentence-start repetition (enhanced)
-    if len(sentences) >= 3:
+    # Skip if anaphora is allowed
+    if not allow_anaphora and len(sentences) >= 3:
         first_words = []
         for sentence in sentences:
             sentence_words = sentence.split()

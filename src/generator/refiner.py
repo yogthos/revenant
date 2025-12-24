@@ -57,7 +57,15 @@ class ParagraphRefiner:
             return draft, 0
 
         # Calculate repetition count for compression bias logic
-        repetition_issues = self.statistical_critic.check_repetition(draft)
+        # Load style_dna to check for anaphora allowance
+        author_lower = author_name.lower()
+        style_profile_path = Path("atlas_cache/paragraph_atlas") / author_lower / "style_profile.json"
+        style_dna = {}
+        if style_profile_path.exists():
+            with open(style_profile_path, 'r') as f:
+                style_profile = json.load(f)
+                style_dna = style_profile.get("stylistic_dna", {})
+        repetition_issues = self.statistical_critic.check_repetition(draft, style_dna=style_dna)
         repetition_count = len(repetition_issues)
 
         # Step 1: Holistic Audit -> Repair Plan
@@ -238,9 +246,42 @@ Output ONLY the JSON array, no other text.
         # Format structure map for prompt
         structure_map_info = self._format_structure_map(structure_map)
 
+        # NEW: Check syntax constraints for each sentence
+        enhanced_feedback = feedback
+        try:
+            import spacy
+            nlp = spacy.load("en_core_web_sm")
+            doc = nlp(draft)
+            sentences = [sent.text.strip() for sent in doc.sents]
+
+            # Load style profile to get DNA
+            author_lower = author_name.lower()
+            style_profile_path = Path("atlas_cache/paragraph_atlas") / author_lower / "style_profile.json"
+            style_dna = {}
+            if style_profile_path.exists():
+                with open(style_profile_path, 'r') as f:
+                    style_profile = json.load(f)
+                    style_dna = style_profile.get("stylistic_dna", {})
+
+            # Check each sentence for syntax violations
+            for idx, sent_text in enumerate(sentences, 1):
+                violations = self.statistical_critic.validate_syntax_constraints(sent_text, style_dna)
+                if violations:
+                    # Add syntax repair instruction to feedback
+                    error_msg = f"Contains banned syntax: {', '.join(violations)}"
+                    if not enhanced_feedback:
+                        enhanced_feedback = error_msg
+                    else:
+                        enhanced_feedback += f". Sentence {idx}: {error_msg}"
+        except Exception as e:
+            if verbose:
+                print(f"  ⚠ Error checking syntax constraints: {e}")
+            # Continue with normal repair plan generation
+            enhanced_feedback = feedback
+
         user_prompt = template.format(
             draft=draft,
-            feedback=feedback,
+            feedback=enhanced_feedback,
             structure_map_info=structure_map_info,
             author_name=author_name
         )
@@ -758,6 +799,61 @@ Output only the fixed sentence(s), no explanations.
         # Existing initialization (keep as is):
         best_attempt = None
         best_length_diff = float('inf')
+
+        # Special handling for rewrite_syntax action
+        if action == "rewrite_syntax":
+            # Extract constraint from instruction (e.g., "Contains banned syntax: serial_gerund")
+            constraint = instruction
+            if ":" in constraint:
+                constraint = constraint.split(":", 1)[1].strip()
+
+            # Special handling for summative_modifier - split into two sentences
+            if "summative_modifier" in constraint.lower():
+                rewrite_prompt = f"""Rewrite this sentence to remove the summative modifier pattern. Split it into two sentences instead of using a comma followed by an abstract summary.
+
+Original sentence: "{sentence}"
+
+Example of bad pattern: "...change, a transformation that..."
+Example of good fix: "...change. This transformation..."
+
+Output only the rewritten sentence(s), no explanations."""
+            elif "excessive_subordination" in constraint.lower():
+                # The "Splitter" - convert Hypotaxis to Parataxis
+                rewrite_prompt = f"""This sentence is grammatically too deep (Hypotaxis). Convert it to Parataxis. Split it into 2 or 3 independent sentences. Remove all conjunctions.
+
+Original sentence: "{sentence}"
+
+Example: "While he went to the store, which was closed, he realized that he needed milk."
+Good fix: "He went to the store. The store was closed. He realized he needed milk."
+
+Output only the rewritten sentences, no explanations."""
+            else:
+                # Build specific rewrite prompt for other violations
+                rewrite_prompt = f"""Rewrite this sentence to remove {constraint}. Keep the meaning exactly the same.
+
+Original sentence: "{sentence}"
+
+Constraint: {constraint}
+
+Output only the rewritten sentence, no explanations."""
+
+            # Call LLM to rewrite
+            response = self.llm_provider.call(
+                system_prompt=f"You are a sentence editor. Rewrite sentences to remove specific syntax patterns while preserving meaning.",
+                user_prompt=rewrite_prompt,
+                model_type="editor",
+                require_json=False,
+                temperature=0.3,
+                max_tokens=200
+            )
+
+            # Extract sentence from response
+            fixed = response.strip()
+            # Remove quotes if present
+            if fixed.startswith('"') and fixed.endswith('"'):
+                fixed = fixed[1:-1]
+
+            return fixed if fixed else None
 
         for attempt in range(max_retries):
             # Create a mutable copy of instruction for this attempt

@@ -3,6 +3,8 @@
 ## Content to Express:
 {slot_content}
 
+{entity_instruction}
+
 **Note:**
 - If the Content to Express above contains multiple source sentences, **synthesize** them into a single, cohesive sentence in the author's style. Use subordination, conjunctions, and complex syntax to merge the ideas fluidly. Do not just concatenate them with periods.
 - If it is a complete sentence, rewrite it in the author's style while preserving the core meaning.

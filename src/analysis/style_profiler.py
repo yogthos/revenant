@@ -5,6 +5,7 @@ POV, burstiness, vocabulary, sentence starters, and punctuation patterns.
 """
 
 import re
+import statistics
 from collections import Counter
 from typing import Dict, List, Any
 import numpy as np
@@ -98,8 +99,8 @@ class StyleProfiler:
         if not text or not text.strip():
             return self._empty_profile()
 
-        # Parse text with spaCy
-        doc = self.nlp(text)
+        # Parse text with spaCy (limit to 200000 chars for performance and stats accuracy)
+        doc = self.nlp(text[:200000])
         sentences = list(doc.sents)
 
         if not sentences:
@@ -117,6 +118,9 @@ class StyleProfiler:
         vocabulary_palette = self._extract_vocabulary_palette(doc)
         structure_data = self._analyze_structure(sentences)  # NEW: Structural DNA
 
+        # NEW: DNA Analysis
+        dna = self._analyze_stylistic_dna(doc)
+
         return {
             **pov_data,
             **burstiness_data,
@@ -124,7 +128,8 @@ class StyleProfiler:
             **openers_data,
             **punctuation_data,
             "vocabulary_palette": vocabulary_palette,
-            "structural_dna": structure_data  # NEW: Structural DNA
+            "structural_dna": structure_data,  # NEW: Structural DNA
+            "stylistic_dna": dna  # NEW: Stylistic DNA
         }
 
     def _build_entity_blocklist(self, doc) -> set:
@@ -295,7 +300,13 @@ class StyleProfiler:
                 "use_fragments": False,
                 "allow_contractions": True,
                 "sensory_grounding": False,
-                "banned_transitions": []
+                "banned_transitions": [],
+                "allow_complex_connectors": True,
+                "force_active_voice": False,
+                "allow_intro_participles": True,
+                "allow_relative_clauses": True,
+                "allow_serial_gerunds": True,
+                "sentence_structure": "balanced"
             }
         }
 
@@ -695,5 +706,212 @@ class StyleProfiler:
             "avg_words_per_sentence": round(float(avg_len), 1),
             "complexity_ratio": round(float(complexity_ratio), 2),
             "sentence_length_std_dev": round(float(std_dev), 1)
+        }
+
+    def _get_tree_depth(self, token) -> int:
+        """Recursively calculate the maximum depth of a dependency tree from a token.
+
+        Args:
+            token: spaCy token (usually the root of a sentence)
+
+        Returns:
+            Maximum depth of the dependency tree (0 for simple sentences)
+        """
+        if not list(token.children):
+            return 0
+        return 1 + max((self._get_tree_depth(child) for child in token.children), default=0)
+
+    def _analyze_stylistic_dna(self, doc) -> Dict[str, Any]:
+        """
+        Infers 'Human Texture' parameters (Voice, Rhythm, Connectors, Openers) from the doc.
+
+        Analyzes the corpus to determine:
+        - allow_complex_connectors: Whether to allow academic transitions
+        - force_active_voice: Whether to enforce active voice
+        - allow_intro_participles: Whether to allow sentences starting with -ing participles
+        - sentence_structure: jagged, flowing, or balanced
+        - avg_depth: Average dependency tree depth
+
+        Args:
+            doc: spaCy document object
+
+        Returns:
+            Dictionary with stylistic_dna parameters
+        """
+        sentences = list(doc.sents)
+        total_sents = len(sentences)
+        if total_sents == 0:
+            return {
+                "allow_complex_connectors": True,
+                "force_active_voice": False,
+                "allow_intro_participles": True,
+                "allow_relative_clauses": True,
+                "allow_serial_gerunds": True,
+                "sentence_structure": "balanced",
+                "force_imperfection": True,
+                "sensory_grounding": True
+            }
+
+        # 1. Connector Analysis ("Academic Glue")
+        # Academic: transition words that imply formal logical flow
+        academic_connectors = {'moreover', 'thus', 'therefore', 'hence', 'thereby', 'furthermore', 'consequently'}
+        # Simple: strong/direct pivots
+        simple_connectors = {'but', 'and', 'yet', 'so'}
+
+        academic_count = 0
+
+        for token in doc:
+            if token.lower_ in academic_connectors:
+                academic_count += 1
+
+        # If academic usage is frequent (> 1% of sentences), allow them. Otherwise ban.
+        # Mao/Hemingway: Low. Marx/Academic: High.
+        allow_complex_connectors = (academic_count / total_sents) > 0.01
+
+        # 2. Voice Analysis (Adjusted Threshold)
+        # Standard English is ~15-20% passive. AI is often higher.
+        # We want to force ACTIVE voice unless the author is extremely passive (>20%).
+        # Count passive auxiliaries (e.g., "was" in "was eaten")
+        passive_count = sum(1 for token in doc if token.dep_ == "auxpass")
+        passive_ratio = passive_count / total_sents if total_sents > 0 else 0
+
+        # If passive ratio is low (< 20%), force active voice instructions
+        force_active_voice = passive_ratio < 0.20
+
+        # 2a. Relative Clause Analysis (The "Which/That" Glue)
+        # Count 'relcl' dependencies with specific words
+        rel_clause_count = sum(1 for token in doc if token.dep_ == "relcl" and token.text.lower() in ['which', 'who', 'that'])
+        # If relative clauses are rare (< 1% of tokens), ban them to force simple syntax
+        allow_relative_clauses = (rel_clause_count / len(doc)) > 0.01 if len(doc) > 0 else True
+
+        # 2b. Serial Gerund Analysis (The "Laundry List" Pattern)
+        # Pattern: VBG -> conj -> VBG (e.g., "running, jumping, and playing")
+        serial_gerund_count = 0
+        for token in doc:
+            if token.tag_ == "VBG" and token.dep_ == "conj":
+                if token.head.tag_ == "VBG":
+                    serial_gerund_count += 1
+        # Strict Ban: If author uses < 1 per 200 sentences, ban it.
+        allow_serial_gerunds = (serial_gerund_count / total_sents) > 0.005 if total_sents > 0 else True
+
+        # 3. Opener Analysis (The "Serving as..." Test)
+        # Count sentences starting with -ing participles (VBG tag with advcl/acl dependency)
+        intro_participle_count = 0
+        for sent in sentences:
+            if len(sent) > 0 and sent[0].tag_ == "VBG" and sent[0].dep_ in ("advcl", "acl"):
+                intro_participle_count += 1
+        allow_intro_participles = (intro_participle_count / total_sents) > 0.02 if total_sents > 0 else True
+
+        # 4. Rhythm Analysis (Jagged vs Flowing)
+        # Jagged = High standard deviation in sentence length + frequent semicolons/stops
+        lengths = [len([token for token in sent if not token.is_punct]) for sent in sentences]
+
+        if len(lengths) > 1:
+            length_std_dev = statistics.stdev(lengths)
+        else:
+            length_std_dev = 0
+
+        avg_len = statistics.mean(lengths) if lengths else 0
+
+        semicolon_count = sum(1 for token in doc if token.text == ';')
+        semicolons_per_sent = semicolon_count / total_sents if total_sents > 0 else 0
+
+        if length_std_dev > 12 or semicolons_per_sent > 0.15:
+            structure = "jagged"  # Mao style (stops and pivots)
+        elif avg_len > 25:
+            structure = "flowing"  # Marx/Academic style (subordination)
+        else:
+            structure = "balanced"  # Standard
+
+        # 5. Tree Depth Analysis (Dependency Parse Depth)
+        # Measure average dependency tree depth to determine target complexity
+        depths = []
+        for sent in sentences:
+            root = sent.root
+            depth = self._get_tree_depth(root)
+            depths.append(depth)
+
+        avg_depth = statistics.mean(depths) if depths else 3.0
+
+        # Add rhetoric analysis
+        rhetoric = self._analyze_rhetoric(doc)
+
+        return {
+            "allow_complex_connectors": allow_complex_connectors,
+            "force_active_voice": force_active_voice,
+            "allow_intro_participles": allow_intro_participles,
+            "allow_relative_clauses": allow_relative_clauses,
+            "allow_serial_gerunds": allow_serial_gerunds,
+            "sentence_structure": structure,
+            "structural_stats": {
+                "avg_words_per_sentence": round(avg_len, 1),
+                "complexity_ratio": round(length_std_dev / avg_len, 2) if avg_len else 0,
+                "avg_depth": round(avg_depth, 1)
+            },
+            # Default Toggles (can be refined later)
+            "force_imperfection": True,
+            "sensory_grounding": True,
+            "rhetoric": rhetoric  # Add rhetoric analysis
+        }
+
+    def _analyze_rhetoric(self, doc) -> Dict[str, bool]:
+        """
+        Detects rhetorical devices (Anaphora, Asyndeton) from the corpus.
+
+        Args:
+            doc: spaCy document object
+
+        Returns:
+            Dictionary with rhetoric flags (use_anaphora, use_asyndeton)
+        """
+        sentences = list(doc.sents)
+        if len(sentences) < 2:
+            return {
+                "use_anaphora": False,
+                "use_asyndeton": False
+            }
+
+        # 1. ANAPHORA (Repeating the start of sentences)
+        # Compare first tokens of consecutive sentences
+        anaphora_count = 0
+        exclusion_list = ["the", "a", "an", "and", "but", "or"]  # Minimal, conservative list
+
+        for i in range(1, len(sentences)):
+            prev_sent = sentences[i-1]
+            curr_sent = sentences[i]
+
+            # Get first non-punctuation token from each sentence
+            def get_start_token(sent):
+                for token in sent:
+                    if not token.is_punct and not token.is_space:
+                        return token.text.lower()
+                return None
+
+            prev_start = get_start_token(prev_sent)
+            curr_start = get_start_token(curr_sent)
+
+            # If first words match (and not common starters), count as anaphora
+            if prev_start and curr_start and prev_start == curr_start:
+                if prev_start not in exclusion_list:
+                    anaphora_count += 1
+
+        # Threshold: > 2% of sentence pairs (e.g., 1 in 50 pairs)
+        use_anaphora = (anaphora_count / (len(sentences) - 1)) > 0.02 if len(sentences) > 1 else False
+
+        # 2. ASYNDETON (Clauses without conjunctions)
+        # Check for sentences with commas/semicolons but NO 'and/but/or'
+        asyndeton_count = 0
+        for sent in sentences:
+            has_comma_semi = any(t.text in [',', ';'] for t in sent)
+            has_conjunction = any(t.dep_ == 'cc' or t.text.lower() in ['and', 'but', 'or'] for t in sent)
+            if has_comma_semi and not has_conjunction:
+                asyndeton_count += 1
+
+        # Threshold: > 10% of sentences
+        use_asyndeton = (asyndeton_count / len(sentences)) > 0.10 if len(sentences) > 0 else False
+
+        return {
+            "use_anaphora": use_anaphora,
+            "use_asyndeton": use_asyndeton
         }
 

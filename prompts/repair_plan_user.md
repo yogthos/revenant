@@ -2,6 +2,9 @@
 
 **CRITICAL: YOU MUST OUTPUT VALID JSON ONLY. NO MARKDOWN, NO EXPLANATIONS, NO TEXT BEFORE OR AFTER THE JSON.**
 
+**EXAMPLE OF CORRECT OUTPUT (copy exactly, no markdown blocks):**
+[]
+
 ## Draft Paragraph:
 {draft}
 
@@ -27,7 +30,7 @@ Analyze the draft for flow, coherence, and natural transitions. Compare the draf
 
 Each instruction in the array MUST have these exact fields:
 - **"sent_index"**: Integer (1-based: 1 = first sentence, 2 = second sentence, etc.)
-- **"action"**: String, one of: "shorten", "lengthen", "merge_with_next", "split", "rewrite_connector", "add_transition", "simplify", "expand"
+- **"action"**: String, one of: "shorten", "lengthen", "merge_with_next", "split", "rewrite_connector", "add_transition", "simplify", "expand", "rewrite_syntax"
 - **"instruction"**: String, specific instruction for the LLM (e.g., "Shorten to 25 words by removing adjectives", "Merge with next sentence using 'however'")
 - **"target_len"**: Integer (optional), target word count if action is "shorten" or "lengthen"
 
@@ -46,3 +49,6 @@ Focus on:
 ]
 
 **REMEMBER: Output ONLY the JSON array. No markdown, no explanations, no other text.**
+
+**IF NO REPAIRS NEEDED:** Output exactly: []
+**DO NOT OUTPUT:** Empty string, "No repairs needed", or any other text.

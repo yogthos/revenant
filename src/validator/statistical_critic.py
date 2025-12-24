@@ -507,7 +507,7 @@ class StatisticalCritic:
 
         return issues
 
-    def check_repetition(self, text: str) -> List[str]:
+    def check_repetition(self, text: str, style_dna: Optional[Dict] = None) -> List[str]:
         """Detect repetitive phrasing in text.
 
         Scans for repeated n-grams (2-3 word phrases) and proximal word repetition.
@@ -516,10 +516,16 @@ class StatisticalCritic:
 
         Args:
             text: Text to check for repetition
+            style_dna: Optional style DNA dict to check for anaphora allowance
 
         Returns:
             List of issue strings describing repetitions found
         """
+        # Extract allow_anaphora flag if style_dna provided
+        # (Note: This method doesn't check sentence starts, but flag is available for future use)
+        allow_anaphora = False
+        if style_dna:
+            allow_anaphora = style_dna.get("rhetoric", {}).get("use_anaphora", False)
         if not text or not text.strip():
             return []
 
@@ -644,4 +650,108 @@ class StatisticalCritic:
         common = {"of the", "in the", "to the", "and the", "that the", "is a", "is the",
                   "the the", "a the", "an the", "for the", "with the", "from the"}
         return any(c in phrase for c in common)
+
+    def _get_dependency_depth(self, sentence: str) -> int:
+        """Calculate the maximum dependency tree depth of a sentence.
+
+        This measures syntactic complexity (hypotaxis/subordination), not coordination.
+        Coordinated clauses (connected via 'conj' dependency) are siblings, not nested,
+        so they don't increase depth. This means:
+        - "X; Y; Z" (coordination) = low depth (each clause is independent)
+        - "X because Y which Z" (subordination) = high depth (nested clauses)
+
+        Args:
+            sentence: Sentence text to analyze
+
+        Returns:
+            Maximum depth of the dependency tree (0 for simple sentences)
+        """
+        doc = self.nlp(sentence)
+
+        def get_depth(token):
+            """Recursively calculate depth from a token.
+
+            Only follows children (nested dependencies), not siblings (coordination).
+            This correctly distinguishes subordination (depth) from coordination (width).
+            """
+            if not list(token.children):
+                return 0
+            return 1 + max((get_depth(child) for child in token.children), default=0)
+
+        # Find the root (usually the main verb)
+        roots = [token for token in doc if token.head == token]
+        if not roots:
+            return 0
+
+        root = roots[0]
+        return get_depth(root)
+
+    def validate_syntax_constraints(self, sentence: str, style_dna: Dict) -> List[str]:
+        """Returns a list of violations (e.g., ['serial_gerund', 'passive_voice']).
+
+        Args:
+            sentence: Sentence text to validate
+            style_dna: Style DNA dictionary with constraint flags
+
+        Returns:
+            List of violation types found, empty list if compliant
+        """
+        if not sentence or not sentence.strip():
+            return []
+
+        doc = self.nlp(sentence)
+        violations = []
+
+        # 1. Check Serial Gerunds
+        if not style_dna.get("allow_serial_gerunds", True):
+            for token in doc:
+                if token.tag_ == "VBG" and token.dep_ == "conj" and token.head.tag_ == "VBG":
+                    violations.append("serial_gerund")
+                    break  # Only report once per sentence
+
+        # 2. Check Relative Clauses
+        if not style_dna.get("allow_relative_clauses", True):
+            for token in doc:
+                if token.dep_ == "relcl" and token.text.lower() in ['which', 'who', 'that']:
+                    violations.append("relative_clause")
+                    break  # Only report once per sentence
+
+        # 3. Check Passive Voice
+        if style_dna.get("force_active_voice", False):
+            for token in doc:
+                if token.dep_ == "auxpass":
+                    violations.append("passive_voice")
+                    break  # Only report once per sentence
+
+        # 4. Check Summative Modifiers (Broadened)
+        # Matches: ", a transformation felt...", ", a concept heard...", ", a method used..."
+        # Regex: Comma + (a/an/the) + Word + (that/which/who OR any verb ending in -ed/-ing)
+        # This catches the broader AI pattern (Comma + Abstract Noun + Participle)
+        pattern = r",\s+(a|an|the)\s+([a-z]+)\s+(that|which|who|[a-z]+ing|[a-z]+ed)\b"
+        match = re.search(pattern, sentence.lower())
+        if match:
+            # Additional check: verify if the noun is an abstract summarizer
+            # Common abstract nouns used in summative modifiers
+            abstract_nouns = ['concept', 'method', 'transformation', 'framework', 'approach', 'process',
+                            'mechanism', 'principle', 'technique', 'strategy', 'system', 'tool',
+                            'instrument', 'mode', 'way', 'means', 'manner', 'form', 'type', 'kind',
+                            'set', 'collection', 'group', 'body', 'structure', 'pattern', 'model']
+            noun = match.group(2)  # Group 1 is article, Group 2 is noun, Group 3 is verb/relative
+            if noun in abstract_nouns or len(noun) > 6:  # Long words are often abstract
+                violations.append("summative_modifier")
+
+        # 5. General "Anti-Complexity" Check (Tree Depth)
+        # Depth 4 is approx: "He went to the store because he needed milk."
+        # Depth 6+ is typical AI: "While he went to the store, which was closed..."
+        if style_dna.get("sentence_structure") == "jagged":
+            depth = self._get_dependency_depth(sentence)
+            # Get target depth from structural_stats if available, otherwise use default threshold
+            structural_stats = style_dna.get("structural_stats", {})
+            target_depth = structural_stats.get("avg_depth", 3.5)
+            max_allowed_depth = int(target_depth) + 1  # Allow 1 level above average
+
+            if depth > max_allowed_depth:
+                violations.append("excessive_subordination")
+
+        return violations
 

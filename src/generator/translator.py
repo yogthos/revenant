@@ -4349,6 +4349,28 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                     if verbose:
                         print(f"  Detected input perspective: {target_pov}")
 
+        # Step 0.5: ENTITY ANCHORING - Don't let the summary strip names
+        # We want to ensure we don't lose "Marx", "Stalin", or "Dialectical Materialism"
+        source_doc = self._get_nlp()(paragraph)
+
+        # Extract People, Organizations, and Capitalized Terms
+        must_include = []
+
+        for ent in source_doc.ents:
+            if ent.label_ in ["PERSON", "ORG", "NORP", "WORK_OF_ART", "EVENT"]:
+                must_include.append(ent.text)
+
+        # Deduplicate
+        must_include = sorted(list(set(must_include)))
+
+        # Build entity instruction
+        entity_instruction = ""
+        if must_include:
+            entity_list = ", ".join(must_include)
+            entity_instruction = f"\n**CONTENT MANDATE:** You MUST include these exact terms: {entity_list}.\n**RULE:** Do not paraphrase, abbreviate, or reword them. Use them exactly as written.\n**CONSTRAINT:** Use these names as the SUBJECT or OBJECT of your sentences when possible. Do not bury them in subordinate clauses."
+            if verbose:
+                print(f"  Extracted entities to preserve: {entity_list}")
+
         # Step 1: Neutralize with perspective
         if verbose:
             print(f"  Extracting neutral summary with perspective: {target_pov}...")
@@ -4435,6 +4457,56 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             print(f"  Extracting structure map from archetype {target_arch_id}...")
         structure_map = self.paragraph_atlas.get_structure_map(target_arch_id)
 
+        # BLUEPRINT SANITIZER (Strict Enforcement - The Accordion Protocol)
+        # Check if author has jagged style - if so, use stricter cap
+        style_profile = self._load_style_profile(author_name)
+        style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+        is_jagged = style_dna.get("sentence_structure") == "jagged"
+
+        # 54 words is too long for a single jagged sentence.
+        # Cap it at 35. If it's longer, it MUST be split.
+        max_len = 35 if is_jagged else 60
+
+        if structure_map:
+            sanitized_map = []
+            for slot in structure_map:
+                target_len = slot.get('target_len', 20) if isinstance(slot, dict) else slot
+                if isinstance(slot, dict):
+                    if target_len > max_len:
+                        # Split aggressive outliers
+                        chunks = 2
+                        if target_len > max_len * 2:
+                            chunks = 3
+
+                        split_len = int(target_len / chunks)
+                        slot_type = slot.get('type', 'moderate')
+                        for i in range(chunks):
+                            sanitized_map.append({
+                                'target_len': split_len,
+                                'type': slot_type,
+                                'position': slot.get('position', 0) + i,
+                                'raw_len': slot.get('raw_len') if i == 0 else None
+                            })
+                        if verbose:
+                            print(f"    ✂ Splitting massive sentence ({target_len}w) -> {chunks} x {split_len}w (jagged={is_jagged}, max={max_len}w)")
+                    else:
+                        sanitized_map.append(slot)
+                else:
+                    # Handle legacy format (just int)
+                    if target_len > max_len:
+                        chunks = 2
+                        if target_len > max_len * 2:
+                            chunks = 3
+                        split_len = int(target_len / chunks)
+                        sanitized_map.extend([split_len] * chunks)
+                        if verbose:
+                            print(f"    ✂ Splitting massive sentence ({target_len}w) -> {chunks} x {split_len}w (jagged={is_jagged}, max={max_len}w)")
+                    else:
+                        sanitized_map.append(slot)
+            structure_map = sanitized_map
+            if verbose and len(sanitized_map) > len(self.paragraph_atlas.get_structure_map(target_arch_id) if target_arch_id else []):
+                print(f"  Blueprint sanitized: {len(self.paragraph_atlas.get_structure_map(target_arch_id) if target_arch_id else [])} -> {len(sanitized_map)} sentences")
+
         # Check divergence and use synthetic fallback if needed
         if structure_map:
             match_beats = len(structure_map)
@@ -4474,6 +4546,48 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 archetype_desc['id'] = "synthetic_fallback"  # Mark for direct mapping
                 # Store content_map for elastic mapping
                 archetype_desc['content_map'] = synthetic_archetype.get('content_map', [])
+
+                # BLUEPRINT SANITIZER: Apply same sanitization to synthetic structure
+                # Use same jagged detection logic
+                is_jagged = style_dna.get("sentence_structure") == "jagged"
+                max_len = 35 if is_jagged else 60
+
+                sanitized_map = []
+                for slot in structure_map:
+                    target_len = slot.get('target_len', 20) if isinstance(slot, dict) else slot
+                    if isinstance(slot, dict):
+                        if target_len > max_len:
+                            # Split aggressive outliers
+                            chunks = 2
+                            if target_len > max_len * 2:
+                                chunks = 3
+
+                            split_len = int(target_len / chunks)
+                            slot_type = slot.get('type', 'moderate')
+                            for i in range(chunks):
+                                sanitized_map.append({
+                                    'target_len': split_len,
+                                    'type': slot_type,
+                                    'position': slot.get('position', 0) + i,
+                                    'raw_len': slot.get('raw_len') if i == 0 else None
+                                })
+                            if verbose:
+                                print(f"    ✂ Splitting massive sentence ({target_len}w) -> {chunks} x {split_len}w (jagged={is_jagged}, max={max_len}w)")
+                        else:
+                            sanitized_map.append(slot)
+                    else:
+                        # Handle legacy format (just int)
+                        if target_len > max_len:
+                            chunks = 2
+                            if target_len > max_len * 2:
+                                chunks = 3
+                            split_len = int(target_len / chunks)
+                            sanitized_map.extend([split_len] * chunks)
+                            if verbose:
+                                print(f"    ✂ Splitting massive sentence ({target_len}w) -> {chunks} x {split_len}w (jagged={is_jagged}, max={max_len}w)")
+                        else:
+                            sanitized_map.append(slot)
+                structure_map = sanitized_map
 
                 # --- NEW: STYLE GRAFTING ---
                 # Find a real archetype closest to this length to steal its "Vibes"
@@ -4546,6 +4660,48 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
             archetype_desc['id'] = "synthetic_fallback"  # Mark for direct mapping
             # Store content_map for elastic mapping
             archetype_desc['content_map'] = synthetic_archetype.get('content_map', [])
+
+            # BLUEPRINT SANITIZER: Apply same sanitization to synthetic structure
+            # Use same jagged detection logic
+            is_jagged = style_dna.get("sentence_structure") == "jagged"
+            max_len = 35 if is_jagged else 60
+
+            sanitized_map = []
+            for slot in structure_map:
+                target_len = slot.get('target_len', 20) if isinstance(slot, dict) else slot
+                if isinstance(slot, dict):
+                    if target_len > max_len:
+                        # Split aggressive outliers
+                        chunks = 2
+                        if target_len > max_len * 2:
+                            chunks = 3
+
+                        split_len = int(target_len / chunks)
+                        slot_type = slot.get('type', 'moderate')
+                        for i in range(chunks):
+                            sanitized_map.append({
+                                'target_len': split_len,
+                                'type': slot_type,
+                                'position': slot.get('position', 0) + i,
+                                'raw_len': slot.get('raw_len') if i == 0 else None
+                            })
+                        if verbose:
+                            print(f"    ✂ Splitting massive sentence ({target_len}w) -> {chunks} x {split_len}w (jagged={is_jagged}, max={max_len}w)")
+                    else:
+                        sanitized_map.append(slot)
+                else:
+                    # Handle legacy format (just int)
+                    if target_len > max_len:
+                        chunks = 2
+                        if target_len > max_len * 2:
+                            chunks = 3
+                        split_len = int(target_len / chunks)
+                        sanitized_map.extend([split_len] * chunks)
+                        if verbose:
+                            print(f"    ✂ Splitting massive sentence ({target_len}w) -> {chunks} x {split_len}w (jagged={is_jagged}, max={max_len}w)")
+                    else:
+                        sanitized_map.append(slot)
+            structure_map = sanitized_map
 
             # --- NEW: STYLE GRAFTING (same logic as above) ---
             style_donor_id = self.paragraph_atlas.find_style_matched_archetype(
@@ -4679,6 +4835,46 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
 
         # NEW: Inject Stylistic DNA (Human Texture Protocol)
         style_profile = self._load_style_profile(author_name)
+
+        # NEW: AUTHOR PERSONA BLOCK (Positive Mimicry)
+        persona_block = ""
+        if style_profile:
+            keywords = style_profile.get("keywords", [])[:15]
+            openers = style_profile.get("common_openers", [])[:10]
+            rhythm = style_profile.get("rhythm_desc", "Distinctive")
+            punct = style_profile.get("punctuation_preference", "Standard")
+
+            p_instr = []
+            if keywords:
+                p_instr.append(f"- **Vocabulary:** Use these signature words: {', '.join(keywords)}.")
+            if openers:
+                p_instr.append(f"- **Openers:** Start sentences with: {', '.join(openers)}.")
+
+            # Explicitly reference the "Jagged" rhythm from profile
+            if style_profile.get("stylistic_dna", {}).get("sentence_structure") == "jagged":
+                p_instr.append("- **RHYTHM:** Jagged/Volatile. Use abrupt breaks. Avoid smooth academic flow.")
+            elif rhythm:
+                p_instr.append(f"- **Rhythm:** {rhythm}. Mimic this cadence.")
+
+            # Punctuation Mimicry
+            if punct == "Dashes":
+                p_instr.append("- **Punctuation:** Your style favors dashes (—) for abrupt breaks and emphasis. Use this to structure your thoughts.")
+            elif punct == "Semicolons":
+                p_instr.append("- **Punctuation:** Your style favors semicolons (;) for complex linking between related ideas.")
+
+            # Rhetoric Instructions
+            style_dna = style_profile.get("stylistic_dna", {})
+            rhetoric = style_dna.get("rhetoric", {})
+
+            if rhetoric.get("use_anaphora", False):
+                p_instr.append("- **RHETORIC:** Use **Anaphora**. Start consecutive sentences with the same word for emphasis (e.g., 'We must fight. We must win.').")
+
+            if rhetoric.get("use_asyndeton", False):
+                p_instr.append("- **RHETORIC:** Use **Asyndeton**. Link clauses with semicolons instead of conjunctions (e.g., 'The enemy advances; we retreat.').")
+
+            if p_instr:
+                persona_block = f"\n\n## AUTHOR PERSONA: {author_name}\n" + "\n".join(p_instr) + "\n"
+
         if style_profile:
             style_dna = style_profile.get("stylistic_dna", {})
             if style_dna:
@@ -4709,31 +4905,79 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 # 4. Vocabulary (The Anti-Thesaurus)
                 human_texture_instructions.append("- **VOCABULARY DOWNGRADE:** Reject 'smart' words where simple ones work. Use 'use' not 'utilize', 'show' not 'demonstrate'. Prefer Anglo-Saxon roots.")
 
-                # 5. Syntax Hazards (The AI Kill-List)
-                human_texture_instructions.append("- **ANTI-ROBOTIC SYNTAX:** Do not use the 'Comma + Participle' pattern (e.g., ', causing X, resulting in Y'). This is the #1 marker of AI. Use independent clauses instead: ', and this causes X' or '; the result is Y'.")
-                human_texture_instructions.append("- **ACTIVE VOICE:** Be authoritative. 'Three laws rule the system,' NOT 'The system is governed by three laws.'")
-                human_texture_instructions.append("- **STRONG CONNECTORS:** Avoid weak academic transitions ('Moreover', 'Furthermore', 'Thus'). Use strong, direct connectors ('But', 'And', 'Yet') or simply start a new sentence.")
+                # 5. Connector Logic (Profile-Driven with Logic Override)
+                # LOGIC OVERRIDE: Jagged means NO smooth connectors
+                structure_type = style_dna.get("sentence_structure", "balanced")
+                if structure_type == "jagged":
+                    # Force the ban instructions even if profile says "True"
+                    human_texture_instructions.append("- **NO ACADEMIC STARTERS:** Do not start sentences with 'While', 'Although', 'Despite', 'Though'. Start directly with the Subject or Action.")
+                    human_texture_instructions.append("- **CONNECTOR BAN:** Do not use academic transitions like 'Moreover', 'Thus', 'Therefore', 'Hence', 'Thereby'. Use strong, direct connectors: 'But', 'And', 'Yet', 'So'.")
+                elif not style_dna.get("allow_complex_connectors", True):
+                    human_texture_instructions.append("- **CONNECTOR BAN:** Do not use academic transitions like 'Moreover', 'Thus', 'Therefore', 'Hence', 'Thereby'. Use strong, direct connectors: 'But', 'And', 'Yet', 'So'.")
 
-                # Replace or augment existing HUMAN TEXTURE PROTOCOL section
+                # 5a. Opener Logic (Profile-Driven)
+                if not style_dna.get("allow_intro_participles", True):
+                    human_texture_instructions.append("- **DIRECT STARTS:** Do not start sentences with '-ing' phrases (e.g., 'Serving as...', 'Being the...'). Start with the Subject.")
+
+                # 5b. Relative Clause Logic (Profile-Driven)
+                if not style_dna.get("allow_relative_clauses", True):
+                    human_texture_instructions.append("- **ANTI-GLUE:** Minimize usage of 'which', 'that', or 'who' to connect ideas. Split into two sentences. (Bad: 'The stock, which is large...' Good: 'The stock is large. It...')")
+
+                # 6. Voice Logic (Profile-Driven)
+                if style_dna.get("force_active_voice", False):
+                    human_texture_instructions.append("- **ACTIVE VOICE ONLY:** Be authoritative. Subject does Action. Never say 'The system is governed by laws'; say 'Laws rule the system.'")
+
+                # 7. Structure Logic (Profile-Driven)
+                structure_type = style_dna.get("sentence_structure", "balanced")
+                if structure_type == "jagged":
+                    # MAO MODE: Stops and Pivots
+                    human_texture_instructions.append("- **USE PARATAXIS:** Avoid syntactic subordination. Do not nest clauses inside clauses. State facts independently. (Bad: 'Because X happened, Y followed.' Good: 'X happened. Y followed.')")
+                    human_texture_instructions.append("- **JAGGED RHYTHM:** Avoid smooth, gliding transitions. Do not use trailing participles (e.g., ', causing...', ', leading to...'). Use semicolons or new sentences instead.")
+                    # Also ban the comma+participle pattern for jagged style
+                    human_texture_instructions.append("- **ANTI-ROBOTIC SYNTAX:** Do not use the 'Comma + Participle' pattern (e.g., ', causing X, resulting in Y'). This is the #1 marker of AI. Use independent clauses instead: ', and this causes X' or '; the result is Y'.")
+                elif structure_type == "flowing":
+                    # MARX MODE: Subordination allowed
+                    human_texture_instructions.append("- **FLOWING RHYTHM:** Use subordinate clauses to connect ideas complexly, but ensure high lexical variety.")
+
+                # 7. Structure Positive Instructions
+                if structure_type == "jagged":
+                    human_texture_instructions.append("- **STARK CONTRAST:** You use short, declarative sentences to state truths. Avoid soft, academic hedging.")
+
+                # 8. Serial Gerund Logic (Force Ban for Safety)
+                # Even if author uses them, the LLM does them poorly ("Laundry List")
+                # Force ban regardless of profile for now
+                human_texture_instructions.append("- **NO SERIAL GERUNDS:** Do not use lists of -ing actions ('running, jumping, and playing'). Use finite verbs.")
+
+                # 9. THE SUMMATIVE MODIFIER BAN (Crucial for GPTZero)
+                human_texture_instructions.append("- **NO SUMMATIVE MODIFIERS:** Do not end sentences with a comma followed by an abstract summary (e.g., ', a transformation that...', ', a concept that...'). Start a new sentence instead (e.g., '. This transformation...').")
+
+                # Final Assembly: Build complete prompt cleanly
                 if human_texture_instructions:
                     texture_block = "\n## HUMAN TEXTURE PROTOCOL (CRITICAL)\n" + "\n".join(human_texture_instructions)
 
-                    # Replace existing static HUMAN TEXTURE PROTOCOL if present
+                    # Remove existing HUMAN TEXTURE PROTOCOL if present (for clean replacement)
                     if "## HUMAN TEXTURE PROTOCOL" in system_prompt:
-                        # Find and replace the existing section
-                        # Note: 're' is already imported at module level (line 9)
                         pattern = r"## HUMAN TEXTURE PROTOCOL.*?(?=\n##|\Z)"
-                        system_prompt = re.sub(pattern, texture_block, system_prompt, flags=re.DOTALL)
-                        if verbose:
-                            print(f"  ✓ Injected stylistic_dna HUMAN TEXTURE PROTOCOL for {author_name}")
-                    else:
-                        # Append if not present
-                        system_prompt += texture_block
-                        if verbose:
-                            print(f"  ✓ Appended stylistic_dna HUMAN TEXTURE PROTOCOL for {author_name}")
+                        system_prompt = re.sub(pattern, "", system_prompt, flags=re.DOTALL).strip()
+
+                    # Assemble: base_prompt + persona_block + texture_block
+                    system_prompt = system_prompt + persona_block + texture_block
+                    if verbose:
+                        print(f"  ✓ Injected stylistic_dna HUMAN TEXTURE PROTOCOL for {author_name}")
+                else:
+                    # Even if no texture instructions, add persona block if available
+                    system_prompt = system_prompt + persona_block
+                    if verbose:
+                        print(f"  ✓ Added AUTHOR PERSONA block for {author_name}")
             else:
-                if verbose:
-                    print(f"  ℹ No stylistic_dna found in profile for {author_name}, using static HUMAN TEXTURE PROTOCOL")
+                # Even if no style_dna, add persona block if available
+                if persona_block:
+                    system_prompt = system_prompt + persona_block
+                    if verbose:
+                        print(f"  ✓ Added AUTHOR PERSONA block for {author_name} (no stylistic_dna)")
+                else:
+                    if verbose:
+                        print(f"  ℹ No stylistic_dna found in profile for {author_name}, using static HUMAN TEXTURE PROTOCOL")
         else:
             if verbose:
                 print(f"  ℹ Style profile not found for {author_name}, using static HUMAN TEXTURE PROTOCOL")
@@ -4846,7 +5090,8 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                     raw_length=raw_len,  # NEW: Pass raw_length
                     verbose=verbose and attempt == 0,
                     global_context=global_context,
-                    current_attempt=attempt + 1  # Pass attempt number (1-indexed) for repetition safety valve
+                    current_attempt=attempt + 1,  # Pass attempt number (1-indexed) for repetition safety valve
+                    vocabulary_budget=vocabulary_budget  # NEW: Pass vocabulary budget for early filtering
                 )
 
                 if not sentence:
@@ -4866,6 +5111,106 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                 if verbose:
                     word_count = len(sentence.split())
                     print(f"    Attempt {attempt + 1}: {word_count} words, score: {score:.2f}")
+
+                # 1. Syntax Check (Absolute Veto - Zero Tolerance)
+                style_profile = self._load_style_profile(author_name)
+                style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+                syntax_violations = self.statistical_critic.validate_syntax_constraints(sentence, style_dna)
+
+                if syntax_violations:
+                    if verbose:
+                        print(f"    ⚠ Syntax violations detected: {', '.join(syntax_violations)}")
+
+                    # NEW: Don't just retry blind. Teach the model.
+                    if attempt < max_sentence_retries - 1:
+                        feedback = f"Fix syntax errors: {', '.join(syntax_violations)}."
+
+                        if "excessive_subordination" in syntax_violations:
+                            feedback += " Sentence is too complex (Hypotaxis). Split it into two simple sentences. Use periods, not commas."
+                        elif "summative_modifier" in syntax_violations:
+                            feedback += " Do not end with ', a [noun]...'. Start a new sentence: '. This [noun]...'."
+                        elif "serial_gerund" in syntax_violations:
+                            feedback += " Do not use lists of -ing actions. Use finite verbs instead."
+                        elif "relative_clause" in syntax_violations:
+                            feedback += " Do not use 'which', 'who', or 'that' to connect ideas. Split into two sentences."
+                        elif "passive_voice" in syntax_violations:
+                            feedback += " Use active voice. Subject must do Action."
+
+                        # Refine immediately
+                        refined = self._refine_sentence(
+                            sentence, feedback, target_len, context_so_far,
+                            author_name, target_pov, perspective_pronoun_list,
+                            style_palette_text, system_prompt, generation_temp,
+                            generation_max_tokens, verbose
+                        )
+
+                        if refined:
+                            refined_sentence = refined if isinstance(refined, str) else refined.get('text', sentence)
+
+                            # CRITICAL: Validate the refined sentence immediately
+                            refined_score, refined_feedback = self.statistical_critic.evaluate_sentence(
+                                refined_sentence, target_len, raw_length=raw_len
+                            )
+                            refined_syntax_violations = self.statistical_critic.validate_syntax_constraints(refined_sentence, style_dna)
+
+                            # Check vocabulary if budget is provided
+                            refined_has_vocab_violation = False
+                            if vocabulary_budget:
+                                forbidden_words = vocabulary_budget.get_forbidden_words()
+                                if forbidden_words:
+                                    refined_lower = refined_sentence.lower()
+                                    for word in forbidden_words:
+                                        if re.search(r'\b' + re.escape(word.lower()) + r'\b', refined_lower):
+                                            refined_has_vocab_violation = True
+                                            break
+
+                            if not refined_syntax_violations and not refined_has_vocab_violation:
+                                # Check if score is acceptable
+                                fuzzy_threshold = 1.0 - compliance_fuzziness
+                                if refined_score >= fuzzy_threshold:
+                                    # Refined sentence passes! Accept it.
+                                    final_sentences.append(refined_sentence)
+                                    context_so_far += refined_sentence + " "
+                                    if verbose:
+                                        word_count = len(refined_sentence.split())
+                                        print(f"    ✓ Sentence {slot_idx + 1} fixed via refinement: {word_count} words, score: {refined_score:.2f}")
+                                    break  # Success! Move to next sentence
+                                else:
+                                    # Score too low, continue to next iteration
+                                    if verbose:
+                                        print(f"    ⚠ Refined sentence score too low: {refined_score:.2f} (threshold: {fuzzy_threshold:.2f})")
+                                    # Update sentence to refined version for next iteration
+                                    sentence = refined_sentence
+                                    continue
+                            else:
+                                # Refined sentence still has issues, continue to next iteration
+                                if verbose:
+                                    if refined_syntax_violations:
+                                        print(f"    ⚠ Refined sentence still has syntax violations: {', '.join(refined_syntax_violations)}")
+                                    if refined_has_vocab_violation:
+                                        print(f"    ⚠ Refined sentence still has vocabulary violations")
+                                # Update sentence to refined version for next iteration (might help)
+                                sentence = refined_sentence
+                                continue
+                        else:
+                            # Refinement failed, continue to next iteration
+                            continue
+                    else:
+                        # Final attempt - continue to let emergency brake handle it
+                        continue  # Go to next retry attempt
+
+                # 2. Vocabulary Check (Immediate Veto)
+                # Check forbidden words here instead of waiting for full paragraph
+                if vocabulary_budget:
+                    forbidden_words = vocabulary_budget.get_forbidden_words()
+                    if forbidden_words:
+                        sentence_lower = sentence.lower()
+                        for word in forbidden_words:
+                            # Check if word appears as whole word (not substring)
+                            if re.search(r'\b' + re.escape(word.lower()) + r'\b', sentence_lower):
+                                if verbose:
+                                    print(f"    ⚠ Vocabulary violation: '{word}' - FORBIDDEN")
+                                continue  # Skip this sentence variant
 
                 # Check if this is the final attempt
                 is_final_attempt = (attempt == max_sentence_retries - 1)
@@ -4901,12 +5246,76 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
                     else:
                         sentence = refined_result if refined_result else sentence
 
-            # If we exhausted retries, use best attempt
-            if len(final_sentences) == slot_idx and sentence:
-                final_sentences.append(sentence)  # Use last attempt
-                context_so_far += sentence + " "
-                if verbose:
-                    print(f"    ⚠ Sentence {slot_idx + 1} used after {max_sentence_retries} attempts")
+            # Check if we failed to get a valid sentence
+            if len(final_sentences) == slot_idx:
+                # We are here because we exhausted retries without acceptance.
+                # The 'sentence' variable holds the last attempt (likely invalid).
+
+                # Final Check: Re-validate syntax before accepting
+                style_profile = self._load_style_profile(author_name)
+                style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+                syntax_errors = self.statistical_critic.validate_syntax_constraints(sentence, style_dna) if sentence else []
+
+                if not syntax_errors and sentence:
+                    # No syntax errors - safe to accept
+                    final_sentences.append(sentence)
+                    context_so_far += sentence + " "
+                    if verbose:
+                        print(f"    ✓ Sentence {slot_idx + 1} accepted after {max_sentence_retries} attempts (no syntax violations)")
+                elif sentence:
+                    # EMERGENCY BRAKE: The sentence is bad. Force a split.
+                    if verbose:
+                        print(f"    🚨 Emergency Split Triggered for sentence {slot_idx + 1}: {sentence[:50]}...")
+
+                    split_prompt = f"""Split this complex sentence into 2 or 3 short, simple sentences. Remove all conjunctions and subordinating clauses. Keep the meaning exactly the same.
+
+Input: {sentence}
+
+Output only the split sentences, separated by periods. No explanations."""
+
+                    try:
+                        # Use a fast call to split
+                        fixed = self.llm_provider.call(
+                            system_prompt="You are a sentence splitter. Split complex sentences into simple, independent sentences.",
+                            user_prompt=split_prompt,
+                            model_type="editor",
+                            require_json=False,
+                            max_tokens=200,
+                            temperature=0.3
+                        )
+
+                        # Clean up and split by periods
+                        fixed = fixed.strip()
+                        # Remove quotes if present
+                        if fixed.startswith('"') and fixed.endswith('"'):
+                            fixed = fixed[1:-1]
+
+                        # Split by periods and clean
+                        fixed_sents = [s.strip() for s in fixed.split(".") if s.strip()]
+                        # Re-add punctuation if missing
+                        fixed_sents = [s + "." if not s.endswith((".", "!", "?")) else s for s in fixed_sents]
+
+                        if fixed_sents:
+                            final_sentences.extend(fixed_sents)
+                            context_so_far += " ".join(fixed_sents) + " "
+                            if verbose:
+                                print(f"    ✓ Emergency split successful: {len(fixed_sents)} sentences created")
+                        else:
+                            # Fallback: accept original with warning
+                            final_sentences.append(sentence)
+                            context_so_far += sentence + " "
+                            if verbose:
+                                print(f"    ⚠ Emergency split failed, accepting original sentence")
+                    except Exception as e:
+                        # Fallback: accept original with warning
+                        if verbose:
+                            print(f"    ⚠ Emergency split error: {e}. Accepting original sentence.")
+                        final_sentences.append(sentence)
+                        context_so_far += sentence + " "
+                else:
+                    # No sentence at all - this shouldn't happen, but handle gracefully
+                    if verbose:
+                        print(f"    ⚠ No sentence generated after {max_sentence_retries} attempts for slot {slot_idx + 1}")
 
         # Combine sentences into paragraph
         final_paragraph = " ".join(final_sentences)
@@ -4938,7 +5347,10 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
 
         # LEXICAL DIVERSITY GUARD: Check for repetitive phrasing
         # Check for repetition and action echo
-        repetition_issues = self.statistical_critic.check_repetition(final_paragraph)
+        # Load style_dna to check for anaphora allowance
+        style_profile = self._load_style_profile(author_name)
+        style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+        repetition_issues = self.statistical_critic.check_repetition(final_paragraph, style_dna=style_dna)
 
         # Check for action echo (repeated action verbs across sentences)
         import spacy
@@ -5078,7 +5490,10 @@ Example: ["Observation of material conditions", "Theoretical implication", "Fina
 
                     # Check if repetition improved
                     # Check for repetition and action echo in refined text
-                    new_repetition_issues = self.statistical_critic.check_repetition(refined_text)
+                    # Load style_dna to check for anaphora allowance
+                    style_profile = self._load_style_profile(author_name)
+                    style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+                    new_repetition_issues = self.statistical_critic.check_repetition(refined_text, style_dna=style_dna)
                     try:
                         doc = self.statistical_critic.nlp(refined_text)
                         sentences = [sent.text.strip() for sent in doc.sents]
@@ -5426,6 +5841,7 @@ Output only the sentence, no explanations.
             ending_constraint_instruction = "6. **GROUNDING:** " + ending_constraint.replace("**GROUNDING CONSTRAINT (Critical):**", "").strip()
 
         # 3. Safe Formatting (use dictionary to ensure all keys present)
+        # Check if template supports entity_instruction, otherwise append it
         prompt_params = {
             "slot_content": content,
             "target_length": target_length,
@@ -5436,7 +5852,16 @@ Output only the sentence, no explanations.
             "ending_constraint_instruction": ending_constraint_instruction  # New parameter
         }
 
-        user_prompt = template.format(**prompt_params)
+        # Try to format with entity_instruction if template supports it
+        try:
+            prompt_params["entity_instruction"] = entity_instruction
+            user_prompt = template.format(**prompt_params)
+        except KeyError:
+            # Template doesn't have entity_instruction placeholder, append it
+            user_prompt = template.format(**prompt_params)
+            if entity_instruction:
+                # Insert after slot_content section
+                user_prompt = user_prompt.replace("## Content to Express:", f"## Content to Express:{entity_instruction}")
 
         try:
             result = self.llm_provider.call(
@@ -5475,7 +5900,8 @@ Output only the sentence, no explanations.
         is_last_sentence: bool = False,
         verbose: bool = False,
         raw_length: Optional[int] = None,  # NEW: Add parameter (for consistency)
-        current_attempt: int = 1  # NEW: Current attempt number for repetition safety valve
+        current_attempt: int = 1,  # NEW: Current attempt number for repetition safety valve
+        entity_instruction: str = ""  # NEW: Entity preservation instruction
     ) -> List[str]:
         """Generate N variants of a sentence for a specific slot.
 
@@ -5529,6 +5955,11 @@ Adopt the voice of {author_name}.
 Output only the sentence, no explanations.
 """
 
+        # Check if author has jagged style for expansion guidance
+        style_profile = self._load_style_profile(author_name)
+        style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+        is_jagged = style_dna.get("sentence_structure") == "jagged"
+
         # Build prompt requesting N variants
         user_content = f"""Generate {n} different variants of the sentence.
 Strictly follow the constraints below.
@@ -5537,8 +5968,25 @@ Strictly follow the constraints below.
 ## Content to Express:
 {content}
 
+{entity_instruction}
+
 ## Target Length:
-{target_length} words (strict constraint)
+{target_length} words (strict constraint)"""
+
+        # Add horizontal expansion guidance for jagged style with long targets
+        if is_jagged and target_length > 30:
+            user_content += f"""
+
+**LENGTH EXPANSION (Jagged Style):** To reach {target_length} words while maintaining simple structure:
+- Use coordination (and, but, semicolons) to combine independent clauses
+- Add descriptive details and examples
+- DO NOT use subordination (because, while, which) - it increases complexity
+- Example: 'The war was long; it ended. The people celebrated.' (NOT 'The war, which was long, ended when the people celebrated.')"""
+
+        user_content += """
+
+## Previous Context:
+{prev_context}
 
 ## Previous Context:
 {prev_context}
@@ -5654,7 +6102,8 @@ Output only the sentence, no explanations.
         verbose: bool = False,
         global_context: Optional[Dict] = None,
         raw_length: Optional[int] = None,  # NEW: Add parameter
-        current_attempt: int = 1  # NEW: Current attempt number for repetition safety valve
+        current_attempt: int = 1,  # NEW: Current attempt number for repetition safety valve
+        vocabulary_budget: Optional['VocabularyBudget'] = None  # NEW: Vocabulary budget for early filtering
     ) -> Optional[str]:
         """Select best sentence variant based on format compliance, zipper check, and length proximity.
 
@@ -5692,6 +6141,23 @@ Output only the sentence, no explanations.
             if not v or len(v.split()) < 3:
                 continue
 
+            # 1.5. Vocabulary Check (Pre-filter forbidden words)
+            contains_forbidden = False
+            if vocabulary_budget:
+                forbidden_words = vocabulary_budget.get_forbidden_words()
+                if forbidden_words:
+                    sentence_lower = v.lower()
+                    for word in forbidden_words:
+                        # Check if word appears as whole word (not substring)
+                        if re.search(r'\b' + re.escape(word.lower()) + r'\b', sentence_lower):
+                            if verbose:
+                                print(f"      Variant filtered (Forbidden Vocabulary): {v[:50]}... (contains '{word}')")
+                            contains_forbidden = True
+                            break  # Found forbidden word, skip this variant
+
+            if contains_forbidden:
+                continue  # Skip this variant
+
             # 2. ZIPPER CHECK (The Optimization)
             # If this variant echoes the previous sentence, disqualify it immediately
             if prev_context and check_zipper_merge(prev_context, v):
@@ -5720,7 +6186,6 @@ Output only the sentence, no explanations.
                     # Fallback: Check for sentence terminators followed by spaces and capital letters
                     # Matches ". " or "? " or "! " followed by a capital letter inside the string
                     # This is safer than counting periods (avoids false positives from "Mr. Smith")
-                    import re
                     sentence_terminators = len(re.findall(r'[.!?]\s+[A-Z]', v))
                     if sentence_terminators > 0 and target_length < 50:
                         # Found internal punctuation followed by a capital letter -> Likely 2+ sentences
@@ -6016,9 +6481,23 @@ Output only the corrected sentence.
             prev_context=prev_context
         )
 
-        # Add expansion guidance if needed
+        # Add expansion guidance if needed (The Accordion Protocol)
         if "too short" in feedback_str.lower():
-            user_prompt += "\n\nEXPANSION TIP: Do not just pad with fluff. Add a subordinate clause, a descriptive adjective, or clarify the causal link to increase word count naturally."
+            # Check if author has jagged style
+            style_profile = self._load_style_profile(author_name)
+            style_dna = style_profile.get("stylistic_dna", {}) if style_profile else {}
+
+            if style_dna.get("sentence_structure") == "jagged":
+                # JAGGED MODE: Horizontal Expansion
+                user_prompt += "\n\nEXPANSION TIP (JAGGED STYLE):"
+                user_prompt += "\n- DO NOT add subordinate clauses (no 'which', 'because', 'while')."
+                user_prompt += "\n- EXPAND HORIZONTALLY: Chain independent facts together using semicolons or strong conjunctions (But/And)."
+                user_prompt += "\n- Example: Instead of 'The war, which was long, ended,' write 'The war was long; it ended.'"
+                user_prompt += "\n- Add descriptive details: adjectives, adverbs, prepositional phrases."
+                user_prompt += "\n- Use appositives: 'Marx, the philosopher, wrote...'"
+            else:
+                # FLOWING MODE: Vertical Expansion (Standard)
+                user_prompt += "\n\nEXPANSION TIP: Add descriptive details, adjectives, or subordinate clauses to increase richness."
 
         # Get repetition penalties from config
         presence_penalty = self.generation_config.get("presence_penalty", 0.0)

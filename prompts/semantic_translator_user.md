@@ -24,7 +24,7 @@ Do NOT use 'The text says' or 'The author describes'. Be direct. Preserve the su
 - State the arguments as facts, not as attributed statements
 
 **CRITICAL SUMMARIZATION RULES:**
-1. **Preserve Proper Nouns:** Do not generalize specific names. Keep exact names like "Baudelaire", "Photoshop", "Luddite Trap", "DeepSeek", "Disney", etc.
+1. **Preserve Proper Nouns:** Do not generalize specific names. Keep exact names like "Baudelaire", "Photoshop", "Luddite Trap", "DeepSeek", "Disney", etc. PRESERVE specific proper nouns (people, places) and key technical terms.
 2. **Preserve Analogies:** If the text compares X to Y (e.g., "AI art to photography" or "AI to theft machine"), keep the comparison structure intact.
 3. **Preserve Key Arguments:** Do not flatten specific arguments into generic statements. Maintain the logical structure of the argument.
 4. **Preserve Concrete Examples:** Keep specific historical examples, technical terms, and named concepts.
