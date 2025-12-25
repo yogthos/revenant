@@ -508,12 +508,20 @@ class StyleTranslator:
             from src.generator.graph_matcher import TopologicalMatcher
 
             # Find which global proposition indices correspond to this chunk
+            # Track used indices to prevent duplicate matching
             chunk_indices = []
+            used_indices = set()
             for chunk_prop in chunk:
+                matched = False
                 for i, global_prop in enumerate(all_propositions):
-                    if global_prop == chunk_prop:
+                    if global_prop == chunk_prop and i not in used_indices:
                         chunk_indices.append(i)
+                        used_indices.add(i)
+                        matched = True
                         break
+                if not matched:
+                    if verbose:
+                        print(f"     ⚠ Could not find unique match for chunk proposition: {chunk_prop[:60]}...")
 
             if not chunk_indices:
                 if verbose:
@@ -551,7 +559,16 @@ class StyleTranslator:
                     subgraph_mermaid = f"graph LR; {chunk_nodes[0]}"
 
             # Build subgraph node_map
-            subgraph_node_map = {node: global_node_map.get(node, "") for node in chunk_nodes if node in global_node_map}
+            # Populate from global_node_map, with fallback to chunk propositions for missing entries
+            subgraph_node_map = {}
+            for i, node in enumerate(chunk_nodes):
+                if node in global_node_map:
+                    subgraph_node_map[node] = global_node_map[node]
+                elif i < len(chunk):
+                    # Fallback: use chunk proposition directly if not in global map
+                    subgraph_node_map[node] = chunk[i]
+                    if verbose:
+                        print(f"     ⚠ Node {node} not in global_node_map, using chunk proposition as fallback")
 
             # Create subgraph dictionary
             subgraph = {
@@ -5991,6 +6008,12 @@ Insert the missing information into the current text. You may:
             last_generated_sentence = None  # Initialize before loop
             chunk_scores = []  # Track scores from repair loops
             for chunk_idx, chunk in enumerate(chunks):
+                # Skip empty chunks
+                if not chunk:
+                    if verbose:
+                        print(f"  Skipping empty chunk {chunk_idx + 1}")
+                    continue
+
                 try:
                     if verbose:
                         print(f"  Processing chunk {chunk_idx + 1}/{len(chunks)}: {len(chunk)} propositions")
@@ -6009,6 +6032,7 @@ Insert the missing information into the current text. You may:
                     input_intent = 'ARGUMENT'  # Default
                     input_signature = 'DEFINITION'  # Default
                     input_role = None
+                    chunk_global_indices = []  # Track global indices for this chunk
 
                     if global_graph and global_graph.get('mermaid'):
                         # Extract subgraph for this chunk from global graph
@@ -6018,6 +6042,16 @@ Insert the missing information into the current text. You may:
                             input_signature = input_graph.get('signature', global_graph.get('signature', 'DEFINITION'))
                             input_role = input_graph.get('role', global_graph.get('role'))
 
+                            # Extract the global indices used in the subgraph
+                            # The _extract_chunk_graph_from_global method creates nodes like P6, P7, P8
+                            # We need to track which global indices these correspond to
+                            chunk_node_map = input_graph.get('node_map', {})
+                            for node_key in chunk_node_map.keys():
+                                if node_key.startswith('P') and node_key[1:].isdigit():
+                                    global_idx = int(node_key[1:])
+                                    if global_idx not in chunk_global_indices:
+                                        chunk_global_indices.append(global_idx)
+
                     # Fallback: Create new graph for this chunk if extraction failed
                     if not input_graph:
                         prev_paragraph_summary = prev_paragraph_text[:200] + "..." if prev_paragraph_text and len(prev_paragraph_text) > 200 else prev_paragraph_text
@@ -6026,6 +6060,8 @@ Insert the missing information into the current text. You may:
                             input_intent = input_graph.get('intent', 'ARGUMENT')
                             input_signature = input_graph.get('signature', 'DEFINITION')
                             input_role = input_graph.get('role')
+                            # For new graphs, use local indices (0, 1, 2...)
+                            chunk_global_indices = list(range(len(chunk)))
 
                     # Load style profile for style injection
                     style_profile = self._load_style_profile(author_name)
@@ -6052,6 +6088,7 @@ Insert the missing information into the current text. You may:
                         fallback_text = self._fallback_simple_generation_chunk(chunk, author_name, verbose)
                         if fallback_text:
                             generated_sentences.append(fallback_text)
+                            chunk_scores.append(0.5)  # Track fallback score
                         continue
 
                     if not blueprint:
@@ -6060,6 +6097,7 @@ Insert the missing information into the current text. You may:
                         fallback_text = self._fallback_simple_generation_chunk(chunk, author_name, verbose)
                         if fallback_text:
                             generated_sentences.append(fallback_text)
+                            chunk_scores.append(0.5)  # Track fallback score
                         continue
 
                     # Phase 4: Validate blueprint signature
@@ -6101,8 +6139,17 @@ Insert the missing information into the current text. You may:
                         if skeleton:
                             print(f"        Skeleton: {skeleton[:80]}...")
 
-                    # Create input_node_map from propositions (P0->proposition text)
-                    input_node_map = {f'P{i}': prop for i, prop in enumerate(chunk)}
+                    # Create input_node_map using global indices if available, otherwise local indices
+                    # This ensures the graph's P6, P7, P8 references match the input_node_map keys
+                    if chunk_global_indices and len(chunk_global_indices) == len(chunk):
+                        input_node_map = {f'P{i}': prop for i, prop in zip(chunk_global_indices, chunk)}
+                        if verbose:
+                            print(f"     Using global indices for input_node_map: {chunk_global_indices}")
+                    else:
+                        # Fallback to local indices if mapping fails
+                        input_node_map = {f'P{i}': prop for i, prop in enumerate(chunk)}
+                        if verbose:
+                            print(f"     ⚠ Using local indices for input_node_map (global mapping unavailable)")
 
                     # Render from graph using repair loop
                     if verbose:
@@ -6123,11 +6170,10 @@ Insert the missing information into the current text. You may:
                         chunk_graph=input_graph  # Pass chunk graph for semantic topology
                     )
 
-                    # Track score for this chunk
-                    chunk_scores.append(sentence_score)
-
+                    # Track score and sentence together to ensure consistency
                     if sentence:
                         generated_sentences.append(sentence)
+                        chunk_scores.append(sentence_score)  # Only append score if we have a sentence
                         last_generated_sentence = sentence
                         if verbose:
                             print(f"  ✓ Generated sentence from graph: {sentence[:80]}...")
@@ -6170,7 +6216,10 @@ Insert the missing information into the current text. You may:
                                 if verbose:
                                     print(f"  ⚠ Telemetry logging failed: {e}")
                     else:
+                        # Explicitly track failures with zero score
+                        chunk_scores.append(0.0)
                         if verbose:
+                            print(f"  ⚠ Generated empty sentence for chunk {chunk_idx + 1}, tracking as 0.0 score")
                             print(f"  ⚠ Graph generation returned empty, using fallback")
                         fallback_text = self._fallback_simple_generation_chunk(chunk, author_name, verbose)
                         if fallback_text:
@@ -6196,10 +6245,10 @@ Insert the missing information into the current text. You may:
 
                 # Use the best score from repair loops (average of chunk scores)
                 # This ensures we use the REPAIRED scores, not initial failures
-                if 'chunk_scores' in locals() and chunk_scores:
+                if chunk_scores:
                     compliance_score = sum(chunk_scores) / len(chunk_scores)
                     if verbose:
-                        print(f"  ✓ Paragraph Semantic Score: {compliance_score:.3f} (from {len(chunk_scores)} repaired chunks)")
+                        print(f"  ✓ Paragraph Semantic Score: {compliance_score:.3f} (from {len(chunk_scores)} chunks)")
                 else:
                     # Fallback: calculate if chunk scores not available
                     compliance_score = self._calculate_semantic_score(result, propositions, verbose=verbose)

@@ -95,19 +95,29 @@ Task:
    - Example: "Historical attribution of a creation action to a named agent."
    - Example: "A contrast between a false view and a true statement."
 6. Analyze the propositions. What is the primary rhetorical intent? Choose one: `DEFINITION`, `ARGUMENT`, `NARRATIVE`, `INTERROGATIVE`, `IMPERATIVE`.
-   - `DEFINITION`: Explaining what something is (e.g., "The phone is a tool.").
-   - `ARGUMENT`: Persuading or debating (e.g., "Therefore, we must reject...").
-   - `NARRATIVE`: Telling a sequence of events (e.g., "At that time, the army moved...").
+
+**Intent Classification Rules:**
+   - `DEFINITION`: Explaining what a concept IS or IS NOT (e.g., "Dialectics is a toolset", "It is not a realm of mysticism").
+   - `NARRATIVE`: Describing actions, events, or perceptions (e.g., "Many people assume...", "Critics argue...", "People hear...").
+   - `ARGUMENT`: Logical reasoning or proof (e.g., "Therefore, we must reject...").
    - `INTERROGATIVE`: Asking rhetorical questions.
    - `IMPERATIVE`: Giving commands/directives.
+
+**CRITICAL DISTINCTION:**
+   - If the subject is an ACTOR (e.g., "People", "Many", "Everyone", "Critics", "They", "We") performing a cognitive action ("assume", "hear", "think", "believe", "perceive"), the intent is **NARRATIVE**, even if they are wrong.
+   - Do NOT label "People assume X" or "Many people hear Y" as a DEFINITION. These are narrative descriptions of perceptions.
+   - Only use DEFINITION when directly stating what something IS (e.g., "X is Y", "X defines Y").
+
 7. Determine the **Logical Signature** of this chunk (Choose ONE based on the relationship between propositions):
    - Does it correct a misconception? -> CONTRAST
    - Does it explain a cause? -> CAUSALITY
-   - Does it define a term? -> DEFINITION
+   - Does it define a term? -> DEFINITION (ONLY if intent is DEFINITION, not NARRATIVE)
    - Does it describe a sequence? -> SEQUENCE
    - Does it state a condition? -> CONDITIONAL
    - Does it enumerate items? -> LIST
-   - If classification is ambiguous, default to DEFINITION.
+   - Does it describe a common belief or perception? -> ATTRIBUTION or MISCONCEPTION (if correcting it)
+   - **If the text describes a common belief or perception (e.g., "People think X"), label the signature as `ATTRIBUTION` or `MISCONCEPTION`, not just `CONTRAST` or `DEFINITION`.**
+   - If classification is ambiguous, default to DEFINITION (but only if intent is DEFINITION).
 8. Analyze the **Narrative Role** relative to the previous context:
    - Is this an `INTRO` (New Topic)? - Introduces a new subject or argument.
    - Is this an `ELABORATION` (Continuing from previous)? - Expands on or continues the previous paragraph's point.

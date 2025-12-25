@@ -488,7 +488,86 @@ class TopologicalMatcher:
             if input_role:
                 print(f"     Input role: {input_role}")
 
-        # Default input_signature to DEFINITION if not provided
+        # Detect Narrative inputs based on subject analysis using spaCy
+        # Check if propositions start with narrative subjects (actors performing cognitive actions)
+        is_narrative_subject = False
+        nlp = self._get_nlp()
+
+        if nlp:
+            # Use spaCy for linguistic analysis
+            narrative_subject_pos = {'PRON', 'NOUN', 'DET'}  # Pronouns, nouns, determiners that indicate subjects
+            narrative_indicators = {'people', 'many', 'critics', 'they', 'we', 'everyone', 'some', 'most', 'others', 'individuals'}
+            narrative_verbs = {'assume', 'hear', 'think', 'believe', 'perceive', 'imagine', 'suppose', 'consider', 'view', 'see'}
+
+            for prop in propositions[:3]:  # Check first 3 propositions
+                doc = nlp(prop)
+
+                # Check first few tokens for narrative subject indicators
+                # Look for pronouns, nouns, or determiners that match narrative patterns
+                has_narrative_subject = False
+                has_narrative_verb = False
+
+                # Check first 5 tokens for subject indicators
+                for token in doc[:5]:
+                    token_lower = token.text.lower()
+                    # Check if token is a narrative indicator (as a subject: PRON, NOUN, or DET)
+                    if (token_lower in narrative_indicators and
+                        token.pos_ in narrative_subject_pos):
+                        has_narrative_subject = True
+                        if verbose:
+                            print(f"     Found narrative subject: '{token.text}' (POS: {token.pos_})")
+                        break
+
+                if has_narrative_subject:
+                    # Check for narrative verbs in the proposition
+                    for token in doc:
+                        token_lower = token.text.lower()
+                        # Check if token is a verb and matches narrative verb patterns
+                        if (token.pos_ == 'VERB' and
+                            token_lower in narrative_verbs):
+                            has_narrative_verb = True
+                            if verbose:
+                                print(f"     Found narrative verb: '{token.text}' (POS: {token.pos_})")
+                            break
+
+                    if has_narrative_verb:
+                        is_narrative_subject = True
+                        if verbose:
+                            print(f"     Detected narrative subject pattern: {prop[:60]}...")
+                        break
+        else:
+            # Fallback to regex if spaCy unavailable
+            import re
+            narrative_indicators = ['people', 'many', 'critics', 'they', 'we', 'everyone', 'some', 'most']
+            narrative_verbs = ['assume', 'hear', 'think', 'believe', 'perceive', 'imagine', 'suppose']
+
+            for prop in propositions[:3]:
+                prop_lower = prop.lower()
+                words = prop_lower.split()[:5]
+                word_set = set(words)
+
+                has_narrative_subject = any(indicator in word_set for indicator in narrative_indicators)
+
+                if has_narrative_subject:
+                    has_narrative_verb = any(re.search(r'\b' + re.escape(verb) + r'\b', prop_lower)
+                                             for verb in narrative_verbs)
+                    if has_narrative_verb:
+                        is_narrative_subject = True
+                        if verbose:
+                            print(f"     Detected narrative subject pattern (regex fallback): {prop[:60]}...")
+                        break
+
+        # If input is NARRATIVE or has narrative subject pattern, adjust signature handling
+        if input_intent == 'NARRATIVE' or is_narrative_subject:
+            if verbose:
+                print(f"     Input is NARRATIVE - will prefer narrative/argument candidates over definition templates")
+            # Don't default to DEFINITION for narratives
+            if not input_signature:
+                input_signature = 'ATTRIBUTION'  # Better default for narratives
+                if verbose:
+                    print(f"     Defaulting signature to ATTRIBUTION for narrative input")
+
+        # Default input_signature to DEFINITION if not provided (only for non-narrative)
         if not input_signature:
             input_signature = 'DEFINITION'
             if verbose:
@@ -672,6 +751,7 @@ class TopologicalMatcher:
                 style_vocab,
                 len(propositions),
                 global_signature=input_signature,  # Pass global signature for contextual override
+                input_intent=input_intent,  # Pass intent to handle narrative vs definition
                 verbose=verbose
             )
 
@@ -845,12 +925,21 @@ Constraints:
    - The Input Logic is: {input_intent} with signature {input_signature}.
    - Identify the logical sequence (e.g., "Definition -> Contrast" or "Purpose -> Attribution").
    - **CRITICAL:** Identify whether propositions are SEPARATE/INDEPENDENT or UNIFIED/INTERCONNECTED in the input
+   - **NARRATIVE DETECTION:** If the input is NARRATIVE (describes actions/perceptions like "People assume...", "Many hear..."), you MUST:
+     * **AVOID** definition templates like "It is not [S0]..." or "This is [S0]..."
+     * **PREFER** subject-first structures like "[S0]..." or "While [S0]..."
+     * Use narrative connectors: ", yet ", "; however, ", ", whereas " (NOT "It is not")
 
 2. **Select Best Structural Match:**
    - Find the candidate whose skeleton structure BEST matches this logical flow.
    - **CRITICAL:** Do NOT invent a new skeleton. If none match well, select the closest one and adapt minimally.
    - **Structural Mapping:** Map the Input Logic pattern onto the candidate's grammatical structure.
-   - **If NO candidate matches:** Return a simple structure like "[P0] and [P1]" that preserves facts without style.
+   - **NARRATIVE CONSTRAINT (CRITICAL):** If input is NARRATIVE (describes actions/perceptions like "People assume...", "Many hear..."):
+     * **AVOID** definition templates: "It is not [S0]...", "This is [S0]...", "Far from being [S0]..."
+     * **PREFER** subject-first structures: "[S0]...", "While [S0]...", "When [S0]..."
+     * Use narrative connectors: ", yet ", "; however, ", ", whereas " (NOT "It is not")
+     * **PENALIZE** candidates that start with definition patterns for narrative inputs
+   - **If NO candidate matches:** Return a simple structure like "[S0] and [S1]" that preserves facts without style.
 
 2. **Harvest Connectors (The Frankenstein Step):**
    - Look through the 20 candidates for phrases that match this topology.
@@ -875,9 +964,12 @@ Constraints:
    - For each Skeleton Slot `[S0]`, `[S1]`, etc., you MUST specify which Input Proposition Indices (0, 1, 2...) map to it.
    - **Merging Rule:** If multiple input propositions should be merged into one slot (e.g., P0 and P1 are redundant), map them both: `"[S0]": [0, 1]`
    - **Splitting Rule:** If one input proposition should be split across slots, you may reference it multiple times (rare).
-   - **Example:** If Input has P0="People assume X", P1="People assume Y" (redundant), and P2="Reality is Z", then:
-     - Skeleton: "It is not [S0], but [S1]"
+   - **Example (NARRATIVE):** If Input has P0="People assume X", P1="People assume Y" (redundant), and P2="Reality is Z", then:
+     - Skeleton: "[S0], yet [S1]" (subject-first, NOT "It is not [S0]...")
      - slot_mapping: `{{"[S0]": [0, 1], "[S1]": [2]}}` (merged P0 and P1 into S0)
+   - **Example (DEFINITION):** If Input has P0="X is Y", P1="X is not Z", then:
+     - Skeleton: "[S0] is [S1], not [S2]"
+     - slot_mapping: `{{"[S0]": [0], "[S1]": [1], "[S2]": [2]}}`
 
 5. **Fallback:**
    - If you absolutely cannot find a match, you may adapt a candidate, but you MUST maintain the **dense, archaic, or revolutionary tone** of the group.
@@ -1414,6 +1506,7 @@ Constraints:
         style_vocab: Dict[str, List[str]],
         num_propositions: int,
         global_signature: Optional[str] = None,
+        input_intent: Optional[str] = None,
         verbose: bool = False
     ) -> Optional[str]:
         """Build skeleton by traversing the input graph and styling edges.
@@ -1529,25 +1622,60 @@ Constraints:
                     # Determine effective label for rhetorical edges
                     effective_label = local_label
 
-                    # LIMITED CONTRAST OVERRIDE: Only override SEQUENCE to CONTRAST if:
-                    # 1. Global signature is CONTRAST
-                    # 2. Local edge is SEQUENCE (not already specific)
-                    # 3. We haven't used a contrast connector yet in this chunk
-                    if global_signature == 'CONTRAST' and local_label == 'SEQUENCE' and not contrast_used:
-                        effective_label = 'CONTRAST'
-                        contrast_used = True  # Mark that we've used contrast
-                        if verbose:
-                            print(f"     Overriding first SEQUENCE edge with CONTRAST (global signature: {global_signature})")
-                    # If we've already used contrast, keep SEQUENCE as SEQUENCE
-                    elif global_signature == 'CONTRAST' and local_label == 'SEQUENCE' and contrast_used:
-                        effective_label = 'SEQUENCE'  # Keep as sequence for flow
-                        if verbose:
-                            print(f"     Keeping SEQUENCE edge (contrast already used, maintaining flow)")
+                    # NARRATIVE HANDLING: For narrative inputs, prefer SEQUENCE/ATTRIBUTION over CONTRAST
+                    # Even if correcting a misconception, use narrative flow: "[People] think [X], yet [Reality] is [Y]"
+                    # NOT definition flow: "It is not [X]..."
+                    if input_intent == 'NARRATIVE':
+                        # For narratives, default to SEQUENCE or ATTRIBUTION connectors, not CONTRAST
+                        # Only use CONTRAST if it's explicitly a contrast edge (not just global signature)
+                        if local_label == 'SEQUENCE':
+                            # Keep as SEQUENCE for narrative flow
+                            effective_label = 'SEQUENCE'
+                            if verbose:
+                                print(f"     Keeping SEQUENCE edge for NARRATIVE intent (maintaining narrative flow)")
+                        elif local_label == 'CONTRAST' and not contrast_used:
+                            # Allow one contrast pivot, but prefer narrative connectors
+                            effective_label = 'CONTRAST'
+                            contrast_used = True
+                            if verbose:
+                                print(f"     Using CONTRAST edge for NARRATIVE (first contrast pivot)")
+                        elif local_label == 'CONTRAST' and contrast_used:
+                            # After first contrast, prefer SEQUENCE for flow
+                            effective_label = 'SEQUENCE'
+                            if verbose:
+                                print(f"     Converting CONTRAST to SEQUENCE for NARRATIVE (maintaining flow)")
+                    else:
+                        # LIMITED CONTRAST OVERRIDE: Only override SEQUENCE to CONTRAST if:
+                        # 1. Global signature is CONTRAST
+                        # 2. Local edge is SEQUENCE (not already specific)
+                        # 3. We haven't used a contrast connector yet in this chunk
+                        if global_signature == 'CONTRAST' and local_label == 'SEQUENCE' and not contrast_used:
+                            effective_label = 'CONTRAST'
+                            contrast_used = True  # Mark that we've used contrast
+                            if verbose:
+                                print(f"     Overriding first SEQUENCE edge with CONTRAST (global signature: {global_signature})")
+                        # If we've already used contrast, keep SEQUENCE as SEQUENCE
+                        elif global_signature == 'CONTRAST' and local_label == 'SEQUENCE' and contrast_used:
+                            effective_label = 'SEQUENCE'  # Keep as sequence for flow
+                            if verbose:
+                                print(f"     Keeping SEQUENCE edge (contrast already used, maintaining flow)")
 
                     edge_label = effective_label
 
                     # Handle Rhetorical Edges via Style Lookup
                     connectors_for_logic = style_vocab.get(edge_label, [])
+
+                    # NARRATIVE CONNECTOR PRIORITY: For narratives, prefer connectors that maintain subject-first flow
+                    if input_intent == 'NARRATIVE' and edge_label in ['SEQUENCE', 'CONTRAST']:
+                        # Prioritize connectors that work with subject-first structure
+                        narrative_preferred = [", yet ", "; however, ", ", whereas ", ", while ", ", and "]
+                        # Filter to prefer narrative connectors
+                        narrative_connectors = [c for c in connectors_for_logic if any(pref in c.lower() for pref in [", yet", "however", "whereas", "while", " and "])]
+                        if narrative_connectors:
+                            # Prepend narrative connectors to the front of the list
+                            connectors_for_logic = narrative_connectors + [c for c in connectors_for_logic if c not in narrative_connectors]
+                            if verbose:
+                                print(f"     Prioritized {len(narrative_connectors)} narrative connectors for NARRATIVE intent")
 
                     # Filter invalid connectors (e.g., VERBs in CONTRAST)
                     valid_connectors = []
