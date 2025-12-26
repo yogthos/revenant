@@ -1,0 +1,292 @@
+"""Configuration management for the style transfer pipeline."""
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Dict, Optional, Any
+
+from .utils.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@dataclass
+class LLMProviderConfig:
+    """Configuration for a specific LLM provider."""
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    max_tokens: int = 4096
+    temperature: float = 0.7
+    timeout: int = 120
+
+
+@dataclass
+class LLMConfig:
+    """Configuration for LLM providers."""
+    provider: str = "deepseek"
+    providers: Dict[str, LLMProviderConfig] = field(default_factory=dict)
+    max_retries: int = 5
+    base_delay: float = 2.0
+    max_delay: float = 60.0
+
+    def get_provider_config(self, provider_name: Optional[str] = None) -> LLMProviderConfig:
+        """Get configuration for a specific provider."""
+        name = provider_name or self.provider
+        if name not in self.providers:
+            raise ValueError(f"Unknown LLM provider: {name}")
+        return self.providers[name]
+
+
+@dataclass
+class ChromaDBConfig:
+    """Configuration for ChromaDB."""
+    persist_path: str = "atlas_cache/"
+    embedding_model: str = "all-mpnet-base-v2"
+
+
+@dataclass
+class CorpusConfig:
+    """Configuration for corpus processing."""
+    min_sentences_per_paragraph: int = 2
+    style_audit_threshold: int = 4
+    opener_percentage: float = 0.15
+    closer_percentage: float = 0.15
+
+
+@dataclass
+class GenerationConfig:
+    """Configuration for text generation."""
+    max_repair_retries: int = 5
+    rag_examples_count: int = 5
+    length_tolerance: float = 0.2
+    short_paragraph_threshold: int = 2  # Use whole-paragraph mode if <= this
+
+
+@dataclass
+class SemanticValidationConfig:
+    """Configuration for semantic validation."""
+    min_proposition_coverage: float = 0.9
+    max_hallucinated_entities: int = 0
+    require_citation_preservation: bool = True
+
+
+@dataclass
+class StatisticalValidationConfig:
+    """Configuration for statistical validation."""
+    length_tolerance: float = 0.2
+    burstiness_tolerance: float = 0.3
+    min_vocab_match: float = 0.5
+
+
+@dataclass
+class ValidationConfig:
+    """Configuration for validation."""
+    semantic: SemanticValidationConfig = field(default_factory=SemanticValidationConfig)
+    statistical: StatisticalValidationConfig = field(default_factory=StatisticalValidationConfig)
+
+
+@dataclass
+class ContextBudgetConfig:
+    """Token budget configuration for context management."""
+    system_prompt_max: int = 1500
+    user_prompt_max: int = 600
+    keep_last_n_sentences: int = 5
+    max_conversation_tokens: int = 8000
+
+
+@dataclass
+class Config:
+    """Main configuration container."""
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    chromadb: ChromaDBConfig = field(default_factory=ChromaDBConfig)
+    corpus: CorpusConfig = field(default_factory=CorpusConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
+    context_budget: ContextBudgetConfig = field(default_factory=ContextBudgetConfig)
+    log_level: str = "INFO"
+    log_json: bool = False
+
+
+def _resolve_env_vars(value: Any) -> Any:
+    """Resolve environment variables in string values."""
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        env_var = value[2:-1]
+        resolved = os.environ.get(env_var, "")
+        if not resolved:
+            logger.warning(f"Environment variable {env_var} not set")
+        return resolved
+    elif isinstance(value, dict):
+        return {k: _resolve_env_vars(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        return [_resolve_env_vars(v) for v in value]
+    return value
+
+
+def _parse_llm_provider_config(data: Dict) -> LLMProviderConfig:
+    """Parse LLM provider configuration."""
+    return LLMProviderConfig(
+        api_key=_resolve_env_vars(data.get("api_key", "")),
+        base_url=data.get("base_url", ""),
+        model=data.get("model", ""),
+        max_tokens=data.get("max_tokens", 4096),
+        temperature=data.get("temperature", 0.7),
+        timeout=data.get("timeout", 120),
+    )
+
+
+def _parse_llm_config(data: Dict) -> LLMConfig:
+    """Parse LLM configuration section."""
+    providers = {}
+    for name, provider_data in data.get("providers", {}).items():
+        providers[name] = _parse_llm_provider_config(provider_data)
+
+    retry_config = data.get("retry", {})
+
+    return LLMConfig(
+        provider=data.get("provider", "deepseek"),
+        providers=providers,
+        max_retries=retry_config.get("max_attempts", 5),
+        base_delay=retry_config.get("base_delay", 2.0),
+        max_delay=retry_config.get("max_delay", 60.0),
+    )
+
+
+def load_config(config_path: str = "config.json") -> Config:
+    """Load configuration from a JSON file.
+
+    Args:
+        config_path: Path to the configuration file.
+
+    Returns:
+        Parsed configuration object.
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist.
+        ValueError: If config file is invalid.
+    """
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Configuration file not found: {config_path}\n"
+            "Please copy config.json.sample to config.json and configure it."
+        )
+
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in config file: {e}")
+
+    # Parse each section
+    config = Config()
+
+    if "llm" in data:
+        config.llm = _parse_llm_config(data["llm"])
+
+    if "chromadb" in data:
+        config.chromadb = ChromaDBConfig(
+            persist_path=data["chromadb"].get("persist_path", "atlas_cache/"),
+            embedding_model=data["chromadb"].get("embedding_model", "all-mpnet-base-v2"),
+        )
+
+    if "corpus" in data:
+        config.corpus = CorpusConfig(
+            min_sentences_per_paragraph=data["corpus"].get("min_sentences_per_paragraph", 2),
+            style_audit_threshold=data["corpus"].get("style_audit_threshold", 4),
+            opener_percentage=data["corpus"].get("opener_percentage", 0.15),
+            closer_percentage=data["corpus"].get("closer_percentage", 0.15),
+        )
+
+    if "generation" in data:
+        config.generation = GenerationConfig(
+            max_repair_retries=data["generation"].get("max_repair_retries", 5),
+            rag_examples_count=data["generation"].get("rag_examples_count", 5),
+            length_tolerance=data["generation"].get("length_tolerance", 0.2),
+            short_paragraph_threshold=data["generation"].get("short_paragraph_threshold", 2),
+        )
+
+    if "validation" in data:
+        val_data = data["validation"]
+        if "semantic" in val_data:
+            config.validation.semantic = SemanticValidationConfig(
+                min_proposition_coverage=val_data["semantic"].get("min_proposition_coverage", 0.9),
+                max_hallucinated_entities=val_data["semantic"].get("max_hallucinated_entities", 0),
+                require_citation_preservation=val_data["semantic"].get("require_citation_preservation", True),
+            )
+        if "statistical" in val_data:
+            config.validation.statistical = StatisticalValidationConfig(
+                length_tolerance=val_data["statistical"].get("length_tolerance", 0.2),
+                burstiness_tolerance=val_data["statistical"].get("burstiness_tolerance", 0.3),
+                min_vocab_match=val_data["statistical"].get("min_vocab_match", 0.5),
+            )
+
+    if "context_budget" in data:
+        config.context_budget = ContextBudgetConfig(
+            system_prompt_max=data["context_budget"].get("system_prompt_max", 1500),
+            user_prompt_max=data["context_budget"].get("user_prompt_max", 600),
+            keep_last_n_sentences=data["context_budget"].get("keep_last_n_sentences", 5),
+            max_conversation_tokens=data["context_budget"].get("max_conversation_tokens", 8000),
+        )
+
+    config.log_level = data.get("log_level", "INFO")
+    config.log_json = data.get("log_json", False)
+
+    logger.info(f"Loaded configuration from {config_path}")
+    return config
+
+
+def create_default_config() -> Dict:
+    """Create a default configuration dictionary."""
+    return {
+        "llm": {
+            "provider": "deepseek",
+            "providers": {
+                "deepseek": {
+                    "api_key": "${DEEPSEEK_API_KEY}",
+                    "base_url": "https://api.deepseek.com",
+                    "model": "deepseek-chat",
+                    "max_tokens": 4096,
+                    "temperature": 0.7
+                },
+                "ollama": {
+                    "base_url": "http://localhost:11434",
+                    "model": "llama3"
+                }
+            },
+            "retry": {
+                "max_attempts": 5,
+                "base_delay": 2,
+                "max_delay": 60
+            }
+        },
+        "chromadb": {
+            "persist_path": "atlas_cache/",
+            "embedding_model": "all-mpnet-base-v2"
+        },
+        "corpus": {
+            "min_sentences_per_paragraph": 2,
+            "style_audit_threshold": 4,
+            "opener_percentage": 0.15,
+            "closer_percentage": 0.15
+        },
+        "generation": {
+            "max_repair_retries": 5,
+            "rag_examples_count": 5,
+            "length_tolerance": 0.2
+        },
+        "validation": {
+            "semantic": {
+                "min_proposition_coverage": 0.9,
+                "max_hallucinated_entities": 0
+            },
+            "statistical": {
+                "length_tolerance": 0.2,
+                "burstiness_tolerance": 0.3,
+                "min_vocab_match": 0.5
+            }
+        },
+        "log_level": "INFO",
+        "log_json": False
+    }
