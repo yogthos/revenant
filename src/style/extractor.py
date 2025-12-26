@@ -15,33 +15,13 @@ from .profile import (
     TransitionProfile,
     RegisterProfile,
     DeltaProfile,
+    SentenceStructureProfile,
     AuthorStyleProfile,
 )
 
 logger = get_logger(__name__)
 
 
-# Transition word categories (used for classification, not prescription)
-TRANSITION_CATEGORIES = {
-    "causal": {
-        "therefore", "thus", "hence", "consequently", "so", "because",
-        "since", "as a result", "accordingly", "for this reason",
-    },
-    "adversative": {
-        "however", "but", "yet", "although", "though", "nevertheless",
-        "nonetheless", "on the other hand", "in contrast", "while",
-        "whereas", "despite", "in spite of", "conversely",
-    },
-    "additive": {
-        "also", "moreover", "furthermore", "additionally", "besides",
-        "in addition", "likewise", "similarly", "not only", "as well as",
-    },
-    "temporal": {
-        "then", "finally", "subsequently", "meanwhile", "first",
-        "second", "third", "next", "afterwards", "before", "after",
-        "during", "when", "while",
-    },
-}
 
 
 class StyleProfileExtractor:
@@ -86,6 +66,7 @@ class StyleProfileExtractor:
         transition_profile = self._extract_transition_profile(all_sentences)
         register_profile = self._extract_register_profile(all_sentences, paragraphs)
         delta_profile = self._extract_delta_profile(all_sentences)
+        structure_profile = self._extract_structure_profile(all_sentences)
 
         # Calculate totals
         word_count = sum(len(s.split()) for s in all_sentences)
@@ -103,6 +84,7 @@ class StyleProfileExtractor:
             transition_profile=transition_profile,
             register_profile=register_profile,
             delta_profile=delta_profile,
+            structure_profile=structure_profile,
         )
 
     def _extract_length_profile(self, sentences: List[str]) -> SentenceLengthProfile:
@@ -198,7 +180,11 @@ class StyleProfileExtractor:
         return markov
 
     def _extract_transition_profile(self, sentences: List[str]) -> TransitionProfile:
-        """Extract transition word usage patterns."""
+        """Extract transition word usage patterns using spaCy.
+
+        Uses dependency parsing to identify sentence-initial discourse markers,
+        then classifies them by their semantic role based on POS and dependency.
+        """
         # Count transitions per category
         category_counts = defaultdict(Counter)
         total_sentences = len(sentences)
@@ -206,28 +192,38 @@ class StyleProfileExtractor:
         transitions_at_start = 0
         total_transitions = 0
 
-        all_transitions = set()
-        for cat_words in TRANSITION_CATEGORIES.values():
-            all_transitions.update(cat_words)
-
         for sentence in sentences:
-            words = sentence.lower().split()
-            if not words:
+            doc = self.nlp(sentence)
+            if len(doc) < 2:
                 continue
 
+            # Check first few tokens for discourse markers
             found_transition = False
-            first_words = " ".join(words[:3])  # Check first 3 words
+            first_token = doc[0]
 
-            for category, cat_words in TRANSITION_CATEGORIES.items():
-                for trans in cat_words:
-                    if trans in sentence.lower():
-                        category_counts[category][trans] += 1
+            # Identify sentence-initial discourse markers
+            # These are typically: SCONJ, CCONJ, ADV with specific dependency roles
+            if first_token.pos_ in ('SCONJ', 'CCONJ', 'ADV'):
+                word = first_token.text.lower()
+                category = self._classify_transition(first_token, doc)
+                if category:
+                    category_counts[category][word] += 1
+                    total_transitions += 1
+                    transitions_at_start += 1
+                    found_transition = True
+
+            # Also check for multi-word transitions at start (e.g., "in addition")
+            if len(doc) >= 2:
+                bigram = f"{doc[0].text.lower()} {doc[1].text.lower()}"
+                if doc[0].pos_ == 'ADP' and doc[1].pos_ in ('NOUN', 'DET'):
+                    # Patterns like "in addition", "on the other hand"
+                    category = self._classify_phrase_transition(bigram, doc)
+                    if category:
+                        category_counts[category][bigram] += 1
                         total_transitions += 1
-                        found_transition = True
-
-                        # Check if at start
-                        if trans in first_words:
+                        if not found_transition:
                             transitions_at_start += 1
+                        found_transition = True
 
             if found_transition:
                 sentences_with_transition += 1
@@ -253,6 +249,87 @@ class StyleProfileExtractor:
             additive=normalize_category(category_counts["additive"]),
             temporal=normalize_category(category_counts["temporal"]),
         )
+
+    def _classify_transition(self, token, doc) -> Optional[str]:
+        """Classify a transition word by its semantic role using spaCy features."""
+        word = token.text.lower()
+        pos = token.pos_
+        dep = token.dep_
+
+        # Use dependency and semantic features to classify
+        # SCONJ (subordinating conjunctions) - often causal or adversative
+        if pos == 'SCONJ':
+            # Check for adversative sense using dependency context
+            if dep in ('mark', 'advmod'):
+                # Look at the clause structure
+                head = token.head
+                if head.pos_ == 'VERB':
+                    # Check if there's a contrast pattern
+                    children_deps = {c.dep_ for c in head.children}
+                    if 'neg' in children_deps:
+                        return 'adversative'
+            return 'causal'
+
+        # CCONJ (coordinating conjunctions)
+        if pos == 'CCONJ':
+            # "but" is adversative, "and" is additive
+            if word in ('but', 'yet'):
+                return 'adversative'
+            elif word in ('and', 'or'):
+                return 'additive'
+            return 'additive'
+
+        # ADV (adverbs) - check semantic category
+        if pos == 'ADV':
+            # Use lemma for comparison
+            lemma = token.lemma_.lower()
+
+            # Temporal adverbs typically have temporal dependency
+            if dep == 'advmod':
+                head = token.head
+                # Check if modifying a temporal verb or noun
+                if head.pos_ == 'VERB':
+                    # Adverbs that are sentence-initial and modify the main verb
+                    # Check morphological features or context
+                    if lemma in self._get_corpus_temporal_adverbs(doc):
+                        return 'temporal'
+
+            # Sentence-initial adverbs often signal logical relations
+            if token.i == 0:
+                # Check children/context for clues
+                return 'additive'  # Default for sentence-initial adverbs
+
+        return None
+
+    def _classify_phrase_transition(self, phrase: str, doc) -> Optional[str]:
+        """Classify a multi-word transition phrase."""
+        # Check if the phrase follows a prepositional pattern
+        # that typically signals discourse relations
+        if doc[0].pos_ == 'ADP':
+            # Prepositional phrases as discourse markers
+            # The preposition gives us a semantic clue
+            prep = doc[0].lemma_.lower()
+            if prep in ('despite', 'notwithstanding'):
+                return 'adversative'
+            elif prep in ('because', 'due'):
+                return 'causal'
+            elif prep in ('in', 'additionally'):
+                return 'additive'
+            elif prep in ('before', 'after', 'during'):
+                return 'temporal'
+        return None
+
+    def _get_corpus_temporal_adverbs(self, doc) -> set:
+        """Extract temporal adverbs from context using spaCy's NER and dep parsing."""
+        temporal = set()
+        for token in doc:
+            if token.ent_type_ in ('TIME', 'DATE'):
+                temporal.add(token.lemma_.lower())
+            if token.dep_ == 'advmod' and token.head.pos_ == 'VERB':
+                # Check if the verb has temporal semantics
+                if any(child.ent_type_ in ('TIME', 'DATE') for child in token.head.children):
+                    temporal.add(token.lemma_.lower())
+        return temporal
 
     def _extract_register_profile(
         self,
@@ -367,6 +444,147 @@ class StyleProfileExtractor:
             corpus_mean=corpus_mean,
             corpus_std=corpus_std,
         )
+
+    def _extract_structure_profile(self, sentences: List[str]) -> SentenceStructureProfile:
+        """Extract sentence structure patterns using spaCy.
+
+        Classifies sentences by syntactic complexity:
+        - simple: One independent clause
+        - compound: Multiple independent clauses (joined by CCONJ)
+        - complex: Independent + dependent clause(s) (SCONJ, relative)
+        - compound_complex: Multiple independent + dependent
+        """
+        structure_counts = Counter()
+        structure_samples = defaultdict(list)
+        structures = []
+
+        # Sample limit per structure type
+        max_samples = 10
+
+        for sentence in sentences:
+            doc = self.nlp(sentence)
+            structure = self._classify_sentence_structure(doc)
+            structures.append(structure)
+            structure_counts[structure] += 1
+
+            # Collect sample sentences (sanitized - no proper nouns)
+            if len(structure_samples[structure]) < max_samples:
+                sanitized = self._sanitize_sample(doc)
+                if sanitized and len(sanitized.split()) >= 5:
+                    structure_samples[structure].append(sanitized)
+
+        # Calculate distribution
+        total = len(structures)
+        structure_distribution = {
+            s: count / total for s, count in structure_counts.items()
+        } if total > 0 else {}
+
+        # Build structure transition Markov model
+        structure_transitions = self._build_structure_markov(structures)
+
+        # Calculate proposition capacity from clause counts
+        proposition_capacity = self._calculate_proposition_capacity(sentences)
+
+        return SentenceStructureProfile(
+            structure_distribution=structure_distribution,
+            structure_transitions=structure_transitions,
+            proposition_capacity=proposition_capacity,
+            structure_samples=dict(structure_samples),
+        )
+
+    def _classify_sentence_structure(self, doc) -> str:
+        """Classify sentence structure using spaCy dependency parse."""
+        # Count clause indicators
+        num_verbs = sum(1 for t in doc if t.pos_ == 'VERB' and t.dep_ in ('ROOT', 'conj', 'ccomp', 'xcomp', 'advcl', 'relcl'))
+        has_cconj = any(t.pos_ == 'CCONJ' for t in doc)
+        has_sconj = any(t.pos_ == 'SCONJ' for t in doc)
+        has_relcl = any(t.dep_ == 'relcl' for t in doc)
+        has_advcl = any(t.dep_ == 'advcl' for t in doc)
+
+        has_subordinate = has_sconj or has_relcl or has_advcl
+
+        if num_verbs <= 1:
+            return "simple"
+        elif has_cconj and has_subordinate:
+            return "compound_complex"
+        elif has_cconj:
+            return "compound"
+        elif has_subordinate:
+            return "complex"
+        else:
+            return "simple"
+
+    def _sanitize_sample(self, doc) -> str:
+        """Sanitize a sample sentence - replace proper nouns, keep structure."""
+        tokens = []
+        for token in doc:
+            if token.pos_ == 'PROPN':
+                # Replace proper nouns with generic placeholder based on entity type
+                if token.ent_type_ in ('PERSON', 'ORG', 'GPE', 'LOC'):
+                    tokens.append('[X]')
+                else:
+                    tokens.append(token.text)
+            else:
+                tokens.append(token.text)
+
+        # Reconstruct with proper spacing
+        result = ""
+        for i, token in enumerate(tokens):
+            if i > 0 and token not in '.,;:!?\'")-' and tokens[i-1] not in '(\'"':
+                result += " "
+            result += token
+        return result.strip()
+
+    def _build_structure_markov(self, structures: List[str]) -> Dict[str, Dict[str, float]]:
+        """Build Order-1 Markov chain for structure transitions."""
+        transitions = defaultdict(Counter)
+
+        for i in range(len(structures) - 1):
+            current = structures[i]
+            next_struct = structures[i + 1]
+            transitions[current][next_struct] += 1
+
+        # Normalize to probabilities
+        markov = {}
+        for current, next_counts in transitions.items():
+            total = sum(next_counts.values())
+            markov[current] = {
+                struct: count / total for struct, count in next_counts.items()
+            }
+
+        # Ensure all structure types have entries
+        all_types = {"simple", "compound", "complex", "compound_complex"}
+        for struct in all_types:
+            if struct not in markov:
+                markov[struct] = {"simple": 0.4, "compound": 0.2, "complex": 0.3, "compound_complex": 0.1}
+
+        return markov
+
+    def _calculate_proposition_capacity(self, sentences: List[str]) -> Dict[str, int]:
+        """Calculate how many propositions/clauses fit in each structure type."""
+        capacity_counts = defaultdict(list)
+
+        for sentence in sentences[:200]:  # Sample for performance
+            doc = self.nlp(sentence)
+            structure = self._classify_sentence_structure(doc)
+
+            # Count clauses (verbs with subjects)
+            clause_count = sum(1 for t in doc if t.dep_ in ('ROOT', 'conj', 'ccomp', 'advcl', 'relcl'))
+            clause_count = max(1, clause_count)
+            capacity_counts[structure].append(clause_count)
+
+        # Calculate median capacity for each type
+        capacity = {}
+        for struct, counts in capacity_counts.items():
+            capacity[struct] = int(np.median(counts)) if counts else 1
+
+        # Ensure all types have entries
+        defaults = {"simple": 1, "compound": 2, "complex": 2, "compound_complex": 3}
+        for struct, default in defaults.items():
+            if struct not in capacity:
+                capacity[struct] = default
+
+        return capacity
 
 
 def extract_author_profile(

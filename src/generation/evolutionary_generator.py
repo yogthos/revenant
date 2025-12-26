@@ -62,9 +62,16 @@ class GenerationState:
 
     previous_sentences: List[str] = field(default_factory=list)
     previous_length_category: str = "medium"
+    previous_structure_type: str = "simple"  # Track sentence structure
     used_transitions: Counter = field(default_factory=Counter)
     paragraph_lengths: List[int] = field(default_factory=list)
     target_burstiness: float = 0.5
+
+    # Context tracking to avoid repetition
+    used_phrases: set = field(default_factory=set)  # N-grams already used
+    used_openings: set = field(default_factory=set)  # Sentence opening patterns
+    mentioned_concepts: List[str] = field(default_factory=list)  # For implicit refs
+    key_nouns: List[str] = field(default_factory=list)  # Nouns that can be pronominalized
 
 
 class EvolutionarySentenceGenerator:
@@ -111,21 +118,153 @@ class EvolutionarySentenceGenerator:
         self.transition_words = profile.transition_profile.get_all_transitions()
 
         # Extract top content words (exclude function words) for vocabulary hints
-        function_words = {'the', 'of', 'and', 'in', 'to', 'is', 'a', 'it', 'that',
-                         'not', 'this', 'be', 'are', 'we', 'for', 'on', 'as', 'but',
-                         'from', 's', 'they', 'or', 'with', 'its', 'their', 'at',
-                         'one', 'all', 'into', 'only', 'by', 'have', 'our', 'can',
-                         'which', 'has', 'there', 'was', 'no', 'been', 'these', 'those',
-                         'an', 'if', 'so', 'such', 'what', 'who', 'would', 'should'}
+        # Use spaCy to identify function words (closed-class POS tags)
         mfw = profile.delta_profile.mfw_frequencies
-        self.vocab_hints = [w for w, _ in sorted(mfw.items(), key=lambda x: -x[1])[:100]
-                           if w.lower() not in function_words and len(w) > 3][:20]
+        self.vocab_hints = self._extract_content_words(mfw, limit=20)
+
+        # Store structure samples and transitions from profile
+        self.structure_samples = profile.structure_profile.structure_samples
+        self.structure_transitions = profile.structure_profile.structure_transitions
+        self.proposition_capacity = profile.structure_profile.proposition_capacity
 
     @property
     def nlp(self):
         if self._nlp is None:
             self._nlp = get_nlp()
         return self._nlp
+
+    def _extract_phrases(self, text: str) -> set:
+        """Extract significant phrases (2-4 grams) from text using spaCy."""
+        doc = self.nlp(text.lower())
+        phrases = set()
+
+        # Extract noun chunks
+        for chunk in doc.noun_chunks:
+            if len(chunk.text.split()) >= 2:
+                phrases.add(chunk.text)
+
+        # Extract 2-grams and 3-grams of content words
+        content_tokens = [t for t in doc if not t.is_stop and t.is_alpha and len(t.text) > 2]
+        for i in range(len(content_tokens) - 1):
+            bigram = f"{content_tokens[i].text} {content_tokens[i+1].text}"
+            phrases.add(bigram)
+            if i < len(content_tokens) - 2:
+                trigram = f"{content_tokens[i].text} {content_tokens[i+1].text} {content_tokens[i+2].text}"
+                phrases.add(trigram)
+
+        return phrases
+
+    def _extract_key_nouns(self, text: str) -> List[str]:
+        """Extract key nouns that can be referred to with pronouns."""
+        doc = self.nlp(text)
+        nouns = []
+        for token in doc:
+            if token.pos_ == 'NOUN' and not token.is_stop and len(token.text) > 3:
+                nouns.append(token.text.lower())
+        return nouns
+
+    def _get_sentence_opening(self, text: str) -> str:
+        """Extract the opening pattern of a sentence (first 3-4 words structure)."""
+        doc = self.nlp(text)
+        if len(doc) < 3:
+            return ""
+        # Get POS pattern of first 4 tokens
+        opening = " ".join([t.pos_ for t in doc[:4]])
+        return opening
+
+    def _build_context_constraints(self, state: GenerationState) -> str:
+        """Build prompt section about what to avoid based on context."""
+        constraints = []
+
+        # Phrases to avoid
+        if state.used_phrases:
+            recent_phrases = list(state.used_phrases)[-15:]  # Last 15 phrases
+            constraints.append(f"AVOID these phrases already used: {', '.join(recent_phrases)}")
+
+        # Previous sentence for flow
+        if state.previous_sentences:
+            last = state.previous_sentences[-1]
+            constraints.append(f"Previous sentence: \"{last}\"")
+            constraints.append("Continue naturally from this context.")
+
+            # If we have mentioned concepts, suggest implicit reference
+            if state.key_nouns:
+                recent_nouns = state.key_nouns[-3:]
+                constraints.append(f"You may refer to '{recent_nouns[-1]}' using 'it', 'this', or 'such'")
+
+        return "\n".join(constraints)
+
+    def _extract_content_words(self, mfw: Dict[str, float], limit: int = 20) -> List[str]:
+        """Extract content words from MFW using spaCy.
+
+        Uses spaCy's is_stop property and POS tagging to identify
+        content words vs function words. Both are derived from
+        linguistic data, not hardcoded word lists.
+        """
+        content_words = []
+        # Sort by frequency descending
+        sorted_words = sorted(mfw.items(), key=lambda x: -x[1])
+
+        for word, freq in sorted_words:
+            if len(word) < 3:  # Skip very short words
+                continue
+
+            # Use spaCy to analyze the word
+            doc = self.nlp(word)
+            if doc and len(doc) > 0:
+                token = doc[0]
+                # Skip stop words (function words) - spaCy's is_stop is linguistically derived
+                if token.is_stop:
+                    continue
+                # Skip punctuation and symbols
+                if token.is_punct or not token.is_alpha:
+                    continue
+                content_words.append(word)
+                if len(content_words) >= limit:
+                    break
+
+        return content_words
+
+    def _get_current_structure_type(self, state: GenerationState) -> str:
+        """Select next sentence structure type using Markov model."""
+        if not self.structure_transitions:
+            return "simple"
+
+        prev_type = state.previous_structure_type
+        if prev_type not in self.structure_transitions:
+            prev_type = "simple"
+
+        transitions = self.structure_transitions.get(prev_type, {})
+        if not transitions:
+            return "simple"
+
+        # Sample from transition probabilities
+        types = list(transitions.keys())
+        probs = [transitions[t] for t in types]
+        return random.choices(types, weights=probs)[0]
+
+    def _classify_generated_structure(self, text: str) -> str:
+        """Classify the structure of a generated sentence."""
+        doc = self.nlp(text)
+
+        num_verbs = sum(1 for t in doc if t.pos_ == 'VERB' and t.dep_ in ('ROOT', 'conj', 'ccomp', 'xcomp', 'advcl', 'relcl'))
+        has_cconj = any(t.pos_ == 'CCONJ' for t in doc)
+        has_sconj = any(t.pos_ == 'SCONJ' for t in doc)
+        has_relcl = any(t.dep_ == 'relcl' for t in doc)
+        has_advcl = any(t.dep_ == 'advcl' for t in doc)
+
+        has_subordinate = has_sconj or has_relcl or has_advcl
+
+        if num_verbs <= 1:
+            return "simple"
+        elif has_cconj and has_subordinate:
+            return "compound_complex"
+        elif has_cconj:
+            return "compound"
+        elif has_subordinate:
+            return "complex"
+        else:
+            return "simple"
 
     def select_target_length(self, state: GenerationState) -> int:
         """Select target length using Markov chain."""
@@ -317,7 +456,7 @@ class EvolutionarySentenceGenerator:
                 text = self._clean_sentence(response)
 
                 candidate = self._evaluate_candidate(
-                    text, target_length, transition_word
+                    text, target_length, transition_word, state
                 )
                 candidate.generation = 0
                 population.append(candidate)
@@ -336,48 +475,43 @@ class EvolutionarySentenceGenerator:
         """Create diverse prompt variants for population diversity."""
         variants = []
 
-        # Base context
-        context = ""
-        if state.previous_sentences:
-            context = f'Previous: "{state.previous_sentences[-1]}"\n'
-
-        # Variant 1: Standard prompt
+        # Variant 1: Standard prompt with full context
         variants.append(self._build_prompt(
-            proposition, target_length, transition_word, context,
-            style_hint="Write naturally and clearly."
+            proposition, target_length, transition_word, state,
+            style_hint="Write naturally, varying structure from previous sentences."
         ))
 
         # Variant 2: Emphasize length
         length_hint = f"The sentence MUST be exactly {target_length} words."
         variants.append(self._build_prompt(
-            proposition, target_length, transition_word, context,
+            proposition, target_length, transition_word, state,
             style_hint=length_hint
         ))
 
-        # Variant 3: Shorter target (for diversity)
+        # Variant 3: Shorter target (for burstiness)
         variants.append(self._build_prompt(
-            proposition, max(8, target_length - 8), transition_word, context,
-            style_hint="Be concise but complete."
+            proposition, max(8, target_length - 8), transition_word, state,
+            style_hint="Be concise. Use a different structure than previous sentences."
         ))
 
-        # Variant 4: Longer target (for diversity and better length coverage)
+        # Variant 4: Longer target (for burstiness)
         variants.append(self._build_prompt(
-            proposition, target_length + 10, transition_word, context,
-            style_hint="Develop the idea fully with concrete examples and qualifications."
+            proposition, target_length + 10, transition_word, state,
+            style_hint="Develop with concrete examples. Vary the sentence structure."
         ))
 
-        # Variant 6: Much longer (for high burstiness)
+        # Variant 5: Much longer (for high burstiness)
         variants.append(self._build_prompt(
-            proposition, min(50, target_length + 20), transition_word, context,
-            style_hint="Write a complex sentence with multiple clauses and specific details."
+            proposition, min(50, target_length + 20), transition_word, state,
+            style_hint="Write a complex sentence with multiple clauses."
         ))
 
-        # Variant 5: Focus on vocabulary
-        vocab_hint = "Use direct, concrete language."
-        variants.append(self._build_prompt(
-            proposition, target_length, transition_word, context,
-            style_hint=vocab_hint
-        ))
+        # Variant 6: Implicit reference focus
+        if state.key_nouns:
+            variants.append(self._build_prompt(
+                proposition, target_length, transition_word, state,
+                style_hint=f"Refer back to previous concepts using 'this', 'it', or 'such'."
+            ))
 
         return variants
 
@@ -386,14 +520,16 @@ class EvolutionarySentenceGenerator:
         proposition: str,
         target_length: int,
         transition_word: Optional[str],
-        context: str,
+        state: GenerationState,
         style_hint: str = "",
     ) -> str:
-        """Build a generation prompt."""
+        """Build a generation prompt with full context awareness."""
         parts = []
 
-        if context:
-            parts.append(context)
+        # Context from previous sentences
+        context_constraints = self._build_context_constraints(state)
+        if context_constraints:
+            parts.append(context_constraints)
 
         parts.append(f"Write ONE SINGLE sentence expressing: {proposition}")
         parts.append(f"REQUIRED: The sentence must be {target_length} words (minimum {max(10, target_length - 5)} words)")
@@ -403,10 +539,13 @@ class EvolutionarySentenceGenerator:
         else:
             parts.append("Do NOT start with a transition word (but, however, so, etc.)")
 
-        # Add vocabulary guidance
-        if self.vocab_hints:
-            sample = random.sample(self.vocab_hints, min(5, len(self.vocab_hints)))
-            parts.append(f"Use plain vocabulary like: {', '.join(sample)}")
+        # Style guidance - use actual samples from corpus instead of hardcoded phrases
+        if hasattr(self, 'structure_samples') and self.structure_samples:
+            # Get a sample sentence of similar structure for style reference
+            structure_type = self._get_current_structure_type(state)
+            if structure_type in self.structure_samples and self.structure_samples[structure_type]:
+                sample = random.choice(self.structure_samples[structure_type])
+                parts.append(f"Match this style/register: \"{sample}\"")
 
         if style_hint:
             parts.append(style_hint)
@@ -427,12 +566,10 @@ class EvolutionarySentenceGenerator:
         if not population:
             # Fallback: generate a single candidate
             prompt = self._build_prompt(
-                proposition, target_length, transition_word,
-                state.previous_sentences[-1] if state.previous_sentences else "",
-                ""
+                proposition, target_length, transition_word, state, ""
             )
             text = self._clean_sentence(self.llm_generate(prompt))
-            return self._evaluate_candidate(text, target_length, transition_word)
+            return self._evaluate_candidate(text, target_length, transition_word, state)
 
         for gen in range(self.max_generations):
             # Sort by fitness
@@ -470,7 +607,7 @@ class EvolutionarySentenceGenerator:
                 try:
                     text = self._clean_sentence(self.llm_generate(prompt))
                     candidate = self._evaluate_candidate(
-                        text, target_length, transition_word
+                        text, target_length, transition_word, state
                     )
                     candidate.generation = gen + 1
                     population.append(candidate)
@@ -552,7 +689,7 @@ class EvolutionarySentenceGenerator:
             try:
                 response = self.llm_generate(mutation_prompt)
                 text = self._clean_sentence(response)
-                return self._evaluate_candidate(text, target_length, transition_word)
+                return self._evaluate_candidate(text, target_length, transition_word, state)
             except Exception as e:
                 logger.warning(f"Mutation failed: {e}")
 
@@ -563,6 +700,7 @@ class EvolutionarySentenceGenerator:
         text: str,
         target_length: int,
         transition_word: Optional[str],
+        state: Optional[GenerationState] = None,
     ) -> Candidate:
         """Evaluate a candidate sentence on multiple fitness dimensions."""
         candidate = Candidate(text=text)
@@ -619,6 +757,23 @@ class EvolutionarySentenceGenerator:
         elif text.count('"') % 2 != 0:
             candidate.fluency_fitness *= 0.9
 
+        # Repetition penalty - penalize reuse of phrases from previous sentences
+        if state and state.used_phrases:
+            candidate_phrases = self._extract_phrases(text)
+            overlap = candidate_phrases & state.used_phrases
+            if overlap:
+                # Penalize based on how many phrases are repeated
+                penalty = 0.8 ** len(overlap)
+                candidate.fluency_fitness *= penalty
+                if len(overlap) > 2:
+                    candidate.issues.append("phrase_repetition")
+
+            # Also check opening pattern similarity
+            opening = self._get_sentence_opening(text)
+            if opening and opening in state.used_openings:
+                candidate.fluency_fitness *= 0.7
+                candidate.issues.append("similar_opening")
+
         return candidate
 
     def _clean_sentence(self, text: str) -> str:
@@ -663,12 +818,24 @@ class EvolutionarySentenceGenerator:
         transition_word: Optional[str],
     ) -> GenerationState:
         """Update generation state after producing a sentence."""
+        # Extract phrases and nouns from the new sentence
+        new_phrases = self._extract_phrases(sentence)
+        new_nouns = self._extract_key_nouns(sentence)
+        new_opening = self._get_sentence_opening(sentence)
+        new_structure = self._classify_generated_structure(sentence)
+
         new_state = GenerationState(
             previous_sentences=state.previous_sentences + [sentence],
             previous_length_category=length_category,
+            previous_structure_type=new_structure,
             used_transitions=state.used_transitions.copy(),
             paragraph_lengths=state.paragraph_lengths + [len(sentence.split())],
             target_burstiness=state.target_burstiness,
+            # Context tracking
+            used_phrases=state.used_phrases | new_phrases,
+            used_openings=state.used_openings | ({new_opening} if new_opening else set()),
+            mentioned_concepts=state.mentioned_concepts + new_nouns,
+            key_nouns=state.key_nouns + new_nouns,
         )
 
         if transition_word:
@@ -703,6 +870,9 @@ class EvolutionaryParagraphGenerator:
     ) -> str:
         """Generate a paragraph from propositions.
 
+        Uses the structure Markov model to determine sentence types,
+        and batches propositions based on structure capacity.
+
         Args:
             propositions: List of propositions to express.
 
@@ -716,14 +886,35 @@ class EvolutionaryParagraphGenerator:
             target_burstiness=self.profile.length_profile.burstiness
         )
         sentences = []
+        prop_index = 0
+        sentence_position = 0
 
-        for i, proposition in enumerate(propositions):
+        while prop_index < len(propositions):
+            # Determine next sentence structure type
+            structure_type = self.generator._get_current_structure_type(state)
+
+            # Get proposition capacity for this structure
+            capacity = self.generator.proposition_capacity.get(structure_type, 1)
+
+            # Take appropriate number of propositions
+            prop_batch = propositions[prop_index:prop_index + capacity]
+            prop_index += len(prop_batch)
+
+            # Combine propositions for this sentence
+            if len(prop_batch) == 1:
+                combined_prop = prop_batch[0]
+            else:
+                # Join multiple propositions for complex/compound sentences
+                combined_prop = " AND ".join(prop_batch)
+
+            # Generate the sentence
             sentence, state = self.generator.generate_sentence(
-                proposition=proposition,
+                proposition=combined_prop,
                 state=state,
-                position=i,
+                position=sentence_position,
             )
             sentences.append(sentence)
+            sentence_position += 1
 
         paragraph = " ".join(sentences)
 

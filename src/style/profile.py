@@ -158,6 +158,44 @@ class RegisterProfile:
 
 
 @dataclass
+class SentenceStructureProfile:
+    """Sentence structure patterns extracted from corpus using spaCy.
+
+    Classifies sentences by syntactic complexity and builds a Markov model
+    of structure transitions. Also stores sample sentences for each type.
+    """
+
+    # Structure type distribution (simple, compound, complex, compound-complex)
+    structure_distribution: Dict[str, float] = field(default_factory=dict)
+    # e.g., {"simple": 0.3, "compound": 0.25, "complex": 0.35, "compound_complex": 0.1}
+
+    # Structure transition Markov model
+    structure_transitions: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # e.g., {"simple": {"simple": 0.2, "compound": 0.3, ...}, ...}
+
+    # Proposition capacity per structure type (how many clauses/ideas fit)
+    proposition_capacity: Dict[str, int] = field(default_factory=lambda: {
+        "simple": 1, "compound": 2, "complex": 2, "compound_complex": 3
+    })
+
+    # Sample sentences for each structure type (for style hints)
+    structure_samples: Dict[str, List[str]] = field(default_factory=dict)
+    # e.g., {"simple": ["The cat sat.", "Birds fly."], ...}
+
+    def to_dict(self) -> Dict:
+        return {
+            "structure_distribution": self.structure_distribution,
+            "structure_transitions": self.structure_transitions,
+            "proposition_capacity": self.proposition_capacity,
+            "structure_samples": self.structure_samples,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "SentenceStructureProfile":
+        return cls(**data)
+
+
+@dataclass
 class DeltaProfile:
     """Burrows' Delta configuration.
 
@@ -239,6 +277,7 @@ class AuthorStyleProfile:
     transition_profile: TransitionProfile = field(default_factory=TransitionProfile)
     register_profile: RegisterProfile = field(default_factory=RegisterProfile)
     delta_profile: DeltaProfile = field(default_factory=DeltaProfile)
+    structure_profile: SentenceStructureProfile = field(default_factory=SentenceStructureProfile)
 
     # Style DNA (generated description)
     style_dna: str = ""
@@ -253,6 +292,7 @@ class AuthorStyleProfile:
             "transition_profile": self.transition_profile.to_dict(),
             "register_profile": self.register_profile.to_dict(),
             "delta_profile": self.delta_profile.to_dict(),
+            "structure_profile": self.structure_profile.to_dict(),
             "style_dna": self.style_dna,
         }
 
@@ -267,6 +307,7 @@ class AuthorStyleProfile:
             transition_profile=TransitionProfile.from_dict(data["transition_profile"]),
             register_profile=RegisterProfile.from_dict(data["register_profile"]),
             delta_profile=DeltaProfile.from_dict(data["delta_profile"]),
+            structure_profile=SentenceStructureProfile.from_dict(data.get("structure_profile", {})),
             style_dna=data.get("style_dna", ""),
         )
 
