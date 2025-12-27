@@ -62,9 +62,19 @@ class DeepSeekProvider(LLMProvider):
         messages: List[Message],
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
-        require_json: bool = False
+        require_json: bool = False,
+        logit_bias: Optional[Dict[str, float]] = None
     ) -> LLMResponse:
-        """Make API call to DeepSeek."""
+        """Make API call to DeepSeek.
+
+        Args:
+            messages: Conversation messages.
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens to generate.
+            require_json: Request JSON output format.
+            logit_bias: Optional dict mapping token IDs (as strings) to bias values.
+                       Values from -100 (ban) to 100 (force).
+        """
         url = f"{self.base_url}/v1/chat/completions"
 
         # Build request payload
@@ -77,6 +87,9 @@ class DeepSeekProvider(LLMProvider):
 
         if require_json:
             payload["response_format"] = {"type": "json_object"}
+
+        if logit_bias:
+            payload["logit_bias"] = logit_bias
 
         try:
             response = requests.post(
@@ -127,3 +140,38 @@ class DeepSeekProvider(LLMProvider):
             raise LLMError(f"DeepSeek connection error: {e}")
         except requests.exceptions.RequestException as e:
             raise LLMError(f"DeepSeek request error: {e}")
+
+    def call_with_logit_bias(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        logit_bias: Dict[str, float],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
+        """Make an LLM call with vocabulary control via logit_bias.
+
+        Args:
+            system_prompt: System prompt setting context.
+            user_prompt: User prompt with the request.
+            logit_bias: Dict mapping token IDs to bias values (-100 to 100).
+            temperature: Sampling temperature.
+            max_tokens: Maximum tokens in response.
+
+        Returns:
+            Generated text content.
+        """
+        from ..models import MessageRole
+
+        messages = [
+            Message(role=MessageRole.SYSTEM, content=system_prompt),
+            Message(role=MessageRole.USER, content=user_prompt)
+        ]
+
+        response = self._call_api(
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            logit_bias=logit_bias
+        )
+        return response.content
