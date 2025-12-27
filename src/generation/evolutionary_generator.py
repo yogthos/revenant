@@ -45,6 +45,7 @@ class Candidate:
     transition_fitness: float = 0.0
     vocabulary_fitness: float = 0.0
     fluency_fitness: float = 0.0
+    content_fitness: float = 1.0  # NEW: Content preservation score
 
     # Diagnostic info
     word_count: int = 0
@@ -54,12 +55,13 @@ class Candidate:
 
     @property
     def total_fitness(self) -> float:
-        """Weighted fitness score."""
+        """Weighted fitness score - CONTENT is highest priority."""
         return (
-            self.length_fitness * 0.45 +      # Increased from 0.35
-            self.transition_fitness * 0.20 +  # Decreased from 0.25
-            self.vocabulary_fitness * 0.20 +  # Decreased from 0.25
-            self.fluency_fitness * 0.15
+            self.content_fitness * 0.40 +     # Content preservation is CRITICAL
+            self.length_fitness * 0.20 +      # Reduced
+            self.transition_fitness * 0.15 +
+            self.vocabulary_fitness * 0.15 +
+            self.fluency_fitness * 0.10
         )
 
     def __lt__(self, other):
@@ -970,7 +972,7 @@ class EvolutionarySentenceGenerator:
                 text = self._clean_sentence(response)
 
                 candidate = self._evaluate_candidate(
-                    text, target_length, transition_word, state
+                    text, target_length, transition_word, state, proposition
                 )
                 candidate.generation = 0
                 population.append(candidate)
@@ -1255,7 +1257,7 @@ class EvolutionarySentenceGenerator:
                 pattern_request=pattern_request
             )
             text = self._clean_sentence(self.llm_generate(prompt))
-            return self._evaluate_candidate(text, target_length, transition_word, state)
+            return self._evaluate_candidate(text, target_length, transition_word, state, proposition)
 
         for gen in range(self.max_generations):
             # Sort by fitness
@@ -1294,7 +1296,7 @@ class EvolutionarySentenceGenerator:
                 try:
                     text = self._clean_sentence(self.llm_generate(prompt))
                     candidate = self._evaluate_candidate(
-                        text, target_length, transition_word, state
+                        text, target_length, transition_word, state, proposition
                     )
                     candidate.generation = gen + 1
                     population.append(candidate)
@@ -1371,11 +1373,22 @@ class EvolutionarySentenceGenerator:
             try:
                 response = self.llm_generate(mutation_prompt)
                 text = self._clean_sentence(response)
-                return self._evaluate_candidate(text, target_length, transition_word, state)
+                return self._evaluate_candidate(text, target_length, transition_word, state, proposition)
             except Exception as e:
                 logger.warning(f"Mutation failed: {e}")
 
         return None
+
+    def _extract_proposition_content(self, text: str) -> set:
+        """Extract key content words from proposition that must be preserved."""
+        doc = self.nlp(text.lower())
+        content_words = set()
+        for token in doc:
+            # Keep nouns, verbs, adjectives (not stopwords, not short)
+            if (token.pos_ in ('NOUN', 'VERB', 'ADJ', 'PROPN') and
+                not token.is_stop and len(token.lemma_) > 3):
+                content_words.add(token.lemma_)
+        return content_words
 
     def _evaluate_candidate(
         self,
@@ -1383,6 +1396,7 @@ class EvolutionarySentenceGenerator:
         target_length: int,
         transition_word: Optional[str],
         state: Optional[GenerationState] = None,
+        proposition: Optional[str] = None,
     ) -> Candidate:
         """Evaluate a candidate sentence on multiple fitness dimensions."""
         candidate = Candidate(text=text)
@@ -1430,6 +1444,25 @@ class EvolutionarySentenceGenerator:
         else:
             candidate.vocabulary_fitness = 0.5
 
+        # CONTENT FITNESS - Check that key content words from proposition are preserved
+        # This is CRITICAL for accurate translation
+        if proposition:
+            prop_content = self._extract_proposition_content(proposition)
+            gen_content = self._extract_proposition_content(text)
+
+            if prop_content:
+                # Calculate overlap ratio
+                preserved = prop_content & gen_content
+                content_ratio = len(preserved) / len(prop_content)
+
+                # Be lenient: some rephrasing is OK, but major content should be there
+                # Score: 100% = 1.0, 50% = 0.5, 0% = 0.0
+                candidate.content_fitness = content_ratio
+
+                if content_ratio < 0.5:
+                    candidate.issues.append(f"content_loss:{1-content_ratio:.0%}")
+                    logger.debug(f"[CONTENT] Low preservation {content_ratio:.0%}: missing {prop_content - gen_content}")
+
         # Penalty for using severely overused words (>5 occurrences in document)
         if state and state.document_state:
             overused = state.document_state.get_overused_words()
@@ -1464,20 +1497,10 @@ class EvolutionarySentenceGenerator:
             pronoun_refs = text_lower.startswith(('it ', 'they '))
 
             if has_cohesive_device or pronoun_refs:
-                candidate.fluency_fitness *= 1.1  # 10% bonus for cohesion
+                candidate.fluency_fitness *= 1.05  # 5% bonus for cohesion (reduced from 10%)
                 logger.debug(f"[COHESION] Bonus for anaphoric reference in: {text[:50]}...")
-            else:
-                # Check if sentence is "orphaned" - no connection to previous
-                # An orphan has no cohesive device AND shares no key nouns with previous
-                prev_nouns_set = set(n.lower() for n in state.key_nouns[-5:])
-                current_nouns = set(w.lower() for w in re.findall(r'\b[a-z]{4,}\b', text_lower))
-                shared_concepts = prev_nouns_set & current_nouns
-
-                if not shared_concepts:
-                    # Orphan sentence - slight penalty
-                    candidate.fluency_fitness *= 0.9
-                    candidate.issues.append("orphan_sentence")
-                    logger.debug(f"[COHESION] Orphan sentence penalty: {text[:50]}...")
+            # NOTE: Removed orphan sentence penalty - it was hurting content preservation
+            # Content fitness now handles this more appropriately
 
         # Repetition penalty - penalize reuse of phrases from previous sentences
         if state and state.used_phrases:
