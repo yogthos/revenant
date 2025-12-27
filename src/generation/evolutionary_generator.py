@@ -780,8 +780,8 @@ class EvolutionarySentenceGenerator:
             parts.append(f"Structure: {pattern_request}")
 
         parts.append("")
-        parts.append("CRITICAL: Express ONLY the idea above. Do not add new concepts, examples, or embellishments.")
-        parts.append("Write ONE sentence matching the style examples:")
+        parts.append("Write ONE sentence expressing this. NEVER repeat words from 'Previous'.")
+        parts.append("Sentence:")
 
         return "\n".join(parts)
 
@@ -1147,19 +1147,22 @@ class EvolutionaryParagraphGenerator:
                 f"structure={target_structure}, citations={citations}"
             )
 
-            # Combine propositions into a single content block
-            if len(group_props) == 1:
-                combined_content = group_props[0]
+            # Combine propositions - limit complexity to avoid embellishment
+            # Cap at 2 propositions max - more than that causes awkward sentences
+            effective_props = group_props[:2]
+
+            if len(effective_props) == 1:
+                combined_content = effective_props[0]
             else:
-                # Join with semicolons or logical connectors for LLM to reformulate
-                combined_content = "; ".join(group_props)
+                # Combine with semicolon to indicate both ideas should be expressed
+                combined_content = f"{effective_props[0]}; {effective_props[1]}"
 
             # Build context hint for implicit references
             context_hint = ""
-            if mentioned_nouns:
-                # Suggest using implicit references to previously mentioned concepts
-                recent_nouns = mentioned_nouns[-5:]
-                context_hint = f"[Can refer to: {', '.join(recent_nouns)}]"
+            if mentioned_nouns and sentence_position > 0:
+                # Suggest using pronouns for previously mentioned concepts
+                recent_nouns = list(set(mentioned_nouns[-5:]))  # dedupe
+                context_hint = f"[Use 'it/this/these' instead of repeating: {', '.join(recent_nouns)}]"
 
             # Add RST context if satellite
             if group_rst:
@@ -1183,13 +1186,19 @@ class EvolutionaryParagraphGenerator:
                 total_sentences=len(prop_groups),
             )
 
-            # Validate citation preservation
-            if citations:
-                missing_citations = [c for c in citations if c not in sentence]
+            # Validate citation preservation (dedupe first)
+            unique_citations = list(set(citations))
+            if unique_citations:
+                missing_citations = [c for c in unique_citations if c not in sentence]
                 if missing_citations:
                     logger.warning(f"[PARA] Missing citations: {missing_citations}")
                     # Append missing citations
                     sentence = sentence.rstrip('.!?') + ' ' + ' '.join(missing_citations) + '.'
+                # Also remove duplicate citations that LLM may have added
+                for cit in unique_citations:
+                    while sentence.count(cit) > 1:
+                        # Remove first occurrence, keep last (typically at end)
+                        sentence = sentence.replace(cit, '', 1).replace('  ', ' ')
 
             # Prevent duplicate sentences
             if sentences and sentence.strip() == sentences[-1].strip():
@@ -1246,7 +1255,9 @@ class EvolutionaryParagraphGenerator:
         while prop_idx < len(propositions):
             # Determine target structure using Markov model
             target_structure = self.generator._get_target_structure_type(state)
-            capacity = capacity_map.get(target_structure, 1)
+            raw_capacity = capacity_map.get(target_structure, 1)
+            # Cap capacity at 2 to avoid awkward sentence merges
+            capacity = min(raw_capacity, 2)
 
             # Don't exceed remaining propositions
             actual_capacity = min(capacity, len(propositions) - prop_idx)
