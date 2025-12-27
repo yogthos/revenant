@@ -5,13 +5,12 @@ Allows reordering when logical coherence requires it.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
-import json
-import re
+from typing import List, Dict, Optional
 
 from .function_classifier import SentenceFunction
 from .template_generator import RhetoricalTemplate, TemplateSlot
 from ..utils.logging import get_logger
+from ..utils.prompts import load_prompt
 
 logger = get_logger(__name__)
 
@@ -67,19 +66,6 @@ class PropositionMapper:
     Uses the LLM to analyze proposition content and assign each to the
     best template slot, potentially reordering for coherence.
     """
-
-    SYSTEM_PROMPT = """You are an expert at rhetorical analysis and argumentation structure.
-Your task is to map propositions (content ideas) to rhetorical template slots.
-
-Each slot has a function that describes what type of sentence should fill it.
-You must assign each proposition to the slot where it best fits rhetorically.
-
-You may reorder propositions if needed for logical coherence - for example:
-- A resolution should come after the question or claim it resolves
-- Evidence should follow the claim it supports
-- A contrast should set up what it's contrasting with
-
-Respond ONLY with valid JSON in the exact format specified."""
 
     def __init__(self, llm_provider=None):
         """Initialize the mapper.
@@ -138,10 +124,11 @@ Respond ONLY with valid JSON in the exact format specified."""
     ) -> MappingResult:
         """Map propositions using LLM."""
         user_prompt = self._build_mapping_prompt(propositions, template, context)
+        system_prompt = load_prompt("proposition_mapper_system")
 
         try:
             response = self.llm_provider.call_json(
-                system_prompt=self.SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=0.3,  # Low temperature for consistent mapping
                 max_tokens=1024,
@@ -219,7 +206,6 @@ Respond ONLY with valid JSON in the exact format specified."""
         mappings = []
         unmapped = []
         empty_slots = response.get("empty_slots", [])
-        reordered = response.get("reordered", False)
 
         # Track which propositions have been mapped
         mapped_prop_indices = set()

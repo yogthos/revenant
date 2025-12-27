@@ -12,10 +12,9 @@ Classifies sentences by rhetorical function:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple, Set
+from typing import List, Dict, Optional
 from collections import Counter, defaultdict
 from enum import Enum
-import re
 
 from ..utils.nlp import get_nlp
 from ..utils.logging import get_logger

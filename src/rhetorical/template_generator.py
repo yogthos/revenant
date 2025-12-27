@@ -5,8 +5,8 @@ contrast, resolution) BEFORE generating content. Propositions are then mapped
 to template slots for natural argumentative flow.
 """
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
+from typing import List, Dict, Optional
 import random
 from collections import Counter
 
@@ -65,14 +65,6 @@ class RhetoricalTemplateGenerator:
             SentenceFunction.CLAIM,
             SentenceFunction.RESOLUTION,
         },
-    }
-
-    # Functions that work well as starters
-    GOOD_STARTERS = {
-        SentenceFunction.SETUP,
-        SentenceFunction.CLAIM,
-        SentenceFunction.QUESTION,
-        SentenceFunction.CONTINUATION,
     }
 
     # Functions that work well as endings
