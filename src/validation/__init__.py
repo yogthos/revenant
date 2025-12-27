@@ -7,6 +7,13 @@ from .semantic_verifier import (
     VerificationIssue,
     verify_semantic_fidelity,
 )
+from .anachronistic_test import (
+    ANACHRONISTIC_PROMPTS,
+    AnachronisticTestResult,
+    AnachronisticTestSuite,
+    run_anachronistic_tests,
+    validate_style_generalization,
+)
 
 __all__ = [
     "EntailmentVerifier",
@@ -16,4 +23,10 @@ __all__ = [
     "VerificationResult",
     "VerificationIssue",
     "verify_semantic_fidelity",
+    # Anachronistic testing
+    "ANACHRONISTIC_PROMPTS",
+    "AnachronisticTestResult",
+    "AnachronisticTestSuite",
+    "run_anachronistic_tests",
+    "validate_style_generalization",
 ]

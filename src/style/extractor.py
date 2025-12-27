@@ -88,6 +88,11 @@ class StyleProfileExtractor:
         structure_profile = self._extract_structure_profile(all_sentences)
         discourse_profile = self._extract_discourse_profile(paragraphs)
 
+        # NEW: Segment corpus into 150-400 word chunks for flow samples
+        # These multi-sentence chunks capture style better than isolated sentences
+        flow_samples = self._segment_corpus_to_chunks(paragraphs)
+        structure_profile.flow_samples = flow_samples
+
         # Extract vocabulary palette for style transfer
         vocab_extractor = VocabularyPaletteExtractor()
         vocabulary_palette = vocab_extractor.extract(paragraphs)
@@ -124,6 +129,8 @@ class StyleProfileExtractor:
                    f"hedge={assertiveness_profile.hedge_ratio:.1%}, boost={assertiveness_profile.booster_ratio:.1%}")
         logger.info(f"  Rhetorical: contrast={rhetorical_profile.contrast_frequency:.1%}, "
                    f"question={rhetorical_profile.question_frequency:.1%}")
+        logger.info(f"  Flow samples: {len(structure_profile.flow_samples)} chunks "
+                   f"(150-400 words each)")
 
         return AuthorStyleProfile(
             author_name=author_name,
@@ -552,6 +559,7 @@ class StyleProfileExtractor:
             proposition_capacity=proposition_capacity,
             structure_samples=dict(structure_samples),
             raw_samples=dict(raw_samples),
+            flow_samples=[],  # Will be populated by _segment_corpus_to_chunks
         )
 
     def _classify_sentence_structure(self, doc) -> str:
@@ -648,6 +656,72 @@ class StyleProfileExtractor:
 
         return capacity
 
+    def _segment_corpus_to_chunks(
+        self,
+        paragraphs: List[str],
+        min_words: int = 150,
+        max_words: int = 400,
+        max_chunks: int = 20,
+    ) -> List[str]:
+        """Segment corpus into optimal chunks for style capture.
+
+        Research insight: "Style lives in the transitions" - multi-sentence
+        chunks with paragraph boundaries capture style better than isolated
+        sentences. 150-400 word chunks are optimal for style transfer.
+
+        Args:
+            paragraphs: List of paragraph texts from corpus.
+            min_words: Minimum words per chunk (default 150).
+            max_words: Maximum words per chunk (default 400).
+            max_chunks: Maximum number of chunks to return.
+
+        Returns:
+            List of text chunks, each 150-400 words showing multi-sentence flow.
+        """
+        chunks = []
+        current_chunk = []
+        current_words = 0
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+
+            para_words = len(para.split())
+
+            # If adding this paragraph exceeds max and we have enough words, finalize chunk
+            if current_words + para_words > max_words and current_words >= min_words:
+                chunk_text = "\n\n".join(current_chunk)
+                chunks.append(chunk_text)
+
+                # Start new chunk with overlap (last sentence of previous paragraph)
+                # This captures cross-paragraph transitions
+                last_para = current_chunk[-1] if current_chunk else ""
+                sentences = split_into_sentences(last_para)
+                overlap = sentences[-1] if sentences else ""
+                current_chunk = [overlap] if overlap else []
+                current_words = len(overlap.split()) if overlap else 0
+
+            current_chunk.append(para)
+            current_words += para_words
+
+        # Don't forget the last chunk
+        if current_chunk and current_words >= min_words:
+            chunk_text = "\n\n".join(current_chunk)
+            chunks.append(chunk_text)
+
+        # Prioritize chunks with paragraph boundaries (transitions)
+        # Chunks with more paragraphs contain more style-revealing transitions
+        def boundary_score(chunk: str) -> int:
+            return chunk.count("\n\n") + 1  # More paragraph breaks = better
+
+        chunks_with_scores = [(c, boundary_score(c)) for c in chunks]
+        chunks_with_scores.sort(key=lambda x: x[1], reverse=True)
+
+        logger.info(f"Created {len(chunks)} flow chunks from corpus "
+                   f"(showing {min(max_chunks, len(chunks))} with most transitions)")
+
+        return [c for c, _ in chunks_with_scores[:max_chunks]]
 
     def _extract_discourse_profile(self, paragraphs: List[str]) -> DiscourseRelationProfile:
         """Extract discourse relations between sentences using spaCy.

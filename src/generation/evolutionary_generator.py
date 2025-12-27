@@ -33,6 +33,31 @@ from ..style.clause_extractor import ClausePatternExtractor, ClausePatternProfil
 logger = get_logger(__name__)
 
 
+# Instruction templates for prompt variety (research shows this prevents attention collapse)
+# Each template frames the same task differently to avoid pattern lock-in
+INSTRUCTION_TEMPLATES = [
+    "Rewrite the following content using the author's style and rhythm:",
+    "Express this idea in the voice and manner shown in the examples:",
+    "Render this content matching the prose patterns above:",
+    "Compose this content emulating the style of the examples:",
+    "Transform this content to match the author's characteristic voice:",
+    "Craft this content in the distinctive style demonstrated:",
+    "Write this content with the rhythm and flow shown in examples:",
+    "Convey this meaning using the author's syntactic patterns:",
+    "Present this content in the manner of the style samples:",
+    "Channel the author's voice to express this content:",
+]
+
+# System prompt variants for additional variety
+SYSTEM_PROMPTS = [
+    "You are an expert at emulating literary styles. Match the examples precisely.",
+    "You are a skilled writer capturing authorial voice. Replicate the patterns shown.",
+    "You are a style transfer specialist. Mirror the sentence rhythms exactly.",
+    "You are a prose craftsman. Adopt the demonstrated writing patterns.",
+    "You are channeling an author's voice. Match their style precisely.",
+]
+
+
 @dataclass
 class Candidate:
     """A candidate sentence with fitness scores."""
@@ -268,6 +293,12 @@ class EvolutionarySentenceGenerator:
         )
         self.structure_transitions = profile.structure_profile.structure_transitions
         self.proposition_capacity = profile.structure_profile.proposition_capacity
+
+        # NEW: Store flow samples (150-400 word chunks) for multi-sentence style
+        # These capture paragraph transitions where "style lives"
+        self.flow_samples = profile.structure_profile.flow_samples or []
+        if self.flow_samples:
+            logger.info(f"Loaded {len(self.flow_samples)} flow samples for style transfer")
 
         # Extract clause patterns from structure samples for syntactic guidance
         # This gives the LLM structural skeletons to follow
@@ -1105,6 +1136,20 @@ class EvolutionarySentenceGenerator:
         parts.append("")
         parts.append("(Match the sentence RHYTHM and STRUCTURE above, not the topics.)")
 
+        # NEW: Show a flow sample (multi-sentence chunk) for paragraph-level rhythm
+        # This helps the LLM understand how sentences connect and flow
+        if hasattr(self, 'flow_samples') and self.flow_samples:
+            # Pick a random flow sample to show diverse paragraph styles
+            flow_sample = random.choice(self.flow_samples)
+            # Truncate if too long (show first ~200 words)
+            flow_words = flow_sample.split()
+            if len(flow_words) > 200:
+                flow_sample = " ".join(flow_words[:200]) + "..."
+            parts.append("")
+            parts.append("PARAGRAPH FLOW EXAMPLE (notice how sentences connect):")
+            parts.append(f'"""{flow_sample}"""')
+            parts.append("(Capture this flowing, connected style - not choppy isolated sentences.)")
+
         # Add vocabulary hints - author's STYLISTIC words only (not content)
         if self.author_stylistic_words:
             stylistic_sample = ", ".join(self.author_stylistic_words[:8])
@@ -1180,9 +1225,12 @@ class EvolutionarySentenceGenerator:
                 parts.append(f"VARY YOUR OPENING (use different subject/topic, NOT transition words): avoid '{', '.join(set(avoid_words))}'")
 
         # The task - STRICT content preservation
+        # Use rotating instruction templates to prevent attention collapse
+        instruction = random.choice(INSTRUCTION_TEMPLATES)
         parts.append("")
-        parts.append("CONTENT TO EXPRESS (CRITICAL - preserve ALL details):")
+        parts.append(instruction)
         parts.append(f'"{proposition}"')
+        parts.append("(CRITICAL: preserve ALL content details)")
 
         # Extract and enforce content anchors
         content_anchors = self._extract_content_anchors_for_prompt(proposition)

@@ -233,6 +233,11 @@ class SentenceStructureProfile:
     raw_samples: Dict[str, List[str]] = field(default_factory=dict)
     # e.g., {"simple": ["The cat sat on the mat.", "Birds fly south."], ...}
 
+    # Multi-sentence flow samples (150-400 words) for style transfer
+    # These capture paragraph transitions where "style lives"
+    flow_samples: List[str] = field(default_factory=list)
+    # Each sample is a chunk of 150-400 words showing multi-sentence flow
+
     def to_dict(self) -> Dict:
         return {
             "structure_distribution": self.structure_distribution,
@@ -240,6 +245,7 @@ class SentenceStructureProfile:
             "proposition_capacity": self.proposition_capacity,
             "structure_samples": self.structure_samples,
             "raw_samples": self.raw_samples,
+            "flow_samples": self.flow_samples,
         }
 
     @classmethod
@@ -247,6 +253,9 @@ class SentenceStructureProfile:
         # Handle backward compatibility for profiles without raw_samples
         if "raw_samples" not in data:
             data["raw_samples"] = data.get("structure_samples", {})
+        # Handle backward compatibility for profiles without flow_samples
+        if "flow_samples" not in data:
+            data["flow_samples"] = []
         return cls(**data)
 
 
