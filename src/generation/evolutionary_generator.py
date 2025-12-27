@@ -174,6 +174,11 @@ class EvolutionarySentenceGenerator:
             if self.function_profile else {}
         )
 
+        # NEW: Store voice profile data for prompt injection
+        self.assertiveness_profile = profile.assertiveness_profile
+        self.rhetorical_profile = profile.rhetorical_profile
+        self.phrase_patterns = profile.phrase_patterns
+
     def _create_pattern_injector(self, human_patterns: Dict) -> PatternInjector:
         """Create PatternInjector from profile's human_patterns dict."""
         if not human_patterns:
@@ -269,6 +274,143 @@ class EvolutionarySentenceGenerator:
             constraints.append(f"Previous sentence: \"{last}\"")
 
         return "\n".join(constraints)
+
+    def _extract_content_anchors_for_prompt(self, proposition: str) -> List[str]:
+        """Extract content anchors that MUST be preserved in output.
+
+        Content anchors include:
+        - Named entities (places, people, organizations)
+        - Numbers and statistics
+        - Specific examples and concrete nouns
+        - Technical terms
+        """
+        anchors = []
+        doc = self.nlp(proposition)
+
+        # Extract named entities
+        for ent in doc.ents:
+            if ent.label_ in ('GPE', 'LOC', 'ORG', 'PERSON', 'NORP', 'FAC', 'PRODUCT'):
+                anchors.append(ent.text)
+
+        # Extract numbers and percentages
+        for token in doc:
+            if token.like_num or token.pos_ == 'NUM':
+                # Get the number with its unit if present
+                num_phrase = token.text
+                if token.i + 1 < len(doc):
+                    next_tok = doc[token.i + 1]
+                    if next_tok.pos_ == 'NOUN' or next_tok.text in ('percent', '%', 'million', 'billion'):
+                        num_phrase = f"{token.text} {next_tok.text}"
+                anchors.append(num_phrase)
+
+        # Extract specific nouns (concrete things, not abstract concepts)
+        concrete_nouns = []
+        for token in doc:
+            if token.pos_ == 'NOUN' and not token.is_stop:
+                # Check if it's a concrete noun (has hyponym in WordNet or is capitalized)
+                if token.text[0].isupper() or token.text in (
+                    'smartphone', 'phone', 'watch', 'gear', 'lithium', 'cobalt',
+                    'electricity', 'software', 'chip', 'silicon', 'device', 'tool',
+                    'tree', 'government', 'gallery', 'object', 'waste', 'material',
+                ):
+                    concrete_nouns.append(token.text)
+
+        # Add concrete nouns but avoid duplicates
+        for noun in concrete_nouns[:3]:  # Limit to 3 to avoid prompt bloat
+            if noun not in anchors:
+                anchors.append(noun)
+
+        # Extract quoted content
+        import re
+        quotes = re.findall(r'"([^"]+)"', proposition)
+        anchors.extend(quotes)
+
+        # Deduplicate while preserving order
+        seen = set()
+        unique_anchors = []
+        for a in anchors:
+            if a.lower() not in seen:
+                seen.add(a.lower())
+                unique_anchors.append(a)
+
+        return unique_anchors[:5]  # Limit to 5 most important anchors
+
+    def _build_voice_profile_section(self) -> str:
+        """Build prompt section for author voice injection.
+
+        Uses corpus-extracted assertiveness and rhetorical profiles
+        to inject the author's characteristic voice patterns.
+        """
+        parts = []
+
+        # Assertiveness profile
+        if self.assertiveness_profile:
+            ap = self.assertiveness_profile
+
+            # Commitment level description
+            if ap.average_commitment > 0.5:
+                parts.append("VOICE: Write with STRONG CONVICTION. Use assertive, direct language.")
+            elif ap.average_commitment < -0.3:
+                parts.append("VOICE: Write with ACADEMIC CAUTION. Use hedged, qualified language.")
+
+            # Top booster words (for assertive authors)
+            if ap.author_boosters and ap.average_commitment > 0.3:
+                top_boosters = list(ap.author_boosters.keys())[:5]
+                parts.append(f"Use emphatic words like: {', '.join(top_boosters)}")
+
+            # Top hedge words (for cautious authors)
+            if ap.author_hedges and ap.average_commitment < -0.3:
+                top_hedges = list(ap.author_hedges.keys())[:5]
+                parts.append(f"Use qualifying words like: {', '.join(top_hedges)}")
+
+            # Assertion patterns (sentence starters)
+            if ap.assertion_patterns:
+                sample_patterns = ap.assertion_patterns[:3]
+                parts.append(f"Sentence patterns: \"{sample_patterns[0]}...\"")
+
+        # Rhetorical profile
+        if self.rhetorical_profile:
+            rp = self.rhetorical_profile
+
+            # High contrast usage
+            if rp.contrast_frequency > 0.15:
+                markers = rp.contrast_markers[:4] if rp.contrast_markers else ["but", "however"]
+                parts.append(f"Use contrast markers freely: {', '.join(markers)}")
+
+            # Dialectical patterns ("not X but Y")
+            if rp.negation_affirmation_ratio > 0.02:
+                parts.append('Use dialectical "not X, but Y" constructions when appropriate.')
+                if rp.pattern_samples and "negation_affirmation" in rp.pattern_samples:
+                    example = rp.pattern_samples["negation_affirmation"][0][:80]
+                    parts.append(f'Example: "{example}..."')
+
+            # Direct address
+            if rp.direct_address_ratio > 0.03:
+                parts.append("Address the reader directly with 'you must', 'we should', etc.")
+
+            # Resolution markers
+            if rp.resolution_frequency > 0.05 and rp.resolution_markers:
+                res_markers = rp.resolution_markers[:3]
+                parts.append(f"Use conclusion markers: {', '.join(res_markers)}")
+
+        # Phrase patterns
+        if self.phrase_patterns:
+            pp = self.phrase_patterns
+
+            # Characteristic constructions
+            if pp.characteristic_constructions:
+                example = pp.characteristic_constructions[0][:60]
+                parts.append(f'Construction style: "{example}..."')
+
+            # Emphasis patterns (dashes, etc.)
+            if pp.emphasis_patterns:
+                example = pp.emphasis_patterns[0][:60]
+                parts.append(f'Emphasis style: "{example}..."')
+
+        if not parts:
+            return ""
+
+        return "---\nAUTHOR VOICE:\n" + "\n".join(parts)
 
     def _extract_content_words(self, mfw: Dict[str, float], limit: int = 20) -> List[str]:
         """Extract content words from MFW using spaCy.
@@ -780,14 +922,26 @@ class EvolutionarySentenceGenerator:
 
         parts.append("---")
 
+        # NEW: Add voice profile section (Sprint 2)
+        voice_section = self._build_voice_profile_section()
+        if voice_section:
+            parts.append(voice_section)
+
         # Context from previous sentences
         if state.previous_sentences:
             parts.append(f"Previous: \"{state.previous_sentences[-1]}\"")
 
         # The task - STRICT content preservation
         parts.append("")
-        parts.append("CONTENT TO EXPRESS (do not add, remove, or change meaning):")
+        parts.append("CONTENT TO EXPRESS (CRITICAL - preserve ALL details):")
         parts.append(f'"{proposition}"')
+
+        # Extract and enforce content anchors
+        content_anchors = self._extract_content_anchors_for_prompt(proposition)
+        if content_anchors:
+            parts.append("")
+            parts.append(f"MUST INCLUDE these specific details: {', '.join(content_anchors)}")
+
         parts.append("")
         parts.append(f"Length: ~{target_length} words")
 
@@ -1254,15 +1408,11 @@ class EvolutionaryParagraphGenerator:
                 f"structure={target_structure}, citations={citations}"
             )
 
-            # Combine propositions - limit complexity to avoid embellishment
-            # Cap at 2 propositions max - more than that causes awkward sentences
-            effective_props = group_props[:2]
+            # CONTENT PRESERVATION FIX: Use only 1 proposition per sentence
+            # Grouping multiple propositions causes details to be lost
+            effective_props = group_props[:1]  # Changed from [:2] to [:1]
 
-            if len(effective_props) == 1:
-                combined_content = effective_props[0]
-            else:
-                # Combine with semicolon to indicate both ideas should be expressed
-                combined_content = f"{effective_props[0]}; {effective_props[1]}"
+            combined_content = effective_props[0] if effective_props else ""
 
             # Build context hint for implicit references
             context_hint = ""
@@ -1288,6 +1438,33 @@ class EvolutionaryParagraphGenerator:
             state.rhetorical_function = (
                 slot_functions[group_idx] if group_idx < len(slot_functions) else None
             )
+
+            # NEW: Build semantic constraints from stance info
+            semantic_hint = ""
+            if group_rst:
+                primary_rst = group_rst[0]
+                stance = primary_rst.get("epistemic_stance")
+                if stance and hasattr(stance, 'stance'):
+                    if stance.stance == "appearance":
+                        semantic_hint = "[PRESERVE APPEARANCE: Use 'seems', 'appears', 'conditioned to see as', NOT factual 'is']"
+                    elif stance.stance == "conditional":
+                        semantic_hint = "[PRESERVE CONDITIONAL: Keep 'if', 'unless', 'when' constructions]"
+                    elif stance.stance == "hypothetical":
+                        semantic_hint = "[PRESERVE HYPOTHETICAL: Keep 'might', 'could', 'may' modal verbs]"
+                    if stance.is_negated:
+                        semantic_hint += " [KEEP NEGATION]"
+
+                # Check for logical relations
+                relations = primary_rst.get("logical_relations", [])
+                for rel in relations[:1]:  # First relation
+                    if hasattr(rel, 'type'):
+                        if rel.type == "contrast":
+                            semantic_hint += " [PRESERVE CONTRAST with 'but'/'however']"
+                        elif rel.type == "cause":
+                            semantic_hint += " [PRESERVE CAUSATION with 'because'/'therefore']"
+
+            if semantic_hint:
+                context_hint = f"{context_hint} {semantic_hint}".strip()
 
             # Generate the sentence
             sentence, state = self.generator.generate_sentence(
@@ -1367,9 +1544,10 @@ class EvolutionaryParagraphGenerator:
         while prop_idx < len(propositions):
             # Determine target structure using Markov model
             target_structure = self.generator._get_target_structure_type(state)
-            raw_capacity = capacity_map.get(target_structure, 1)
-            # Cap capacity at 2 to avoid awkward sentence merges
-            capacity = min(raw_capacity, 2)
+
+            # CONTENT PRESERVATION FIX: Always use capacity=1 to preserve all details
+            # Grouping propositions causes content loss (specific examples, anchors)
+            capacity = 1  # Changed from min(raw_capacity, 2) to 1
 
             # Don't exceed remaining propositions
             actual_capacity = min(capacity, len(propositions) - prop_idx)

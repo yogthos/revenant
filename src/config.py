@@ -97,12 +97,38 @@ class ContextBudgetConfig:
 
 
 @dataclass
+class VoiceInjectionConfig:
+    """Configuration for voice profile injection into generation."""
+    enabled: bool = True
+    assertiveness_weight: float = 0.7  # How much to weight assertiveness patterns
+    rhetorical_weight: float = 0.8  # How much to weight rhetorical patterns
+
+
+@dataclass
+class StyleConfig:
+    """Configuration for style transfer settings."""
+    perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person
+    voice_injection: VoiceInjectionConfig = field(default_factory=VoiceInjectionConfig)
+
+    def validate_perspective(self) -> bool:
+        """Check if perspective setting is valid."""
+        valid_perspectives = {
+            "preserve",
+            "first_person_singular",
+            "first_person_plural",
+            "third_person",
+        }
+        return self.perspective in valid_perspectives
+
+
+@dataclass
 class Config:
     """Main configuration container."""
     llm: LLMConfig = field(default_factory=LLMConfig)
     chromadb: ChromaDBConfig = field(default_factory=ChromaDBConfig)
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
+    style: StyleConfig = field(default_factory=StyleConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
     context_budget: ContextBudgetConfig = field(default_factory=ContextBudgetConfig)
     log_level: str = "INFO"
@@ -206,6 +232,23 @@ def load_config(config_path: str = "config.json") -> Config:
             length_tolerance=data["generation"].get("length_tolerance", 0.2),
             short_paragraph_threshold=data["generation"].get("short_paragraph_threshold", 2),
         )
+
+    if "style" in data:
+        style_data = data["style"]
+        voice_data = style_data.get("voice_injection", {})
+        config.style = StyleConfig(
+            perspective=style_data.get("perspective", "preserve"),
+            voice_injection=VoiceInjectionConfig(
+                enabled=voice_data.get("enabled", True),
+                assertiveness_weight=voice_data.get("assertiveness_weight", 0.7),
+                rhetorical_weight=voice_data.get("rhetorical_weight", 0.8),
+            ),
+        )
+        if not config.style.validate_perspective():
+            logger.warning(
+                f"Invalid perspective '{config.style.perspective}', using 'preserve'"
+            )
+            config.style.perspective = "preserve"
 
     if "validation" in data:
         val_data = data["validation"]

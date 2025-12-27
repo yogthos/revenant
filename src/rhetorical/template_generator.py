@@ -312,6 +312,28 @@ class RhetoricalTemplateGenerator:
 
         return result
 
+    def _would_create_triple(
+        self,
+        functions: List[SentenceFunction],
+        index: int,
+        new_func: SentenceFunction,
+    ) -> bool:
+        """Check if replacing functions[index] with new_func creates 3+ consecutive same."""
+        # Check backwards
+        count = 1
+        for j in range(index - 1, -1, -1):
+            if functions[j] == new_func:
+                count += 1
+            else:
+                break
+        # Check forwards
+        for j in range(index + 1, len(functions)):
+            if functions[j] == new_func:
+                count += 1
+            else:
+                break
+        return count >= 3
+
     def _validate_logical_flow(
         self,
         functions: List[SentenceFunction],
@@ -325,7 +347,6 @@ class RhetoricalTemplateGenerator:
         # Check logical precedence constraints
         for i in range(1, len(result)):
             func = result[i]
-            prev_func = result[i - 1]
 
             if func in self.LOGICAL_PRECEDENCE:
                 valid_predecessors = self.LOGICAL_PRECEDENCE[func]
@@ -341,7 +362,16 @@ class RhetoricalTemplateGenerator:
                     # Insert a valid predecessor if possible
                     # For now, just swap with a more neutral function
                     if i > 1:  # Don't change if too early
-                        result[i] = SentenceFunction.ELABORATION
+                        # Try ELABORATION first, then CONTINUATION, then others
+                        replacement_candidates = [
+                            SentenceFunction.ELABORATION,
+                            SentenceFunction.CONTINUATION,
+                            SentenceFunction.CLAIM,
+                        ]
+                        for candidate in replacement_candidates:
+                            if not self._would_create_triple(result, i, candidate):
+                                result[i] = candidate
+                                break
 
         # Ensure good ending if possible
         if result[-1] not in self.GOOD_ENDINGS and len(result) > 2:

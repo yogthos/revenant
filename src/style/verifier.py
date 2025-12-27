@@ -285,7 +285,11 @@ class StyleVerifier:
         return score, issues
 
     def _check_delta(self, text: str) -> Tuple[float, List[str]]:
-        """Check Burrows' Delta distance."""
+        """Check Burrows' Delta distance.
+
+        Uses raw frequency comparison for short texts (< 200 words) since
+        z-score normalization is unstable for small samples.
+        """
         issues = []
 
         # Calculate word frequencies
@@ -297,18 +301,58 @@ class StyleVerifier:
         word_counts = Counter(words)
         frequencies = {word: count / total for word, count in word_counts.items()}
 
-        # Calculate delta
-        delta = self.profile.delta_profile.calculate_delta(frequencies)
+        # For short texts, use raw frequency Delta (more stable)
+        # Z-score Delta needs very large samples (1000+ words) to be stable
+        if total < 1000:
+            delta = self._calculate_raw_delta(frequencies)
+            # Adjust threshold for short texts (raw delta is typically smaller)
+            adjusted_threshold = 0.3  # Raw frequency delta threshold
+            score = max(0.0, 1.0 - delta / adjusted_threshold)
 
-        # Score (inverse of delta, capped)
-        score = max(0.0, 1.0 - delta / self.delta_threshold)
+            # Only flag if significantly off
+            if delta > adjusted_threshold:
+                issues.append(
+                    f"Vocabulary divergence {delta:.2f} (short text mode)"
+                )
+        else:
+            # Use standard z-score Delta for longer texts
+            delta = self.profile.delta_profile.calculate_delta(frequencies)
+            score = max(0.0, 1.0 - delta / self.delta_threshold)
 
-        if delta > self.delta_threshold:
-            issues.append(
-                f"Burrows' Delta {delta:.2f} exceeds threshold {self.delta_threshold}"
-            )
+            if delta > self.delta_threshold:
+                issues.append(
+                    f"Burrows' Delta {delta:.2f} exceeds threshold {self.delta_threshold}"
+                )
 
         return score, issues
+
+    def _calculate_raw_delta(self, text_frequencies: Dict[str, float]) -> float:
+        """Calculate raw frequency Delta (no z-scores).
+
+        More stable for short texts. Compares absolute frequency differences
+        for top function words only (content-independent).
+        """
+        # Focus on function words (content-independent)
+        function_words = {
+            'the', 'of', 'and', 'a', 'to', 'in', 'is', 'that', 'it', 'for',
+            'was', 'on', 'are', 'as', 'with', 'be', 'at', 'this', 'have', 'from',
+            'or', 'by', 'not', 'but', 'what', 'all', 'were', 'we', 'when', 'there',
+            'can', 'an', 'which', 'their', 'if', 'has', 'will', 'one', 'each', 'about',
+        }
+
+        delta_sum = 0.0
+        count = 0
+
+        mfw = self.profile.delta_profile.mfw_frequencies
+
+        for word in function_words:
+            if word in mfw:
+                corpus_freq = mfw[word]
+                text_freq = text_frequencies.get(word, 0.0)
+                delta_sum += abs(corpus_freq - text_freq)
+                count += 1
+
+        return delta_sum / count if count > 0 else 0.0
 
 
 def verify_against_profile(

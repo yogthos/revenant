@@ -53,6 +53,20 @@
     "length_tolerance": 0.2,
     "short_paragraph_threshold": 2
   },
+  "style": {
+    "perspective": "preserve",
+    "perspective_options": {
+      "preserve": "Keep the original perspective from input text",
+      "first_person_singular": "Convert to I/me/my perspective",
+      "first_person_plural": "Convert to we/us/our perspective",
+      "third_person": "Convert to he/she/they perspective"
+    },
+    "voice_injection": {
+      "enabled": true,
+      "assertiveness_weight": 0.7,
+      "rhetorical_weight": 0.8
+    }
+  },
   "validation": {
     "semantic": {
       "min_proposition_coverage": 0.9,

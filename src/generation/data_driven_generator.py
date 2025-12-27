@@ -143,7 +143,7 @@ class DataDrivenStyleTransfer:
             rst_info = None
         else:
             proposition_texts = [p.text for p in propositions]
-            # Build RST info for generator (including citations)
+            # Build RST info for generator (including citations and stance)
             rst_info = [
                 {
                     "role": p.rst_role,
@@ -151,6 +151,10 @@ class DataDrivenStyleTransfer:
                     "parent_idx": p.parent_nucleus_idx,
                     "entities": p.entities,
                     "citations": p.attached_citations,  # Pass citations through
+                    # NEW: Pass epistemic stance for semantic preservation
+                    "epistemic_stance": p.epistemic_stance,
+                    "logical_relations": p.logical_relations,
+                    "content_anchors": p.content_anchors,
                 }
                 for p in propositions
             ]

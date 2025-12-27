@@ -1,14 +1,149 @@
-"""Proposition extraction from text using spaCy and LLM."""
+"""Proposition extraction from text using spaCy and LLM.
+
+Enhanced with epistemic stance detection, logical relation preservation,
+and content anchor identification for semantic fidelity in style transfer.
+"""
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 import uuid
 
 from ..utils.nlp import get_nlp, split_into_sentences, extract_citations
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+
+# =============================================================================
+# Epistemic and Modal Markers (for detecting stance)
+# =============================================================================
+
+# Markers that indicate APPEARANCE (things seem/appear to be X, not ARE X)
+APPEARANCE_MARKERS = {
+    "seem", "seems", "seemed", "seeming",
+    "appear", "appears", "appeared", "appearing",
+    "look", "looks", "looked", "looking",
+}
+
+APPEARANCE_PHRASES = [
+    "as if", "as though", "looks like", "seems like", "appears to be",
+    "gives the impression", "on the surface", "at first glance",
+    "one might think", "it would seem", "apparently",
+    # Perception-as constructions (see X as Y = perceive X to be Y, not X IS Y)
+    "see it as", "see them as", "see this as", "see the", "see things as",
+    "view it as", "view them as", "view this as", "view the",
+    "perceive it as", "perceive them as", "perceive this as",
+    "regard it as", "regard them as", "regard this as",
+    "think of it as", "think of them as", "think of this as",
+    "consider it", "consider them", "consider this",
+    "treat it as", "treat them as", "treat this as",
+    "conditioned to see", "conditioned to view", "conditioned to perceive",
+]
+
+# Regex patterns for more complex appearance constructions
+APPEARANCE_PATTERNS = [
+    r"see\s+(?:the\s+)?[\w\s]+\s+as\b",      # see X as Y
+    r"view\s+(?:the\s+)?[\w\s]+\s+as\b",     # view X as Y (e.g., "view this phenomenon as")
+    r"perceive\s+(?:the\s+)?[\w\s]+\s+as\b", # perceive X as Y
+    r"regard\s+(?:the\s+)?[\w\s]+\s+as\b",   # regard X as Y
+    r"treat\s+(?:the\s+)?[\w\s]+\s+as\b",    # treat X as Y
+    r"think\s+of\s+[\w\s]+\s+as\b",          # think of X as Y
+    r"considered\s+(?:to\s+be\s+)?",         # considered (to be) X
+]
+
+# Markers that indicate CONDITIONAL statements
+CONDITIONAL_MARKERS = {"if", "unless", "provided", "assuming", "given", "when", "whenever"}
+
+# Markers that indicate HYPOTHETICAL statements
+HYPOTHETICAL_MODALS = {"would", "could", "might", "may"}
+
+# Hedging markers (author distancing from claim)
+HEDGING_WORDS = {
+    "perhaps", "possibly", "probably", "maybe", "somewhat", "relatively",
+    "fairly", "rather", "quite", "largely", "generally", "typically",
+    "often", "sometimes", "occasionally", "tends", "suggest", "suggests",
+    "indicate", "indicates", "imply", "implies", "appear", "appears",
+}
+
+HEDGING_PHRASES = [
+    "to some extent", "in some ways", "in a sense", "more or less",
+    "it is possible", "it seems", "it appears", "one might argue",
+    "it could be", "there is evidence", "research suggests",
+]
+
+# Booster markers (author strengthening claim)
+BOOSTER_WORDS = {
+    "certainly", "definitely", "clearly", "obviously", "undoubtedly",
+    "surely", "absolutely", "indeed", "truly", "necessarily",
+    "always", "never", "must", "every", "all", "none", "fundamental",
+    "essential", "critical", "crucial", "vital", "key", "primary",
+}
+
+# Attribution markers (claim sourced from another)
+ATTRIBUTION_PATTERNS = [
+    r"according to (\w+(?:\s+\w+)?)",
+    r"(\w+(?:\s+\w+)?) (?:claims?|argues?|states?|suggests?|contends?|maintains?|asserts?)",
+    r"as (\w+(?:\s+\w+)?) (?:noted|observed|pointed out|argued|claimed)",
+]
+
+# =============================================================================
+# Logical Relation Markers
+# =============================================================================
+
+CONTRAST_MARKERS = {
+    "but", "however", "yet", "although", "though", "whereas", "while",
+    "nevertheless", "nonetheless", "on the other hand", "conversely",
+    "in contrast", "despite", "even though", "still",
+}
+
+CAUSE_MARKERS = {
+    "because", "since", "therefore", "thus", "hence", "consequently",
+    "as a result", "for this reason", "due to", "owing to", "so",
+    "accordingly", "thereby",
+}
+
+CONDITION_MARKERS = {
+    "if", "unless", "provided that", "assuming", "given that",
+    "in case", "on condition that", "supposing",
+}
+
+EXAMPLE_MARKERS = {
+    "for example", "for instance", "such as", "like", "including",
+    "e.g.", "namely", "specifically", "in particular", "consider",
+}
+
+REFORMULATION_MARKERS = {
+    "that is", "in other words", "i.e.", "namely", "put differently",
+    "to put it another way", "meaning", "which means",
+}
+
+
+@dataclass
+class ContentAnchor:
+    """Content that MUST be preserved verbatim in output."""
+    text: str
+    anchor_type: str  # "example", "statistic", "quote", "citation", "entity", "technical_term"
+    must_preserve: bool = True
+    context: str = ""  # What this anchor supports
+
+
+@dataclass
+class LogicalRelation:
+    """Logical relation that must be preserved in output."""
+    type: str  # "contrast", "cause", "condition", "example", "elaboration", "reformulation"
+    source_marker: str  # The actual word/phrase that signals this
+    must_preserve: bool = True
+
+
+@dataclass
+class EpistemicStance:
+    """Epistemic stance information for a proposition."""
+    stance: str = "factual"  # "factual", "appearance", "conditional", "hypothetical"
+    hedging_level: float = 0.0  # 0.0 = absolute, 1.0 = fully hedged
+    modal_markers: List[str] = field(default_factory=list)
+    is_negated: bool = False
+    source_attribution: Optional[str] = None  # "According to X"
 
 
 @dataclass
@@ -22,7 +157,11 @@ class SVOTriple:
 
 @dataclass
 class PropositionNode:
-    """A node representing an atomic proposition in a semantic graph."""
+    """A node representing an atomic proposition in a semantic graph.
+
+    Enhanced with epistemic stance detection, logical relations, and content anchors
+    for semantic fidelity preservation during style transfer.
+    """
 
     id: str
     text: str  # The proposition text
@@ -40,6 +179,15 @@ class PropositionNode:
     rst_role: str = "nucleus"  # "nucleus" (main claim) or "satellite" (supporting)
     rst_relation: str = "none"  # relation to previous: "example", "evidence", "elaboration", "contrast", "cause", "none"
     parent_nucleus_idx: Optional[int] = None  # index of the nucleus this satellite supports
+
+    # === NEW: Epistemic stance (must be preserved in output) ===
+    epistemic_stance: EpistemicStance = field(default_factory=EpistemicStance)
+
+    # === NEW: Logical relations (must be preserved in output) ===
+    logical_relations: List[LogicalRelation] = field(default_factory=list)
+
+    # === NEW: Content anchors (must appear verbatim in output) ===
+    content_anchors: List[ContentAnchor] = field(default_factory=list)
 
 
 class PropositionExtractor:
@@ -150,6 +298,12 @@ class PropositionExtractor:
         entities = [ent.text for ent in doc.ents]
         keywords = self._extract_keywords(doc)
 
+        # === NEW: Extract epistemic stance, logical relations, and anchors ===
+        # Note: Use original sentence for anchors (to capture citations), clean for parsing
+        epistemic_stance = self.extract_epistemic_stance(doc, clean_sentence)
+        logical_relations = self.extract_logical_relations(doc, clean_sentence)
+        content_anchors = self.extract_content_anchors(doc, sentence, entities)  # Use original sentence
+
         # Create proposition nodes
         propositions = []
         for i, triple in enumerate(triples):
@@ -165,7 +319,11 @@ class PropositionExtractor:
                 source_sentence_idx=sentence_idx,
                 is_citation=bool(attached_citations),
                 is_quotation=is_quotation,
-                attached_citations=attached_citations
+                attached_citations=attached_citations,
+                # === NEW: Add semantic fidelity fields ===
+                epistemic_stance=epistemic_stance,
+                logical_relations=logical_relations,
+                content_anchors=content_anchors,
             ))
 
         return propositions
@@ -484,3 +642,312 @@ class PropositionExtractor:
             return ("satellite", "elaboration")
 
         return ("nucleus", "none")
+
+    # =========================================================================
+    # NEW: Epistemic Stance Detection
+    # =========================================================================
+
+    def extract_epistemic_stance(self, doc, text: str) -> EpistemicStance:
+        """Extract epistemic stance from a sentence.
+
+        Detects whether the proposition is:
+        - Factual: direct assertion of truth
+        - Appearance: stated as how things seem/appear (not necessarily true)
+        - Conditional: dependent on a condition
+        - Hypothetical: speculative, using modal verbs like could/might
+
+        Args:
+            doc: spaCy Doc object.
+            text: Original text.
+
+        Returns:
+            EpistemicStance with detected stance, hedging level, and markers.
+        """
+        text_lower = text.lower()
+        stance = "factual"
+        hedging_level = 0.0
+        modal_markers = []
+        is_negated = False
+        source_attribution = None
+
+        # Check for APPEARANCE markers (most important for semantic fidelity)
+        for marker in APPEARANCE_MARKERS:
+            if marker in text_lower:
+                stance = "appearance"
+                modal_markers.append(marker)
+
+        for phrase in APPEARANCE_PHRASES:
+            if phrase in text_lower:
+                stance = "appearance"
+                modal_markers.append(phrase)
+
+        # Check for appearance patterns using regex
+        for pattern in APPEARANCE_PATTERNS:
+            match = re.search(pattern, text_lower)
+            if match:
+                stance = "appearance"
+                modal_markers.append(match.group())
+
+        # Check for CONDITIONAL markers
+        if stance == "factual":
+            for token in doc:
+                if token.lemma_.lower() in CONDITIONAL_MARKERS and token.dep_ in ("mark", "advmod"):
+                    stance = "conditional"
+                    modal_markers.append(token.text)
+                    break
+
+        # Check for HYPOTHETICAL modals
+        if stance == "factual":
+            for token in doc:
+                if token.tag_ == "MD" and token.lemma_.lower() in HYPOTHETICAL_MODALS:
+                    stance = "hypothetical"
+                    modal_markers.append(token.text)
+                    break
+
+        # Calculate hedging level
+        hedge_count = 0
+        boost_count = 0
+
+        for token in doc:
+            if token.lemma_.lower() in HEDGING_WORDS:
+                hedge_count += 1
+                modal_markers.append(token.text)
+
+            if token.lemma_.lower() in BOOSTER_WORDS:
+                boost_count += 1
+
+        for phrase in HEDGING_PHRASES:
+            if phrase in text_lower:
+                hedge_count += 1
+                modal_markers.append(phrase)
+
+        # Hedging level: positive = hedged, negative = boosted
+        total_markers = hedge_count + boost_count
+        if total_markers > 0:
+            hedging_level = (hedge_count - boost_count) / max(total_markers, 1)
+            hedging_level = max(-1.0, min(1.0, hedging_level))
+
+        # Check for negation
+        for token in doc:
+            if token.dep_ == "neg":
+                is_negated = True
+                break
+
+        # Check for attribution
+        for pattern in ATTRIBUTION_PATTERNS:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                source_attribution = match.group(1)
+                break
+
+        return EpistemicStance(
+            stance=stance,
+            hedging_level=hedging_level,
+            modal_markers=list(set(modal_markers)),  # Deduplicate
+            is_negated=is_negated,
+            source_attribution=source_attribution
+        )
+
+    # =========================================================================
+    # NEW: Logical Relation Detection
+    # =========================================================================
+
+    def extract_logical_relations(self, doc, text: str) -> List[LogicalRelation]:
+        """Extract logical relations signaled in the text.
+
+        Detects relations like:
+        - Contrast: but, however, yet
+        - Cause: because, therefore, thus
+        - Condition: if, unless
+        - Example: for example, such as
+        - Reformulation: that is, in other words
+
+        Args:
+            doc: spaCy Doc object.
+            text: Original text.
+
+        Returns:
+            List of LogicalRelation instances.
+        """
+        text_lower = text.lower()
+        relations = []
+
+        # Check for contrast markers
+        for marker in CONTRAST_MARKERS:
+            if marker in text_lower:
+                # Verify it's used as a discourse marker, not just the word
+                if self._is_discourse_marker(doc, marker):
+                    relations.append(LogicalRelation(
+                        type="contrast",
+                        source_marker=marker,
+                        must_preserve=True
+                    ))
+                    break  # Only record first contrast marker
+
+        # Check for cause markers
+        for marker in CAUSE_MARKERS:
+            if marker in text_lower:
+                if self._is_discourse_marker(doc, marker):
+                    relations.append(LogicalRelation(
+                        type="cause",
+                        source_marker=marker,
+                        must_preserve=True
+                    ))
+                    break
+
+        # Check for condition markers
+        for marker in CONDITION_MARKERS:
+            if marker in text_lower:
+                relations.append(LogicalRelation(
+                    type="condition",
+                    source_marker=marker,
+                    must_preserve=True
+                ))
+                break
+
+        # Check for example markers
+        for marker in EXAMPLE_MARKERS:
+            if marker in text_lower:
+                relations.append(LogicalRelation(
+                    type="example",
+                    source_marker=marker,
+                    must_preserve=True
+                ))
+                break
+
+        # Check for reformulation markers
+        for marker in REFORMULATION_MARKERS:
+            if marker in text_lower:
+                relations.append(LogicalRelation(
+                    type="reformulation",
+                    source_marker=marker,
+                    must_preserve=True
+                ))
+                break
+
+        return relations
+
+    def _is_discourse_marker(self, doc, marker: str) -> bool:
+        """Check if a marker is used as a discourse connector.
+
+        Args:
+            doc: spaCy Doc object.
+            marker: The marker word/phrase.
+
+        Returns:
+            True if used as discourse marker.
+        """
+        # Single word markers
+        marker_words = marker.split()
+        if len(marker_words) == 1:
+            for token in doc:
+                if token.text.lower() == marker:
+                    # Discourse markers are typically at start or after comma
+                    if token.i == 0 or (token.i > 0 and doc[token.i - 1].text == ","):
+                        return True
+                    # Or used as SCONJ/CCONJ
+                    if token.pos_ in ("SCONJ", "CCONJ", "ADV"):
+                        return True
+            return False
+        else:
+            # Multi-word markers - just check presence
+            return True
+
+    # =========================================================================
+    # NEW: Content Anchor Detection
+    # =========================================================================
+
+    def extract_content_anchors(self, doc, text: str, entities: List[str]) -> List[ContentAnchor]:
+        """Extract content that must be preserved verbatim in output.
+
+        Anchors include:
+        - Named entities in examples
+        - Statistics and numbers
+        - Direct quotes
+        - Citations
+        - Technical terms
+
+        Args:
+            doc: spaCy Doc object.
+            text: Original text.
+            entities: Already-extracted named entities.
+
+        Returns:
+            List of ContentAnchor instances.
+        """
+        anchors = []
+
+        # 1. Named entities are anchors (especially in example contexts)
+        for ent in doc.ents:
+            # High-value entity types that must be preserved
+            if ent.label_ in ("PERSON", "ORG", "GPE", "LOC", "PRODUCT", "EVENT", "WORK_OF_ART"):
+                anchors.append(ContentAnchor(
+                    text=ent.text,
+                    anchor_type="entity",
+                    must_preserve=True,
+                    context=f"Named entity ({ent.label_})"
+                ))
+
+        # 2. Statistics and numbers with units
+        stat_pattern = r'\b(\d+(?:\.\d+)?(?:\s*(?:%|percent|million|billion|thousand|kg|km|miles?|hours?|years?|dollars?|\$))?)\b'
+        for match in re.finditer(stat_pattern, text, re.IGNORECASE):
+            stat_text = match.group(1)
+            if len(stat_text) > 1:  # Skip single digits
+                anchors.append(ContentAnchor(
+                    text=stat_text,
+                    anchor_type="statistic",
+                    must_preserve=True,
+                    context="Numeric data"
+                ))
+
+        # 3. Direct quotes (must be preserved exactly)
+        quote_pattern = r'["\u201c]([^"\u201d]+)["\u201d]'
+        for match in re.finditer(quote_pattern, text):
+            quote_text = match.group(1)
+            anchors.append(ContentAnchor(
+                text=quote_text,
+                anchor_type="quote",
+                must_preserve=True,
+                context="Direct quotation"
+            ))
+
+        # 4. Citations
+        citation_pattern = r'\[\^?\d+\]'
+        for match in re.finditer(citation_pattern, text):
+            anchors.append(ContentAnchor(
+                text=match.group(),
+                anchor_type="citation",
+                must_preserve=True,
+                context="Citation reference"
+            ))
+
+        # 5. Items in example lists (after "such as", "like", "including")
+        example_list_pattern = r'(?:such as|like|including|for example|e\.g\.)\s+([^.;]+)'
+        for match in re.finditer(example_list_pattern, text, re.IGNORECASE):
+            example_items = match.group(1)
+            # Split by commas and 'and'
+            items = re.split(r',\s*|\s+and\s+', example_items)
+            for item in items:
+                item = item.strip()
+                if item and len(item) > 2:
+                    anchors.append(ContentAnchor(
+                        text=item,
+                        anchor_type="example",
+                        must_preserve=True,
+                        context="Example item"
+                    ))
+
+        # 6. Technical terms (capitalized multi-word phrases not at sentence start)
+        tech_term_pattern = r'(?<!^)(?<!\. )([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)'
+        for match in re.finditer(tech_term_pattern, text):
+            term = match.group(1)
+            # Exclude if it's already an entity
+            if term not in [a.text for a in anchors]:
+                anchors.append(ContentAnchor(
+                    text=term,
+                    anchor_type="technical_term",
+                    must_preserve=True,
+                    context="Technical term"
+                ))
+
+        return anchors

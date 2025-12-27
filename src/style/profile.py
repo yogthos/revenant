@@ -354,6 +354,184 @@ class SentenceFunctionProfile:
         )
 
 
+# =============================================================================
+# NEW: Voice Profile Components (Sprint 2)
+# =============================================================================
+
+@dataclass
+class AssertivenessProfile:
+    """Assertiveness patterns extracted from corpus.
+
+    Measures how directly the author states claims vs hedging/qualifying.
+    All values computed from corpus analysis, not assumed.
+    """
+
+    # Core metrics (computed from corpus)
+    hedge_ratio: float = 0.0  # % of sentences with hedging words
+    booster_ratio: float = 0.0  # % of sentences with booster words
+    average_commitment: float = 0.0  # -1.0 (hedged) to +1.0 (assertive)
+
+    # Epistemic stance distribution (from corpus)
+    factual_ratio: float = 0.0  # % of sentences with factual assertions
+    conditional_ratio: float = 0.0  # % of sentences with conditionals
+    hypothetical_ratio: float = 0.0  # % of sentences with hypotheticals
+
+    # Command/imperative usage
+    imperative_ratio: float = 0.0  # % of sentences that are commands
+
+    # Extracted patterns (actual phrases from corpus)
+    assertion_patterns: List[str] = field(default_factory=list)
+    # e.g., ["It is clear that", "We must understand", "The fact is"]
+
+    question_patterns: List[str] = field(default_factory=list)
+    # e.g., ["But how can we", "What does this mean"]
+
+    # Detected hedging words the author uses
+    author_hedges: Dict[str, float] = field(default_factory=dict)
+    # e.g., {"perhaps": 0.3, "might": 0.2, "possibly": 0.1}
+
+    # Detected booster words the author uses
+    author_boosters: Dict[str, float] = field(default_factory=dict)
+    # e.g., {"certainly": 0.4, "must": 0.3, "clearly": 0.2}
+
+    def to_dict(self) -> Dict:
+        return {
+            "hedge_ratio": self.hedge_ratio,
+            "booster_ratio": self.booster_ratio,
+            "average_commitment": self.average_commitment,
+            "factual_ratio": self.factual_ratio,
+            "conditional_ratio": self.conditional_ratio,
+            "hypothetical_ratio": self.hypothetical_ratio,
+            "imperative_ratio": self.imperative_ratio,
+            "assertion_patterns": self.assertion_patterns,
+            "question_patterns": self.question_patterns,
+            "author_hedges": self.author_hedges,
+            "author_boosters": self.author_boosters,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "AssertivenessProfile":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class RhetoricalProfile:
+    """Rhetorical structure patterns extracted from corpus.
+
+    Captures how the author frames arguments - dialectical, inductive, etc.
+    All patterns are DETECTED from corpus, never assumed.
+    """
+
+    # Detected from corpus - NOT hard-coded
+    contrast_frequency: float = 0.0  # % of sentences with contrast markers
+    resolution_frequency: float = 0.0  # % of sentences with resolution markers
+    question_frequency: float = 0.0  # % of rhetorical questions
+
+    # Specific rhetorical patterns (detected, not assumed)
+    negation_affirmation_ratio: float = 0.0  # "not X, but Y" patterns
+    appearance_reality_ratio: float = 0.0  # "seems X, but actually Y" patterns
+    direct_address_ratio: float = 0.0  # "You must...", "We see..."
+
+    # Author's actual markers (extracted, not predefined)
+    resolution_markers: List[str] = field(default_factory=list)
+    # e.g., ["Thus", "Therefore", "In truth", "The fact is"]
+
+    contrast_markers: List[str] = field(default_factory=list)
+    # e.g., ["But", "However", "Yet", "On the other hand"]
+
+    # Detected opposition pairs (if author uses binary framing)
+    detected_oppositions: List[Tuple[str, str]] = field(default_factory=list)
+    # e.g., [("appearance", "reality"), ("static", "dynamic")]
+
+    # Sample sentences for each pattern type
+    pattern_samples: Dict[str, List[str]] = field(default_factory=dict)
+    # e.g., {"negation_affirmation": ["Not X, but Y"], "contrast": ["But X..."]}
+
+    def to_dict(self) -> Dict:
+        return {
+            "contrast_frequency": self.contrast_frequency,
+            "resolution_frequency": self.resolution_frequency,
+            "question_frequency": self.question_frequency,
+            "negation_affirmation_ratio": self.negation_affirmation_ratio,
+            "appearance_reality_ratio": self.appearance_reality_ratio,
+            "direct_address_ratio": self.direct_address_ratio,
+            "resolution_markers": self.resolution_markers,
+            "contrast_markers": self.contrast_markers,
+            "detected_oppositions": [list(pair) for pair in self.detected_oppositions],
+            "pattern_samples": self.pattern_samples,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "RhetoricalProfile":
+        # Convert opposition lists back to tuples
+        oppositions = data.get("detected_oppositions", [])
+        oppositions = [tuple(pair) if isinstance(pair, list) else pair for pair in oppositions]
+        return cls(
+            contrast_frequency=data.get("contrast_frequency", 0.0),
+            resolution_frequency=data.get("resolution_frequency", 0.0),
+            question_frequency=data.get("question_frequency", 0.0),
+            negation_affirmation_ratio=data.get("negation_affirmation_ratio", 0.0),
+            appearance_reality_ratio=data.get("appearance_reality_ratio", 0.0),
+            direct_address_ratio=data.get("direct_address_ratio", 0.0),
+            resolution_markers=data.get("resolution_markers", []),
+            contrast_markers=data.get("contrast_markers", []),
+            detected_oppositions=oppositions,
+            pattern_samples=data.get("pattern_samples", {}),
+        )
+
+
+@dataclass
+class PhrasePatterns:
+    """Characteristic phrase patterns extracted from corpus.
+
+    Captures the author's signature constructions and syntactic fingerprints.
+    All patterns are EXTRACTED from corpus analysis.
+    """
+
+    # Opening patterns (how the author starts paragraphs)
+    paragraph_openers: List[str] = field(default_factory=list)
+    # e.g., ["In truth,", "The fact is,", "We must understand that"]
+
+    # Sentence connectors (how the author links sentences)
+    sentence_connectors: List[str] = field(default_factory=list)
+    # e.g., ["Thus,", "And so,", "This means that"]
+
+    # Characteristic syntactic constructions
+    characteristic_constructions: List[str] = field(default_factory=list)
+    # e.g., ["It is X that Y", "What we call X is in fact Y", "The question is not X but Y"]
+
+    # Emphasis patterns (how the author emphasizes)
+    emphasis_patterns: List[str] = field(default_factory=list)
+    # e.g., ["X—and this is crucial—Y", "X (that is, Y)", "X, I repeat, X"]
+
+    # Rhetorical devices detected
+    parallelism_examples: List[str] = field(default_factory=list)
+    # e.g., ["Not X, not Y, but Z", "First X, then Y, finally Z"]
+
+    antithesis_examples: List[str] = field(default_factory=list)
+    # e.g., ["X on one hand, Y on the other", "While X, nevertheless Y"]
+
+    # Frequency of pattern usage
+    opener_frequency: float = 0.0  # % of paragraphs starting with characteristic opener
+    construction_frequency: float = 0.0  # % of sentences using characteristic constructions
+
+    def to_dict(self) -> Dict:
+        return {
+            "paragraph_openers": self.paragraph_openers,
+            "sentence_connectors": self.sentence_connectors,
+            "characteristic_constructions": self.characteristic_constructions,
+            "emphasis_patterns": self.emphasis_patterns,
+            "parallelism_examples": self.parallelism_examples,
+            "antithesis_examples": self.antithesis_examples,
+            "opener_frequency": self.opener_frequency,
+            "construction_frequency": self.construction_frequency,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict) -> "PhrasePatterns":
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
 @dataclass
 class VocabularyPalette:
     """Author's vocabulary organized for style transfer.
@@ -422,6 +600,11 @@ class AuthorStyleProfile:
     # Sentence function profile (for rhetorical templates)
     function_profile: SentenceFunctionProfile = field(default_factory=SentenceFunctionProfile)
 
+    # === NEW: Voice profile components (Sprint 2) ===
+    assertiveness_profile: AssertivenessProfile = field(default_factory=AssertivenessProfile)
+    rhetorical_profile: RhetoricalProfile = field(default_factory=RhetoricalProfile)
+    phrase_patterns: PhrasePatterns = field(default_factory=PhrasePatterns)
+
     # Human writing patterns (for humanization)
     human_patterns: Dict = field(default_factory=dict)
     # Contains: fragments, questions, asides, dash_patterns, short_sentences, etc.
@@ -443,6 +626,10 @@ class AuthorStyleProfile:
             "discourse_profile": self.discourse_profile.to_dict(),
             "vocabulary_palette": self.vocabulary_palette.to_dict(),
             "function_profile": self.function_profile.to_dict(),
+            # NEW: Voice profiles
+            "assertiveness_profile": self.assertiveness_profile.to_dict(),
+            "rhetorical_profile": self.rhetorical_profile.to_dict(),
+            "phrase_patterns": self.phrase_patterns.to_dict(),
             "human_patterns": self.human_patterns,
             "style_dna": self.style_dna,
         }
@@ -462,6 +649,10 @@ class AuthorStyleProfile:
             discourse_profile=DiscourseRelationProfile.from_dict(data.get("discourse_profile", {})),
             vocabulary_palette=VocabularyPalette.from_dict(data.get("vocabulary_palette", {})),
             function_profile=SentenceFunctionProfile.from_dict(data.get("function_profile", {})),
+            # NEW: Voice profiles
+            assertiveness_profile=AssertivenessProfile.from_dict(data.get("assertiveness_profile", {})),
+            rhetorical_profile=RhetoricalProfile.from_dict(data.get("rhetorical_profile", {})),
+            phrase_patterns=PhrasePatterns.from_dict(data.get("phrase_patterns", {})),
             human_patterns=data.get("human_patterns", {}),
             style_dna=data.get("style_dna", ""),
         )

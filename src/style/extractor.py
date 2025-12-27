@@ -20,6 +20,20 @@ from .profile import (
     VocabularyPalette,
     SentenceFunctionProfile,
     AuthorStyleProfile,
+    # NEW: Voice profile components
+    AssertivenessProfile,
+    RhetoricalProfile,
+    PhrasePatterns,
+)
+from ..ingestion.proposition_extractor import (
+    APPEARANCE_MARKERS,
+    APPEARANCE_PHRASES,
+    APPEARANCE_PATTERNS,
+    HEDGING_WORDS,
+    HEDGING_PHRASES,
+    BOOSTER_WORDS,
+    CONTRAST_MARKERS,
+    CAUSE_MARKERS,
 )
 from ..vocabulary.palette import VocabularyPaletteExtractor
 from ..rhetorical.function_classifier import SentenceFunctionClassifier
@@ -92,6 +106,11 @@ class StyleProfileExtractor:
         # Extract human writing patterns for humanization
         human_patterns = self._extract_human_patterns(paragraphs)
 
+        # NEW: Extract voice profile components (Sprint 2)
+        assertiveness_profile = self._extract_assertiveness_profile(all_sentences)
+        rhetorical_profile = self._extract_rhetorical_profile(all_sentences, paragraphs)
+        phrase_patterns = self._extract_phrase_patterns(all_sentences, paragraphs)
+
         # Calculate totals
         word_count = sum(len(s.split()) for s in all_sentences)
 
@@ -101,6 +120,10 @@ class StyleProfileExtractor:
         logger.info(f"  No-transition ratio: {transition_profile.no_transition_ratio:.2f}")
         logger.info(f"  Human patterns: {human_patterns.get('fragment_ratio', 0):.1%} fragments, "
                    f"{human_patterns.get('question_ratio', 0):.1%} questions")
+        logger.info(f"  Assertiveness: commitment={assertiveness_profile.average_commitment:.2f}, "
+                   f"hedge={assertiveness_profile.hedge_ratio:.1%}, boost={assertiveness_profile.booster_ratio:.1%}")
+        logger.info(f"  Rhetorical: contrast={rhetorical_profile.contrast_frequency:.1%}, "
+                   f"question={rhetorical_profile.question_frequency:.1%}")
 
         return AuthorStyleProfile(
             author_name=author_name,
@@ -115,6 +138,10 @@ class StyleProfileExtractor:
             vocabulary_palette=vocabulary_palette,
             function_profile=function_profile,
             human_patterns=human_patterns,
+            # NEW: Voice profiles
+            assertiveness_profile=assertiveness_profile,
+            rhetorical_profile=rhetorical_profile,
+            phrase_patterns=phrase_patterns,
         )
 
     def _extract_length_profile(self, sentences: List[str]) -> SentenceLengthProfile:
@@ -803,6 +830,436 @@ class StyleProfileExtractor:
         extractor = CorpusPatternExtractor()
         patterns = extractor.extract(paragraphs)
         return patterns.to_dict()
+
+    # =========================================================================
+    # Voice Profile Extraction Methods (Sprint 2)
+    # =========================================================================
+
+    def _extract_assertiveness_profile(self, sentences: List[str]) -> AssertivenessProfile:
+        """Extract assertiveness patterns from corpus.
+
+        Measures how directly the author makes claims:
+        - Hedging words (perhaps, possibly, seems)
+        - Booster words (certainly, clearly, must)
+        - Epistemic stance distribution
+        """
+        total_sentences = len(sentences)
+        if total_sentences == 0:
+            return AssertivenessProfile()
+
+        # Counters
+        sentences_with_hedge = 0
+        sentences_with_booster = 0
+        hedge_counts = Counter()
+        booster_counts = Counter()
+
+        # Stance counters
+        factual_count = 0
+        conditional_count = 0
+        hypothetical_count = 0
+        imperative_count = 0
+        question_count = 0
+
+        # Pattern extraction
+        assertion_patterns_found = []
+        question_patterns_found = []
+
+        for sentence in sentences:
+            sentence_lower = sentence.lower()
+            words = set(sentence_lower.split())
+            doc = self.nlp(sentence)
+
+            # Check for hedging
+            found_hedges = words.intersection(HEDGING_WORDS)
+            if found_hedges:
+                sentences_with_hedge += 1
+                for h in found_hedges:
+                    hedge_counts[h] += 1
+
+            # Check for hedging phrases
+            for phrase in HEDGING_PHRASES:
+                if phrase in sentence_lower:
+                    sentences_with_hedge += 1
+                    hedge_counts[phrase] += 1
+                    break
+
+            # Check for boosters
+            found_boosters = words.intersection(BOOSTER_WORDS)
+            if found_boosters:
+                sentences_with_booster += 1
+                for b in found_boosters:
+                    booster_counts[b] += 1
+
+            # Detect epistemic stance
+            stance = self._detect_sentence_stance(sentence, doc)
+            if stance == "factual":
+                factual_count += 1
+            elif stance == "conditional":
+                conditional_count += 1
+            elif stance == "hypothetical":
+                hypothetical_count += 1
+
+            # Check for imperatives
+            if len(doc) > 0:
+                first_token = doc[0]
+                if first_token.pos_ == "VERB" and not any(
+                    child.dep_ in ("nsubj", "nsubjpass") for child in first_token.children
+                ):
+                    imperative_count += 1
+
+            # Check for questions
+            if sentence.strip().endswith("?"):
+                question_count += 1
+                # Extract question pattern (first few words)
+                pattern = " ".join(sentence.split()[:4])
+                if pattern not in question_patterns_found:
+                    question_patterns_found.append(pattern)
+
+            # Extract assertion patterns (sentences starting with strong claims)
+            if self._is_strong_assertion(sentence, doc):
+                pattern = " ".join(sentence.split()[:5])
+                if pattern not in assertion_patterns_found and len(assertion_patterns_found) < 20:
+                    assertion_patterns_found.append(pattern)
+
+        # Calculate ratios
+        hedge_ratio = sentences_with_hedge / total_sentences
+        booster_ratio = sentences_with_booster / total_sentences
+
+        # Calculate average commitment: -1 (hedged) to +1 (assertive)
+        # Based on relative frequency of boosters vs hedges
+        if sentences_with_hedge + sentences_with_booster > 0:
+            average_commitment = (sentences_with_booster - sentences_with_hedge) / (
+                sentences_with_hedge + sentences_with_booster
+            )
+        else:
+            average_commitment = 0.0
+
+        # Normalize stance counts
+        factual_ratio = factual_count / total_sentences
+        conditional_ratio = conditional_count / total_sentences
+        hypothetical_ratio = hypothetical_count / total_sentences
+        imperative_ratio = imperative_count / total_sentences
+
+        # Normalize hedge/booster word frequencies
+        total_hedges = sum(hedge_counts.values()) or 1
+        total_boosters = sum(booster_counts.values()) or 1
+
+        author_hedges = {
+            word: count / total_hedges
+            for word, count in hedge_counts.most_common(15)
+        }
+        author_boosters = {
+            word: count / total_boosters
+            for word, count in booster_counts.most_common(15)
+        }
+
+        return AssertivenessProfile(
+            hedge_ratio=float(hedge_ratio),
+            booster_ratio=float(booster_ratio),
+            average_commitment=float(average_commitment),
+            factual_ratio=float(factual_ratio),
+            conditional_ratio=float(conditional_ratio),
+            hypothetical_ratio=float(hypothetical_ratio),
+            imperative_ratio=float(imperative_ratio),
+            assertion_patterns=assertion_patterns_found[:15],
+            question_patterns=question_patterns_found[:10],
+            author_hedges=author_hedges,
+            author_boosters=author_boosters,
+        )
+
+    def _detect_sentence_stance(self, sentence: str, doc) -> str:
+        """Detect the epistemic stance of a sentence."""
+        sentence_lower = sentence.lower()
+        words = set(sentence_lower.split())
+
+        # Check for appearance markers
+        if words.intersection(APPEARANCE_MARKERS):
+            return "appearance"
+
+        # Check appearance phrases
+        for phrase in APPEARANCE_PHRASES:
+            if phrase in sentence_lower:
+                return "appearance"
+
+        # Check appearance patterns (regex)
+        for pattern in APPEARANCE_PATTERNS:
+            if re.search(pattern, sentence_lower):
+                return "appearance"
+
+        # Check for conditional
+        if words.intersection({"if", "unless", "provided", "assuming"}):
+            return "conditional"
+
+        # Check for hypothetical
+        if words.intersection({"would", "could", "might", "may"}):
+            return "hypothetical"
+
+        return "factual"
+
+    def _is_strong_assertion(self, sentence: str, doc) -> bool:
+        """Check if a sentence is a strong assertion (for pattern extraction)."""
+        if len(doc) < 3:
+            return False
+
+        sentence_lower = sentence.lower()
+        words = set(sentence_lower.split())
+
+        # Has booster words
+        if words.intersection(BOOSTER_WORDS):
+            return True
+
+        # Starts with definite article + noun + is/are
+        if doc[0].pos_ == "DET" and len(doc) > 2:
+            for token in doc[1:4]:
+                if token.lemma_ in ("be", "is", "are"):
+                    return True
+
+        # Starts with "It is" or "There is"
+        if sentence_lower.startswith(("it is", "there is", "this is", "that is")):
+            return True
+
+        # Starts with "The fact is" or "The truth is"
+        if sentence_lower.startswith(("the fact", "the truth", "the reality")):
+            return True
+
+        return False
+
+    def _extract_rhetorical_profile(
+        self,
+        sentences: List[str],
+        paragraphs: List[str],
+    ) -> RhetoricalProfile:
+        """Extract rhetorical structure patterns from corpus.
+
+        Detects how the author frames arguments:
+        - Contrast patterns (but, however, yet)
+        - Resolution patterns (thus, therefore, in truth)
+        - Dialectical patterns (not X but Y)
+        """
+        total_sentences = len(sentences)
+        if total_sentences == 0:
+            return RhetoricalProfile()
+
+        # Counters
+        contrast_count = 0
+        resolution_count = 0
+        question_count = 0
+        negation_affirmation_count = 0
+        appearance_reality_count = 0
+        direct_address_count = 0
+
+        # Detected markers
+        contrast_markers_found = Counter()
+        resolution_markers_found = Counter()
+
+        # Opposition pairs
+        detected_oppositions = []
+
+        # Pattern samples
+        pattern_samples = defaultdict(list)
+        max_samples = 5
+
+        # Resolution markers (conclusion/synthesis markers)
+        resolution_markers = {
+            "thus", "therefore", "hence", "consequently", "accordingly",
+            "in truth", "the fact is", "the reality is", "in fact",
+            "indeed", "truly", "actually", "in essence",
+        }
+
+        for sentence in sentences:
+            sentence_lower = sentence.lower()
+            words = set(sentence_lower.split())
+
+            # Check for contrast markers
+            found_contrast = False
+            for marker in CONTRAST_MARKERS:
+                if marker in sentence_lower:
+                    contrast_count += 1
+                    contrast_markers_found[marker] += 1
+                    found_contrast = True
+                    if len(pattern_samples["contrast"]) < max_samples:
+                        pattern_samples["contrast"].append(sentence[:100])
+                    break
+
+            # Check for resolution markers
+            for marker in resolution_markers:
+                if marker in sentence_lower:
+                    resolution_count += 1
+                    resolution_markers_found[marker] += 1
+                    if len(pattern_samples["resolution"]) < max_samples:
+                        pattern_samples["resolution"].append(sentence[:100])
+                    break
+
+            # Check for questions
+            if sentence.strip().endswith("?"):
+                question_count += 1
+                if len(pattern_samples["question"]) < max_samples:
+                    pattern_samples["question"].append(sentence[:100])
+
+            # Check for "not X, but Y" patterns
+            if re.search(r"\bnot\b.*\bbut\b", sentence_lower):
+                negation_affirmation_count += 1
+                if len(pattern_samples["negation_affirmation"]) < max_samples:
+                    pattern_samples["negation_affirmation"].append(sentence[:100])
+
+                # Extract opposition pair
+                match = re.search(r"\bnot\s+(\w+).*\bbut\s+(\w+)", sentence_lower)
+                if match:
+                    opp = (match.group(1), match.group(2))
+                    if opp not in detected_oppositions:
+                        detected_oppositions.append(opp)
+
+            # Check for appearance vs reality patterns
+            if re.search(r"\b(seem|appear|look)s?\b.*\b(but|however|actually|in fact)\b", sentence_lower):
+                appearance_reality_count += 1
+                if len(pattern_samples["appearance_reality"]) < max_samples:
+                    pattern_samples["appearance_reality"].append(sentence[:100])
+
+            # Check for direct address (you, we)
+            if re.search(r"\b(you|we)\s+(must|should|need|have to|can)\b", sentence_lower):
+                direct_address_count += 1
+                if len(pattern_samples["direct_address"]) < max_samples:
+                    pattern_samples["direct_address"].append(sentence[:100])
+
+        # Calculate ratios
+        contrast_frequency = contrast_count / total_sentences
+        resolution_frequency = resolution_count / total_sentences
+        question_frequency = question_count / total_sentences
+        negation_affirmation_ratio = negation_affirmation_count / total_sentences
+        appearance_reality_ratio = appearance_reality_count / total_sentences
+        direct_address_ratio = direct_address_count / total_sentences
+
+        # Get top markers
+        top_resolution_markers = [m for m, _ in resolution_markers_found.most_common(10)]
+        top_contrast_markers = [m for m, _ in contrast_markers_found.most_common(10)]
+
+        return RhetoricalProfile(
+            contrast_frequency=float(contrast_frequency),
+            resolution_frequency=float(resolution_frequency),
+            question_frequency=float(question_frequency),
+            negation_affirmation_ratio=float(negation_affirmation_ratio),
+            appearance_reality_ratio=float(appearance_reality_ratio),
+            direct_address_ratio=float(direct_address_ratio),
+            resolution_markers=top_resolution_markers,
+            contrast_markers=top_contrast_markers,
+            detected_oppositions=detected_oppositions[:20],
+            pattern_samples=dict(pattern_samples),
+        )
+
+    def _extract_phrase_patterns(
+        self,
+        sentences: List[str],
+        paragraphs: List[str],
+    ) -> PhrasePatterns:
+        """Extract characteristic phrase patterns from corpus.
+
+        Captures the author's signature constructions:
+        - Paragraph openers
+        - Sentence connectors
+        - Characteristic constructions
+        """
+        # Paragraph openers (first words of paragraphs)
+        paragraph_openers = Counter()
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            # Get first 3-4 words as opener
+            words = para.split()[:4]
+            if words:
+                opener = " ".join(words)
+                paragraph_openers[opener] += 1
+
+        # Sentence connectors (sentence-initial phrases)
+        sentence_connectors = Counter()
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if not sentence:
+                continue
+            # Get first 2-3 words
+            words = sentence.split()[:3]
+            if words:
+                connector = " ".join(words)
+                # Only count if starts with transition-like word
+                first_word = words[0].lower()
+                if first_word in {
+                    "but", "however", "yet", "thus", "therefore", "hence",
+                    "so", "and", "or", "moreover", "furthermore", "indeed",
+                    "in", "on", "for", "with", "as", "this", "that", "these",
+                }:
+                    sentence_connectors[connector] += 1
+
+        # Characteristic constructions (syntactic patterns)
+        characteristic_constructions = []
+        emphasis_patterns = []
+        parallelism_examples = []
+        antithesis_examples = []
+
+        for sentence in sentences:
+            sentence_lower = sentence.lower()
+
+            # "It is X that Y" construction
+            if re.search(r"\bit is\s+\w+\s+that\b", sentence_lower):
+                if len(characteristic_constructions) < 10:
+                    characteristic_constructions.append(sentence[:80])
+
+            # "What we call X is Y" construction
+            if re.search(r"\bwhat\s+we\s+(call|see|know)\b", sentence_lower):
+                if len(characteristic_constructions) < 10:
+                    characteristic_constructions.append(sentence[:80])
+
+            # "The question is not X but Y" construction
+            if re.search(r"\bthe\s+question\s+is\b", sentence_lower):
+                if len(characteristic_constructions) < 10:
+                    characteristic_constructions.append(sentence[:80])
+
+            # Emphasis with dashes or parentheses
+            if "—" in sentence or " -- " in sentence:
+                if len(emphasis_patterns) < 10:
+                    emphasis_patterns.append(sentence[:100])
+
+            # Parallelism (repeating structure)
+            if re.search(r"(\b\w+\b),\s+\1", sentence_lower):  # word, word pattern
+                if len(parallelism_examples) < 10:
+                    parallelism_examples.append(sentence[:100])
+
+            # "Not X, not Y, but Z" pattern
+            if re.search(r"\bnot\s+\w+,\s+not\s+\w+", sentence_lower):
+                if len(parallelism_examples) < 10:
+                    parallelism_examples.append(sentence[:100])
+
+            # Antithesis (X on one hand, Y on the other)
+            if re.search(r"\bon\s+(the\s+)?one\s+hand\b", sentence_lower):
+                if len(antithesis_examples) < 10:
+                    antithesis_examples.append(sentence[:100])
+
+            # "While X, Y" antithesis
+            if re.search(r"^while\s+", sentence_lower):
+                if len(antithesis_examples) < 10:
+                    antithesis_examples.append(sentence[:100])
+
+        # Calculate frequencies
+        total_paragraphs = len([p for p in paragraphs if p.strip()])
+        total_sentences = len(sentences)
+
+        opener_with_pattern = sum(
+            1 for o, c in paragraph_openers.items()
+            if any(word in o.lower() for word in {"the", "in", "but", "this", "we", "it"})
+        )
+        opener_frequency = opener_with_pattern / total_paragraphs if total_paragraphs > 0 else 0.0
+
+        construction_frequency = len(characteristic_constructions) / total_sentences if total_sentences > 0 else 0.0
+
+        return PhrasePatterns(
+            paragraph_openers=[o for o, _ in paragraph_openers.most_common(20)],
+            sentence_connectors=[c for c, _ in sentence_connectors.most_common(20)],
+            characteristic_constructions=characteristic_constructions,
+            emphasis_patterns=emphasis_patterns,
+            parallelism_examples=parallelism_examples,
+            antithesis_examples=antithesis_examples,
+            opener_frequency=float(opener_frequency),
+            construction_frequency=float(construction_frequency),
+        )
 
 
 def extract_author_profile(
