@@ -10,7 +10,8 @@ from pathlib import Path
 from ..style.profile import AuthorStyleProfile
 from ..style.extractor import StyleProfileExtractor
 from ..style.verifier import StyleVerifier, VerificationResult
-from .evolutionary_generator import EvolutionaryParagraphGenerator
+from .evolutionary_generator import EvolutionaryParagraphGenerator, DocumentState
+from .paragraph_graph import ParagraphGraph, build_paragraph_graph
 from ..utils.nlp import split_into_sentences
 from ..utils.logging import get_logger
 from ..ingestion.proposition_extractor import PropositionExtractor
@@ -123,12 +124,14 @@ class DataDrivenStyleTransfer:
         self,
         paragraph: str,
         previous_context: Optional[str] = None,
+        document_state: Optional[DocumentState] = None,
     ) -> TransferResult:
         """Transfer a single paragraph to target style.
 
         Args:
             paragraph: Source paragraph text.
             previous_context: Optional previous paragraph for context.
+            document_state: Optional document-level state for vocabulary tracking.
 
         Returns:
             TransferResult with transferred text and verification.
@@ -169,7 +172,8 @@ class DataDrivenStyleTransfer:
         # Generate paragraph using evolutionary approach with RST awareness
         transferred = self.generator.generate_paragraph(
             proposition_texts,
-            rst_info=rst_info
+            rst_info=rst_info,
+            document_state=document_state,
         )
 
         # Apply vocabulary transformation (replace LLM-speak with author words)
@@ -222,13 +226,36 @@ class DataDrivenStyleTransfer:
         """
         logger.info(f"Transferring {len(paragraphs)} paragraphs")
 
+        # STEP 1: Build paragraph graph from source document
+        # This analyzes document structure BEFORE generation to give LLM context
+        logger.info("[GRAPH] Building paragraph graph from source...")
+        paragraph_graph = build_paragraph_graph(paragraphs)
+
+        # Create document-level state with paragraph graph
+        # This prevents mechanical word repetition and gives structure awareness
+        document_state = DocumentState(paragraph_graph=paragraph_graph)
+
         results = []
         previous_context = None
 
         for i, para in enumerate(paragraphs):
             logger.info(f"Processing paragraph {i+1}/{len(paragraphs)}")
 
-            result = self.transfer_paragraph(para, previous_context)
+            # Update current paragraph index for context injection
+            document_state.current_paragraph_index = i
+
+            # Log overused words so far for debugging
+            overused = document_state.get_overused_words()
+            if overused:
+                logger.info(f"[VOCAB] Overused words to avoid: {overused[:5]}...")
+
+            # Log paragraph relation for debugging
+            if paragraph_graph.nodes and i < len(paragraph_graph.nodes):
+                node = paragraph_graph.nodes[i]
+                if node.relation_to_previous:
+                    logger.info(f"[GRAPH] Paragraph {i+1} relation: {node.relation_to_previous.value}")
+
+            result = self.transfer_paragraph(para, previous_context, document_state)
             results.append(result)
 
             # Update context for next paragraph

@@ -27,6 +27,8 @@ from ..rhetorical import (
     PropositionMapper,
     FUNCTION_DESCRIPTIONS,
 )
+from .paragraph_graph import ParagraphGraph
+from ..style.clause_extractor import ClausePatternExtractor, ClausePatternProfile
 
 logger = get_logger(__name__)
 
@@ -65,8 +67,121 @@ class Candidate:
 
 
 @dataclass
+class DocumentState:
+    """State maintained across the entire document to prevent AI patterns.
+
+    Key insight: LLMs generate text in isolation, leading to repetitive vocabulary
+    and mechanical patterns. This class tracks document-wide context to give
+    the LLM specific constraints that prevent these AI tells.
+    """
+
+    # Vocabulary tracking - prevent word repetition across document
+    word_counts: Counter = field(default_factory=Counter)  # All content words used
+
+    # Thresholds for "overused" - be conservative to avoid content loss
+    overuse_threshold: int = 3  # Word appearing more than this is "overused"
+
+    # Paragraph graph for document structure awareness
+    paragraph_graph: Optional[ParagraphGraph] = None
+
+    # Current paragraph index being generated
+    current_paragraph_index: int = 0
+
+    # Previous paragraph text for context injection
+    previous_paragraph: str = ""
+
+    # Sentence variety tracking across document
+    recent_first_words: List[str] = field(default_factory=list)
+
+    def get_overused_words(self, exclude_function_words: bool = True) -> List[str]:
+        """Get words that have been used too frequently.
+
+        These should be avoided in future generation to prevent
+        the mechanical repetition that flags AI-generated text.
+        """
+        # Function words are fine to repeat (the, a, is, etc.)
+        function_words = {
+            'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+            'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+            'should', 'may', 'might', 'must', 'can', 'to', 'of', 'in', 'for',
+            'on', 'with', 'at', 'by', 'from', 'as', 'into', 'through', 'during',
+            'before', 'after', 'above', 'below', 'between', 'under', 'again',
+            'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why',
+            'how', 'all', 'each', 'every', 'both', 'few', 'more', 'most', 'other',
+            'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so',
+            'than', 'too', 'very', 'just', 'also', 'now', 'and', 'but', 'or',
+            'if', 'because', 'although', 'while', 'that', 'which', 'this', 'these',
+            'those', 'it', 'its', 'they', 'their', 'them', 'we', 'our', 'us',
+            'you', 'your', 'he', 'she', 'him', 'her', 'his', 'i', 'me', 'my',
+        }
+
+        overused = []
+        for word, count in self.word_counts.most_common():
+            if count > self.overuse_threshold:
+                if exclude_function_words and word.lower() in function_words:
+                    continue
+                overused.append(word)
+
+        return overused[:15]  # Return top 15 most overused
+
+    def update_from_text(self, text: str, nlp=None):
+        """Update word counts from generated text.
+
+        Args:
+            text: Generated text to analyze
+            nlp: Optional spaCy nlp object for better tokenization
+        """
+        if nlp:
+            doc = nlp(text.lower())
+            for token in doc:
+                if token.is_alpha and not token.is_stop and len(token.text) > 3:
+                    self.word_counts[token.text] += 1
+        else:
+            # Fallback: simple word splitting
+            import re
+            words = re.findall(r'\b[a-z]{4,}\b', text.lower())
+            self.word_counts.update(words)
+
+    def get_paragraph_context(self) -> str:
+        """Get context string for current paragraph from the graph.
+
+        This gives the LLM awareness of document structure,
+        preventing isolated, mechanical generation.
+        """
+        if self.paragraph_graph:
+            return self.paragraph_graph.get_context_for_paragraph(
+                self.current_paragraph_index
+            )
+        return ""
+
+    def get_transition_guidance(self) -> str:
+        """Get guidance on transitioning into current paragraph."""
+        if self.paragraph_graph:
+            return self.paragraph_graph.get_transition_guidance(
+                self.current_paragraph_index
+            )
+        return ""
+
+    def add_first_word(self, word: str):
+        """Track sentence first words for variety enforcement."""
+        if word:
+            self.recent_first_words.append(word.lower())
+            # Keep only last 10 for memory efficiency
+            if len(self.recent_first_words) > 10:
+                self.recent_first_words = self.recent_first_words[-10:]
+
+    def get_words_to_avoid_opening(self) -> List[str]:
+        """Get first words to avoid for variety.
+
+        Returns words used in last 3 sentences that aren't common function words.
+        """
+        ok_to_repeat = {'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'and', 'but', 'or', 'if', 'when', 'as'}
+        return [w for w in self.recent_first_words[-3:] if w and w.lower() not in ok_to_repeat]
+
+
+@dataclass
 class GenerationState:
-    """State maintained across sentence generation."""
+    """State maintained across sentence generation within a paragraph."""
 
     previous_sentences: List[str] = field(default_factory=list)
     previous_length_category: str = "medium"
@@ -78,7 +193,8 @@ class GenerationState:
 
     # Context tracking to avoid repetition
     used_phrases: set = field(default_factory=set)  # N-grams already used
-    used_openings: set = field(default_factory=set)  # Sentence opening patterns
+    used_openings: set = field(default_factory=set)  # Sentence opening patterns (POS)
+    recent_first_words: List[str] = field(default_factory=list)  # Actual first words (for variety)
     mentioned_concepts: List[str] = field(default_factory=list)  # For implicit refs
     key_nouns: List[str] = field(default_factory=list)  # Nouns that can be pronominalized
 
@@ -87,6 +203,9 @@ class GenerationState:
 
     # Rhetorical function for current sentence (from template)
     rhetorical_function: Optional[SentenceFunction] = None
+
+    # Reference to document-level state for vocabulary control
+    document_state: Optional[DocumentState] = None
 
 
 class EvolutionarySentenceGenerator:
@@ -147,6 +266,10 @@ class EvolutionarySentenceGenerator:
         )
         self.structure_transitions = profile.structure_profile.structure_transitions
         self.proposition_capacity = profile.structure_profile.proposition_capacity
+
+        # Extract clause patterns from structure samples for syntactic guidance
+        # This gives the LLM structural skeletons to follow
+        self.clause_pattern_profile = self._extract_clause_patterns(self.structure_samples)
 
         # Store discourse relation data for logic preservation
         self.discourse_samples = profile.discourse_profile.relation_samples
@@ -211,6 +334,35 @@ class EvolutionarySentenceGenerator:
 
         return PatternInjector(patterns=patterns)
 
+    def _extract_clause_patterns(
+        self,
+        structure_samples: Dict[str, List[str]]
+    ) -> Optional[ClausePatternProfile]:
+        """Extract clause patterns from structure samples.
+
+        These patterns give the LLM syntactic skeletons to follow,
+        improving sentence variety and reducing mechanical structures.
+        """
+        if not structure_samples:
+            return None
+
+        try:
+            extractor = ClausePatternExtractor()
+            profile = extractor.extract_profile(structure_samples)
+
+            # Log extraction results
+            for struct_type, patterns in profile.patterns_by_type.items():
+                if patterns:
+                    logger.debug(
+                        f"[CLAUSE] Extracted {len(patterns)} {struct_type} patterns, "
+                        f"avg depth={profile.avg_clause_depth.get(struct_type, 0):.1f}"
+                    )
+
+            return profile
+        except Exception as e:
+            logger.warning(f"Failed to extract clause patterns: {e}")
+            return None
+
     @property
     def nlp(self):
         if self._nlp is None:
@@ -239,13 +391,45 @@ class EvolutionarySentenceGenerator:
         return phrases
 
     def _extract_key_nouns(self, text: str) -> List[str]:
-        """Extract key nouns that can be referred to with pronouns."""
+        """Extract key nouns and noun phrases that can be referred to with pronouns.
+
+        Prioritizes:
+        1. Main subject of the sentence (most important for anaphora)
+        2. Noun phrases (compound nouns)
+        3. Standalone nouns
+        """
         doc = self.nlp(text)
         nouns = []
+
+        # First, find the main subject - this is the primary candidate for "it/this"
         for token in doc:
-            if token.pos_ == 'NOUN' and not token.is_stop and len(token.text) > 3:
-                nouns.append(token.text.lower())
-        return nouns
+            if token.dep_ in ('nsubj', 'nsubjpass') and token.head.dep_ == 'ROOT':
+                # Get the full noun phrase if it's part of one
+                if token.head.pos_ == 'VERB':
+                    # This is the main subject
+                    noun_phrase = ' '.join([t.text for t in token.subtree
+                                           if t.pos_ in ('NOUN', 'PROPN', 'ADJ', 'DET')
+                                           and not t.is_stop])
+                    if noun_phrase and len(noun_phrase) > 3:
+                        nouns.append(noun_phrase.lower())
+                        break
+
+        # Then extract other significant nouns
+        for chunk in doc.noun_chunks:
+            # Skip very short or stopword-only chunks
+            content_words = [t for t in chunk if not t.is_stop and t.pos_ in ('NOUN', 'PROPN', 'ADJ')]
+            if content_words:
+                phrase = ' '.join([t.text for t in content_words])
+                if phrase and len(phrase) > 3 and phrase.lower() not in nouns:
+                    nouns.append(phrase.lower())
+
+        # Fallback to simple nouns
+        if not nouns:
+            for token in doc:
+                if token.pos_ == 'NOUN' and not token.is_stop and len(token.text) > 3:
+                    nouns.append(token.text.lower())
+
+        return nouns[:5]  # Limit to top 5
 
     def _get_sentence_opening(self, text: str) -> str:
         """Extract the opening pattern of a sentence (first 3-4 words structure)."""
@@ -907,6 +1091,15 @@ class EvolutionarySentenceGenerator:
             parts.append("(No style samples available)")
             logger.warning("[SAMPLE] No style samples available!")
 
+        # Add clause pattern hint for syntactic guidance
+        if hasattr(self, 'clause_pattern_profile') and self.clause_pattern_profile:
+            from ..style.clause_extractor import get_clause_template_for_prompt
+            clause_hint = get_clause_template_for_prompt(
+                target_structure, self.clause_pattern_profile
+            )
+            if clause_hint:
+                parts.append(f"Structure hint: {clause_hint}")
+
         parts.append("")
         parts.append("(Match the sentence RHYTHM and STRUCTURE above, not the topics.)")
 
@@ -918,7 +1111,23 @@ class EvolutionarySentenceGenerator:
         # Add LLM-speak to avoid
         if self.llm_avoid:
             avoid_sample = ", ".join(self.llm_avoid[:6])
-            parts.append(f"Avoid: {avoid_sample}")
+            parts.append(f"Avoid LLM-speak: {avoid_sample}")
+
+        # Add document-level overused words - AVOID these to prevent mechanical repetition
+        # Distinguish between moderately overused (>3) and severely overused (>5)
+        if state.document_state:
+            overused = state.document_state.get_overused_words()
+            if overused:
+                # Check for severely overused words (>5 occurrences)
+                severe = [w for w in overused[:8]
+                         if state.document_state.word_counts.get(w, 0) > 5]
+                moderate = [w for w in overused[:8] if w not in severe]
+
+                if severe:
+                    parts.append(f"AVOID these overused words: {', '.join(severe)}")
+                if moderate:
+                    parts.append(f"Prefer synonyms for: {', '.join(moderate)}")
+                logger.debug(f"[VOCAB] Avoid: {severe}, Prefer synonyms: {moderate}")
 
         parts.append("---")
 
@@ -927,9 +1136,46 @@ class EvolutionarySentenceGenerator:
         if voice_section:
             parts.append(voice_section)
 
+        # PARAGRAPH CONTEXT: Give LLM awareness of document structure
+        # This prevents isolated, mechanical generation by showing how this
+        # paragraph fits into the broader argument
+        if state.document_state:
+            para_context = state.document_state.get_paragraph_context()
+            if para_context:
+                parts.append("")
+                parts.append(para_context)
+
+            transition_guidance = state.document_state.get_transition_guidance()
+            if transition_guidance:
+                parts.append(f"Approach: {transition_guidance}")
+
         # Context from previous sentences
         if state.previous_sentences:
-            parts.append(f"Previous: \"{state.previous_sentences[-1]}\"")
+            parts.append(f"Previous sentence: \"{state.previous_sentences[-1]}\"")
+
+            # COHESION: Suggest anaphoric references to connect sentences naturally
+            # This prevents the choppy, disconnected feel of AI-generated text
+            if state.key_nouns and len(state.key_nouns) > 0:
+                recent_nouns = state.key_nouns[-5:]  # Last 5 key nouns
+                if recent_nouns:
+                    parts.append(f"FLOW NATURALLY from above. You may reference: 'this {recent_nouns[-1]}', 'such {recent_nouns[0]}s', or 'it/they' for clarity")
+
+            # Bridge phrases based on discourse relation
+            discourse = state.required_discourse_relation or "continuation"
+            if discourse == "continuation":
+                parts.append("Connect smoothly - don't restart the topic abruptly")
+            elif discourse == "elaboration":
+                parts.append("Expand on the previous point - use 'this' or 'such' to refer back")
+            elif discourse == "contrast":
+                parts.append("Contrast with the previous point while acknowledging it")
+
+        # SENTENCE VARIETY: Prevent repetitive sentence openings across DOCUMENT
+        # This addresses the mechanical, predictable patterns that flag AI text
+        # NOTE: Don't add transitions just for variety - the transition ratio is controlled elsewhere
+        if state.document_state:
+            avoid_words = state.document_state.get_words_to_avoid_opening()
+            if avoid_words:
+                parts.append(f"VARY YOUR OPENING (use different subject/topic, NOT transition words): avoid '{', '.join(set(avoid_words))}'")
 
         # The task - STRICT content preservation
         parts.append("")
@@ -1184,6 +1430,19 @@ class EvolutionarySentenceGenerator:
         else:
             candidate.vocabulary_fitness = 0.5
 
+        # Penalty for using severely overused words (>5 occurrences in document)
+        if state and state.document_state:
+            overused = state.document_state.get_overused_words()
+            if overused:
+                severe_overused = {w.lower() for w in overused
+                                  if state.document_state.word_counts.get(w, 0) > 5}
+                used_severe = text_words & severe_overused
+                if used_severe:
+                    # 0.7 penalty per severely overused word
+                    penalty = 0.7 ** len(used_severe)
+                    candidate.vocabulary_fitness *= penalty
+                    candidate.issues.append(f"overused_vocab:{','.join(used_severe)}")
+
         # Fluency fitness (basic checks)
         candidate.fluency_fitness = 1.0
         if not text.strip():
@@ -1192,6 +1451,33 @@ class EvolutionarySentenceGenerator:
             candidate.fluency_fitness *= 0.8
         elif text.count('"') % 2 != 0:
             candidate.fluency_fitness *= 0.9
+
+        # COHESION bonus - reward sentences that use anaphoric references
+        # when there are previous concepts to refer to
+        if state and state.key_nouns and state.previous_sentences:
+            text_lower = text.lower()
+            # Check for cohesive devices
+            cohesive_markers = ['this ', 'these ', 'such ', 'that ', 'those ']
+            has_cohesive_device = any(marker in text_lower for marker in cohesive_markers)
+
+            # Check for pronoun references (when not starting a paragraph)
+            pronoun_refs = text_lower.startswith(('it ', 'they '))
+
+            if has_cohesive_device or pronoun_refs:
+                candidate.fluency_fitness *= 1.1  # 10% bonus for cohesion
+                logger.debug(f"[COHESION] Bonus for anaphoric reference in: {text[:50]}...")
+            else:
+                # Check if sentence is "orphaned" - no connection to previous
+                # An orphan has no cohesive device AND shares no key nouns with previous
+                prev_nouns_set = set(n.lower() for n in state.key_nouns[-5:])
+                current_nouns = set(w.lower() for w in re.findall(r'\b[a-z]{4,}\b', text_lower))
+                shared_concepts = prev_nouns_set & current_nouns
+
+                if not shared_concepts:
+                    # Orphan sentence - slight penalty
+                    candidate.fluency_fitness *= 0.9
+                    candidate.issues.append("orphan_sentence")
+                    logger.debug(f"[COHESION] Orphan sentence penalty: {text[:50]}...")
 
         # Repetition penalty - penalize reuse of phrases from previous sentences
         if state and state.used_phrases:
@@ -1209,6 +1495,22 @@ class EvolutionarySentenceGenerator:
             if opening and opening in state.used_openings:
                 candidate.fluency_fitness *= 0.7
                 candidate.issues.append("similar_opening")
+
+            # STRONG penalty for repeating the exact same first word across DOCUMENT
+            # This prevents the mechanical "It... It... It..." pattern
+            if state.document_state and state.document_state.recent_first_words:
+                first_word = text.split()[0].lower() if text.split() else ""
+                recent_words = state.document_state.recent_first_words
+                ok_to_repeat = {'the', 'a', 'an', 'in', 'on', 'at', 'to', 'for', 'and', 'but'}
+                if first_word and first_word not in ok_to_repeat:
+                    # Check if same as immediately previous sentence
+                    if recent_words and first_word == recent_words[-1]:
+                        candidate.fluency_fitness *= 0.5  # Strong penalty
+                        candidate.issues.append("repeated_first_word")
+                    # Check if same as any of last 3 sentences
+                    elif first_word in recent_words[-3:]:
+                        candidate.fluency_fitness *= 0.75
+                        candidate.issues.append("recent_first_word")
 
         return candidate
 
@@ -1260,6 +1562,11 @@ class EvolutionarySentenceGenerator:
         new_opening = self._get_sentence_opening(sentence)
         new_structure = self._classify_generated_structure(sentence)
 
+        # Extract first word for variety tracking at DOCUMENT level
+        first_word = sentence.split()[0].lower() if sentence.split() else ""
+        if state.document_state and first_word:
+            state.document_state.add_first_word(first_word)
+
         new_state = GenerationState(
             previous_sentences=state.previous_sentences + [sentence],
             previous_length_category=length_category,
@@ -1270,8 +1577,11 @@ class EvolutionarySentenceGenerator:
             # Context tracking
             used_phrases=state.used_phrases | new_phrases,
             used_openings=state.used_openings | ({new_opening} if new_opening else set()),
+            recent_first_words=state.recent_first_words,  # Keep for backward compat, but use document_state
             mentioned_concepts=state.mentioned_concepts + new_nouns,
             key_nouns=state.key_nouns + new_nouns,
+            # Preserve document state reference
+            document_state=state.document_state,
         )
 
         if transition_word:
@@ -1332,6 +1642,7 @@ class EvolutionaryParagraphGenerator:
         self,
         propositions: List[str],
         rst_info: Optional[List[dict]] = None,
+        document_state: Optional[DocumentState] = None,
     ) -> str:
         """Generate a paragraph from propositions with RST awareness.
 
@@ -1346,6 +1657,7 @@ class EvolutionaryParagraphGenerator:
                 - parent_idx: index of parent nucleus for satellites
                 - entities: list of entities in the proposition
                 - citations: list of citations attached to proposition
+            document_state: Optional document-level state for vocabulary tracking.
 
         Returns:
             Generated paragraph text.
@@ -1356,7 +1668,8 @@ class EvolutionaryParagraphGenerator:
         logger.info(f"[PARA] Generating paragraph from {len(propositions)} propositions")
 
         state = GenerationState(
-            target_burstiness=self.profile.length_profile.burstiness
+            target_burstiness=self.profile.length_profile.burstiness,
+            document_state=document_state,
         )
         sentences = []
         sentence_position = 0
@@ -1502,6 +1815,11 @@ class EvolutionaryParagraphGenerator:
 
             sentences.append(sentence)
             sentence_position += 1
+
+            # CRITICAL: Update document-level vocabulary tracking
+            # This prevents word repetition across the entire document
+            if document_state:
+                document_state.update_from_text(sentence, self.generator.nlp)
 
             # Update mentioned entities for implicit references
             for rst in group_rst:
