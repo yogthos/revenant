@@ -127,7 +127,13 @@ class EvolutionarySentenceGenerator:
         self.vocab_hints = self._extract_content_words(mfw, limit=20)
 
         # Store structure samples and transitions from profile
-        self.structure_samples = profile.structure_profile.structure_samples
+        # Use raw_samples (original text) for prompts - better style matching
+        # Fall back to sanitized samples if raw not available
+        self.structure_samples = (
+            profile.structure_profile.raw_samples
+            if profile.structure_profile.raw_samples
+            else profile.structure_profile.structure_samples
+        )
         self.structure_transitions = profile.structure_profile.structure_transitions
         self.proposition_capacity = profile.structure_profile.proposition_capacity
 
@@ -182,24 +188,21 @@ class EvolutionarySentenceGenerator:
         return opening
 
     def _build_context_constraints(self, state: GenerationState) -> str:
-        """Build prompt section about what to avoid based on context."""
+        """Build prompt section about what to avoid based on context.
+
+        These are structural/content constraints, not style instructions.
+        """
         constraints = []
 
-        # Phrases to avoid
+        # Phrases to avoid (prevents repetition)
         if state.used_phrases:
             recent_phrases = list(state.used_phrases)[-15:]  # Last 15 phrases
             constraints.append(f"AVOID these phrases already used: {', '.join(recent_phrases)}")
 
-        # Previous sentence for flow
+        # Previous sentence for context
         if state.previous_sentences:
             last = state.previous_sentences[-1]
             constraints.append(f"Previous sentence: \"{last}\"")
-            constraints.append("Continue naturally from this context.")
-
-            # If we have mentioned concepts, suggest implicit reference
-            if state.key_nouns:
-                recent_nouns = state.key_nouns[-3:]
-                constraints.append(f"You may refer to '{recent_nouns[-1]}' using 'it', 'this', or 'such'")
 
         return "\n".join(constraints)
 
@@ -554,49 +557,51 @@ class EvolutionarySentenceGenerator:
         transition_word: Optional[str],
         style_hint: str = "",
     ) -> List[str]:
-        """Create diverse prompt variants for population diversity."""
+        """Create diverse prompt variants for population diversity.
+
+        Style comes ONLY from corpus samples - no hardcoded style descriptions.
+        Variants differ only in target length (for burstiness) and structural constraints.
+        """
         variants = []
 
-        # Build context hint from RST/entity info
-        base_hint = style_hint if style_hint else "Write naturally, varying structure from previous sentences."
+        # Pass through any RST/entity context hints (these are content, not style)
+        context_hint = style_hint if style_hint else ""
 
-        # Variant 1: Standard prompt with full context
+        # Variant 1: Standard prompt with base target length
         variants.append(self._build_prompt(
             proposition, target_length, transition_word, state,
-            style_hint=base_hint
+            style_hint=context_hint
         ))
 
-        # Variant 2: Emphasize length with context
-        length_hint = f"{base_hint} The sentence MUST be exactly {target_length} words."
+        # Variant 2: Emphasize exact length (no style hint, just constraint)
         variants.append(self._build_prompt(
             proposition, target_length, transition_word, state,
-            style_hint=length_hint
+            style_hint=f"{context_hint} EXACTLY {target_length} words." if context_hint else f"EXACTLY {target_length} words."
         ))
 
-        # Variant 3: Shorter target (for burstiness)
+        # Variant 3: Shorter target (for burstiness variation)
         variants.append(self._build_prompt(
             proposition, max(8, target_length - 8), transition_word, state,
-            style_hint="Be concise. Use a different structure than previous sentences."
+            style_hint=context_hint
         ))
 
-        # Variant 4: Longer target (for burstiness)
+        # Variant 4: Longer target (for burstiness variation)
         variants.append(self._build_prompt(
             proposition, target_length + 10, transition_word, state,
-            style_hint="Develop with concrete examples. Vary the sentence structure."
+            style_hint=context_hint
         ))
 
-        # Variant 5: Much longer (for high burstiness)
+        # Variant 5: Much longer (for high burstiness authors)
         variants.append(self._build_prompt(
             proposition, min(50, target_length + 20), transition_word, state,
-            style_hint="Write a complex sentence with multiple clauses."
+            style_hint=context_hint
         ))
 
-        # Variant 6: Implicit reference focus
-        if state.key_nouns:
-            variants.append(self._build_prompt(
-                proposition, target_length, transition_word, state,
-                style_hint=f"Refer back to previous concepts using 'this', 'it', or 'such'."
-            ))
+        # Variant 6: Different structure sample selection (add a few more corpus samples)
+        variants.append(self._build_prompt(
+            proposition, target_length, transition_word, state,
+            style_hint=context_hint
+        ))
 
         return variants
 
@@ -608,59 +613,58 @@ class EvolutionarySentenceGenerator:
         state: GenerationState,
         style_hint: str = "",
     ) -> str:
-        """Build a generation prompt with full context awareness and discourse preservation."""
+        """Build a generation prompt using corpus examples only - no hardcoded style."""
         parts = []
 
-        # Get required discourse relation (preserving source logic)
-        discourse_relation = state.required_discourse_relation or "continuation"
+        # Show corpus examples as the ONLY style definition
+        parts.append("STYLE EXAMPLES (match this exactly):")
+        parts.append("")
 
-        # Add few-shot example from corpus for this discourse relation
-        if discourse_relation != "continuation":
-            example = self._get_few_shot_example(discourse_relation)
-            if example:
-                parts.append("EXAMPLE of the required logical flow:")
-                parts.append(f"  Previous: \"{example[0]}\"")
-                parts.append(f"  Current ({discourse_relation.upper()}): \"{example[1]}\"")
-                parts.append("")
+        # Add MORE corpus samples - 6-8 instead of 4
+        samples_shown = 0
+        all_samples = []
+        if hasattr(self, 'structure_samples') and self.structure_samples:
+            for struct_type in ['simple', 'compound', 'complex', 'compound_complex']:
+                if struct_type in self.structure_samples and self.structure_samples[struct_type]:
+                    # Get 2 samples from each type
+                    samples = self.structure_samples[struct_type]
+                    for sample in random.sample(samples, min(2, len(samples))):
+                        all_samples.append(sample)
+
+        # Shuffle and show up to 8
+        random.shuffle(all_samples)
+        for sample in all_samples[:8]:
+            parts.append(f'"{sample}"')
+            samples_shown += 1
+
+        if samples_shown == 0:
+            parts.append("(No style samples available)")
+
+        parts.append("")
+        parts.append("---")
 
         # Context from previous sentences
-        context_constraints = self._build_context_constraints(state)
-        if context_constraints:
-            parts.append(context_constraints)
+        if state.previous_sentences:
+            parts.append(f"Previous: \"{state.previous_sentences[-1]}\"")
 
-        parts.append(f"Write ONE SINGLE sentence expressing: {proposition}")
-        parts.append(f"REQUIRED: The sentence must be {target_length} words (minimum {max(10, target_length - 5)} words)")
+        # The task
+        parts.append(f"Idea: {proposition}")
+        parts.append(f"Length: {target_length} words")
 
-        # Discourse relation guidance - balance source logic with target author's style
-        # Critical relations (contrast, cause) take priority; others respect transition decision
+        # Transition guidance from corpus data
+        discourse_relation = state.required_discourse_relation or "continuation"
         if discourse_relation == "contrast":
-            # CONTRAST is critical for logic - always signal it
             connective = self._get_discourse_connective("contrast")
             if connective:
-                parts.append(f"This sentence CONTRASTS with the previous. Start with: \"{connective.capitalize()}\"")
-            else:
-                parts.append("This sentence CONTRASTS with the previous (show opposition or concession)")
-        elif discourse_relation == "cause" and transition_word:
-            # CAUSE - only if we're allowed to use a transition
-            parts.append(f"This sentence shows CAUSE/RESULT. Start with: \"{transition_word.capitalize()}\"")
+                parts.append(f"Start with: \"{connective.capitalize()}\"")
         elif transition_word:
-            # We're allowed a transition - use the selected word
             parts.append(f"Start with: \"{transition_word.capitalize()}\"")
-        else:
-            # No transition allowed - flow naturally without explicit markers
-            parts.append("Do NOT start with a transition word (but, however, so, therefore, etc.)")
-
-        # Style guidance - use actual samples from corpus
-        if hasattr(self, 'structure_samples') and self.structure_samples:
-            structure_type = self._get_current_structure_type(state)
-            if structure_type in self.structure_samples and self.structure_samples[structure_type]:
-                sample = random.choice(self.structure_samples[structure_type])
-                parts.append(f"Match this style/register: \"{sample}\"")
 
         if style_hint:
             parts.append(style_hint)
 
-        parts.append("Output ONLY the single sentence (no explanation, no multiple sentences):")
+        parts.append("")
+        parts.append("Write ONE sentence in the EXACT same style as the examples:")
 
         return "\n".join(parts)
 
@@ -744,56 +748,51 @@ class EvolutionarySentenceGenerator:
         mutation_prompt = None
 
         if candidate.length_fitness < 0.7:
-            # Length is off - request specific adjustment
+            # Length is off - request specific adjustment (structural, not style)
             length_diff = candidate.word_count - target_length
             if length_diff > 0:
                 mutation_prompt = (
-                    f'Shorten this sentence to exactly {target_length} words '
-                    f'(currently {candidate.word_count} words):\n'
+                    f'Shorten to {target_length} words (currently {candidate.word_count}):\n'
                     f'"{candidate.text}"\n'
-                    f'Keep the core meaning. Write ONLY the shortened sentence:'
+                    f'Keep the meaning. Write ONLY the result:'
                 )
             else:
-                # Sentence is too short - expand it with concrete details
                 mutation_prompt = (
-                    f'This sentence is too short ({candidate.word_count} words). '
-                    f'Expand it to EXACTLY {target_length} words by adding:\n'
-                    f'- Specific examples or details\n'
-                    f'- Qualifications or context\n'
-                    f'- Related consequences or implications\n\n'
-                    f'Original: "{candidate.text}"\n\n'
-                    f'Write ONLY the expanded {target_length}-word sentence:'
+                    f'Expand to {target_length} words (currently {candidate.word_count}):\n'
+                    f'"{candidate.text}"\n'
+                    f'Keep the meaning. Write ONLY the result:'
                 )
 
         elif candidate.transition_fitness < 0.7:
-            # Transition issue
+            # Transition issue (structural constraint from corpus)
             if transition_word and not candidate.has_transition:
                 mutation_prompt = (
-                    f'Rewrite this sentence to start with "{transition_word.capitalize()}":\n'
+                    f'Rewrite starting with "{transition_word.capitalize()}":\n'
                     f'"{candidate.text}"\n'
-                    f'Write ONLY the rewritten sentence:'
+                    f'Write ONLY the result:'
                 )
             elif not transition_word and candidate.has_transition:
                 mutation_prompt = (
-                    f'Rewrite this sentence WITHOUT any transition word at the start:\n'
+                    f'Rewrite WITHOUT a transition word at the start:\n'
                     f'"{candidate.text}"\n'
-                    f'Start directly with content. Write ONLY the rewritten sentence:'
+                    f'Write ONLY the result:'
                 )
 
         elif candidate.vocabulary_fitness < 0.6:
-            # Vocabulary doesn't match - simplify
+            # Vocabulary mismatch - show corpus examples instead of describing style
+            vocab_sample = ', '.join(self.vocab_hints[:10]) if self.vocab_hints else ''
             mutation_prompt = (
-                f'Rewrite using simpler, more direct words:\n'
+                f'Rewrite using words like: {vocab_sample}\n'
                 f'"{candidate.text}"\n'
-                f'Avoid fancy vocabulary. Write ONLY the rewritten sentence:'
+                f'Write ONLY the result:'
             )
 
         else:
-            # General improvement
+            # General refinement - just adjust length
             mutation_prompt = (
-                f'Improve this sentence while keeping its meaning:\n'
+                f'Rewrite in {target_length} words:\n'
                 f'"{candidate.text}"\n'
-                f'Target: {target_length} words. Write ONLY the improved sentence:'
+                f'Write ONLY the result:'
             )
 
         if mutation_prompt:
@@ -1040,16 +1039,17 @@ class EvolutionaryParagraphGenerator:
                 state.required_discourse_relation = None
 
             # Build context hint for satellites that reference nuclei
+            # This is content structure, not style - tells LLM what this sentence relates to
             context_hint = ""
             if role == "satellite" and parent_idx is not None and parent_idx in generated_by_prop_idx:
                 parent_sentence = generated_by_prop_idx[parent_idx]
-                # Tell LLM to connect back to the parent claim
+                # Provide the logical relationship context (not style instructions)
                 if relation == "example":
-                    context_hint = f"This is an EXAMPLE supporting: \"{parent_sentence[:60]}...\". Connect it clearly."
+                    context_hint = f"[Example of: \"{parent_sentence[:60]}...\"]"
                 elif relation == "evidence":
-                    context_hint = f"This provides EVIDENCE for: \"{parent_sentence[:60]}...\". Reference the claim."
+                    context_hint = f"[Evidence for: \"{parent_sentence[:60]}...\"]"
                 elif relation == "elaboration":
-                    context_hint = f"This ELABORATES on: \"{parent_sentence[:60]}...\". Expand naturally."
+                    context_hint = f"[Elaboration of: \"{parent_sentence[:60]}...\"]"
 
             # Add entity context for coherent references
             if mentioned_entities and prop_entities:
@@ -1064,6 +1064,17 @@ class EvolutionaryParagraphGenerator:
                 position=sentence_position,
                 style_hint=context_hint,
             )
+
+            # Prevent duplicate sentences
+            if sentences and sentence.strip() == sentences[-1].strip():
+                logger.warning(f"Duplicate sentence detected, regenerating...")
+                # Try once more - the state already tracks used phrases to avoid repetition
+                sentence, state = self.generator.generate_sentence(
+                    proposition=proposition,
+                    state=state,
+                    position=sentence_position,
+                    style_hint=context_hint,
+                )
 
             sentences.append(sentence)
             generated_by_prop_idx[prop_idx] = sentence

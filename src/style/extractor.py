@@ -458,11 +458,12 @@ class StyleProfileExtractor:
         - compound_complex: Multiple independent + dependent
         """
         structure_counts = Counter()
-        structure_samples = defaultdict(list)
+        structure_samples = defaultdict(list)  # Sanitized with [X] placeholders
+        raw_samples = defaultdict(list)  # Original text for style prompts
         structures = []
 
         # Sample limit per structure type
-        max_samples = 10
+        max_samples = 15
 
         for sentence in sentences:
             doc = self.nlp(sentence)
@@ -470,11 +471,14 @@ class StyleProfileExtractor:
             structures.append(structure)
             structure_counts[structure] += 1
 
-            # Collect sample sentences (sanitized - no proper nouns)
+            # Collect sample sentences
             if len(structure_samples[structure]) < max_samples:
+                # Sanitized version for analysis
                 sanitized = self._sanitize_sample(doc)
                 if sanitized and len(sanitized.split()) >= 5:
                     structure_samples[structure].append(sanitized)
+                    # Also store raw sentence for style prompts
+                    raw_samples[structure].append(sentence.strip())
 
         # Calculate distribution
         total = len(structures)
@@ -493,6 +497,7 @@ class StyleProfileExtractor:
             structure_transitions=structure_transitions,
             proposition_capacity=proposition_capacity,
             structure_samples=dict(structure_samples),
+            raw_samples=dict(raw_samples),
         )
 
     def _classify_sentence_structure(self, doc) -> str:

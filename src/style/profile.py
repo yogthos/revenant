@@ -225,9 +225,13 @@ class SentenceStructureProfile:
         "simple": 1, "compound": 2, "complex": 2, "compound_complex": 3
     })
 
-    # Sample sentences for each structure type (for style hints)
+    # Sample sentences for each structure type (sanitized with [X] placeholders)
     structure_samples: Dict[str, List[str]] = field(default_factory=dict)
-    # e.g., {"simple": ["The cat sat.", "Birds fly."], ...}
+    # e.g., {"simple": ["The [X] sat.", "Birds fly."], ...}
+
+    # Raw sample sentences without sanitization (for style prompts)
+    raw_samples: Dict[str, List[str]] = field(default_factory=dict)
+    # e.g., {"simple": ["The cat sat on the mat.", "Birds fly south."], ...}
 
     def to_dict(self) -> Dict:
         return {
@@ -235,10 +239,14 @@ class SentenceStructureProfile:
             "structure_transitions": self.structure_transitions,
             "proposition_capacity": self.proposition_capacity,
             "structure_samples": self.structure_samples,
+            "raw_samples": self.raw_samples,
         }
 
     @classmethod
     def from_dict(cls, data: Dict) -> "SentenceStructureProfile":
+        # Handle backward compatibility for profiles without raw_samples
+        if "raw_samples" not in data:
+            data["raw_samples"] = data.get("structure_samples", {})
         return cls(**data)
 
 
