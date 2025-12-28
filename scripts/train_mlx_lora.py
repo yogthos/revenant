@@ -34,6 +34,24 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 
+def get_default_model() -> str:
+    """Get default model from config.json."""
+    config_path = project_root / "config.json"
+    if config_path.exists():
+        try:
+            with open(config_path) as f:
+                config = json.load(f)
+            model = config.get("llm", {}).get("providers", {}).get("mlx", {}).get("model")
+            if model:
+                return model
+        except Exception:
+            pass
+    return "mlx-community/Qwen3-8B-4bit"
+
+
+DEFAULT_MODEL = get_default_model()
+
+
 def check_mlx_available():
     """Check if MLX is available."""
     try:
@@ -83,7 +101,7 @@ def create_mlx_generator(model: str = None):
     """Create an MLX generator function (default, self-contained).
 
     Args:
-        model: Model name (defaults to Qwen2.5-7B-Instruct-4bit).
+        model: Model name (from config.json or default).
 
     Returns:
         Function that generates text from a prompt.
@@ -237,7 +255,7 @@ def train_lora(
     dataset_path: str,
     author: str,
     output_dir: str,
-    base_model: str = "mlx-community/Qwen2.5-7B-Instruct-4bit",
+    base_model: str = None,
     epochs: int = 3,
     batch_size: int = 2,
     learning_rate: float = 5e-5,
@@ -263,6 +281,10 @@ def train_lora(
     """
     import subprocess
     import shutil
+
+    # Use default model from config if not specified
+    if base_model is None:
+        base_model = DEFAULT_MODEL
 
     if not check_mlx_available():
         print("ERROR: MLX is not available. Install with: pip install mlx mlx-lm")
@@ -440,9 +462,9 @@ def test_generation(
     if metadata_path.exists():
         with open(metadata_path, 'r') as f:
             metadata = json.load(f)
-        base_model = metadata.get("base_model", "mlx-community/Qwen2.5-7B-Instruct-4bit")
+        base_model = metadata.get("base_model", DEFAULT_MODEL)
     else:
-        base_model = "mlx-community/Qwen2.5-7B-Instruct-4bit"
+        base_model = DEFAULT_MODEL
 
     model, tokenizer = load(base_model, adapter_path=adapter_path)
 
@@ -527,8 +549,8 @@ def main():
     # Training hyperparameters
     parser.add_argument(
         "--model",
-        default="mlx-community/Qwen2.5-7B-Instruct-4bit",
-        help="Base model for training",
+        default=None,
+        help=f"Base model for training (default: from config.json or {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--epochs",
