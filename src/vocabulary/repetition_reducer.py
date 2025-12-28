@@ -219,8 +219,6 @@ class RepetitionReducer:
 
         if stats.replacements_made > 0:
             logger.debug(f"Reduced {stats.replacements_made} repetitions: {stats.replacements_detail}")
-            # Also print to stdout for debugging
-            print(f"DEBUG VOCAB: {stats.replacements_detail}")
 
         return result, stats
 

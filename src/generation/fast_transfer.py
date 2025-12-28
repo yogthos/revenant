@@ -93,10 +93,6 @@ class PropositionExtractor:
     - Identify entities and relationships
     """
 
-    def __init__(self):
-        """Initialize the extractor."""
-        pass
-
     def extract(self, text: str) -> List[str]:
         """Extract propositions from text.
 
@@ -132,7 +128,11 @@ class PropositionExtractor:
             Tuple of (propositions, keywords).
         """
         propositions = self.extract(text)
-        keywords = extract_keywords(text, top_n=10)
+        try:
+            keywords = extract_keywords(text, top_n=10)
+        except Exception as e:
+            logger.warning(f"Failed to extract keywords: {e}")
+            keywords = []
         return propositions, keywords
 
 
