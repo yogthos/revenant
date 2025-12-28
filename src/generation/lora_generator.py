@@ -123,21 +123,49 @@ class LoRAStyleGenerator:
                 self.base_model_name = self.metadata.base_model
                 logger.info(f"Loaded adapter metadata: {self.metadata.author}")
 
+    def _is_model_cached(self, model_name: str) -> bool:
+        """Check if model is already downloaded in HuggingFace cache."""
+        try:
+            from huggingface_hub import try_to_load_from_cache, _CACHED_NO_EXIST
+            # Check for config.json as indicator the model is cached
+            result = try_to_load_from_cache(model_name, "config.json")
+            return result is not None and result is not _CACHED_NO_EXIST
+        except Exception:
+            return False
+
     def _ensure_loaded(self):
         """Ensure model is loaded."""
+        import os
+
         if self._model is not None:
             return
 
-        logger.info(f"Loading model: {self.base_model_name}")
-
-        if self.adapter_path:
-            logger.info(f"With LoRA adapter: {self.adapter_path}")
-            self._model, self._tokenizer = load(
-                self.base_model_name,
-                adapter_path=self.adapter_path,
-            )
+        is_cached = self._is_model_cached(self.base_model_name)
+        if is_cached:
+            logger.info(f"Loading model: {self.base_model_name}")
+            # Suppress progress bars for cached models
+            old_hf_disable = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         else:
-            self._model, self._tokenizer = load(self.base_model_name)
+            logger.info(f"Downloading model: {self.base_model_name}")
+            old_hf_disable = None
+
+        try:
+            if self.adapter_path:
+                logger.info(f"With LoRA adapter: {self.adapter_path}")
+                self._model, self._tokenizer = load(
+                    self.base_model_name,
+                    adapter_path=self.adapter_path,
+                )
+            else:
+                self._model, self._tokenizer = load(self.base_model_name)
+        finally:
+            # Restore progress bar setting
+            if is_cached:
+                if old_hf_disable is None:
+                    os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+                else:
+                    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = old_hf_disable
 
         logger.info("Model loaded successfully")
 
