@@ -499,3 +499,109 @@ class NLPManager:
             Tuple of (category, score).
         """
         return classify_by_similarity(text, prototypes, threshold)
+
+
+def is_heading(line: str) -> bool:
+    """Detect if a line is likely a heading.
+
+    Headings are identified by:
+    - All uppercase (or mostly uppercase)
+    - Markdown heading markers (#, ##, etc.)
+    - Short lines without punctuation
+    - Numbered section markers (1., 2.1, etc.)
+
+    Args:
+        line: A single line of text.
+
+    Returns:
+        True if the line appears to be a heading.
+    """
+    line = line.strip()
+
+    if not line:
+        return False
+
+    # Markdown headings
+    if line.startswith('#'):
+        return True
+
+    # Check for all caps (allowing numbers and punctuation)
+    alpha_chars = [c for c in line if c.isalpha()]
+    if alpha_chars:
+        upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+        # Line is mostly uppercase (>80%) and short
+        if upper_ratio > 0.8 and len(line.split()) <= 8:
+            return True
+
+    # Numbered section markers (e.g., "1.", "2.1", "Chapter 3")
+    if re.match(r'^(\d+\.)+\s*\w', line):
+        return True
+    if re.match(r'^(chapter|section|part)\s+\d+', line.lower()):
+        return True
+
+    # Short lines without sentence-ending punctuation are likely headings
+    if len(line.split()) <= 5 and not line.endswith(('.', '!', '?', ':')):
+        # But not if it starts with common sentence starters
+        first_word = line.split()[0].lower() if line.split() else ""
+        sentence_starters = {'the', 'a', 'an', 'this', 'that', 'it', 'he', 'she', 'they', 'we', 'i'}
+        if first_word not in sentence_starters:
+            return True
+
+    return False
+
+
+def filter_headings(paragraphs: List[str]) -> List[str]:
+    """Filter out heading paragraphs from a list.
+
+    Args:
+        paragraphs: List of paragraph texts.
+
+    Returns:
+        Filtered list with headings removed.
+    """
+    result = []
+    for para in paragraphs:
+        # Check if entire paragraph is a heading (single line)
+        lines = para.strip().split('\n')
+        if len(lines) == 1 and is_heading(lines[0]):
+            logger.debug(f"Skipping heading: {para[:50]}...")
+            continue
+
+        # For multi-line paragraphs, filter out heading lines at the start
+        filtered_lines = []
+        for i, line in enumerate(lines):
+            if i == 0 and is_heading(line):
+                logger.debug(f"Skipping heading line: {line[:50]}...")
+                continue
+            filtered_lines.append(line)
+
+        if filtered_lines:
+            result.append('\n'.join(filtered_lines))
+
+    return result
+
+
+def split_paragraphs_preserving_headings(
+    text: str
+) -> Tuple[List[str], List[Tuple[int, str]]]:
+    """Split text into paragraphs while tracking heading positions.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        Tuple of (content_paragraphs, heading_info).
+        heading_info is list of (original_index, heading_text).
+    """
+    all_paragraphs = split_into_paragraphs(text)
+    content_paragraphs = []
+    heading_info = []
+
+    for i, para in enumerate(all_paragraphs):
+        lines = para.strip().split('\n')
+        if len(lines) == 1 and is_heading(lines[0]):
+            heading_info.append((i, para))
+        else:
+            content_paragraphs.append(para)
+
+    return content_paragraphs, heading_info

@@ -11,12 +11,15 @@ Uses genetic algorithm principles to evolve sentences toward target style:
 import random
 import re
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Callable, Tuple
+from typing import List, Dict, Optional, Callable, Tuple, TYPE_CHECKING
 from collections import Counter
 import numpy as np
 
 from ..style.profile import AuthorStyleProfile
 from ..style.verifier import StyleVerifier
+
+if TYPE_CHECKING:
+    from ..style.blender import GhostVector
 from ..utils.nlp import get_nlp, split_into_sentences
 from ..utils.logging import get_logger
 from ..humanization.pattern_injector import PatternInjector, HumanizationConfig
@@ -70,7 +73,8 @@ class Candidate:
     transition_fitness: float = 0.0
     vocabulary_fitness: float = 0.0
     fluency_fitness: float = 0.0
-    content_fitness: float = 1.0  # NEW: Content preservation score
+    content_fitness: float = 1.0  # Content preservation score
+    style_fitness: float = 0.0    # Ghost vector similarity (for blending)
 
     # Diagnostic info
     word_count: int = 0
@@ -78,16 +82,35 @@ class Candidate:
     has_transition: bool = False
     issues: List[str] = field(default_factory=list)
 
+    # Whether style blending is active (affects weight distribution)
+    _use_style_blending: bool = False
+
     @property
     def total_fitness(self) -> float:
-        """Weighted fitness score - CONTENT is highest priority."""
-        return (
-            self.content_fitness * 0.40 +     # Content preservation is CRITICAL
-            self.length_fitness * 0.20 +      # Reduced
-            self.transition_fitness * 0.15 +
-            self.vocabulary_fitness * 0.15 +
-            self.fluency_fitness * 0.10
-        )
+        """Weighted fitness score - CONTENT is highest priority.
+
+        When style blending is active, style_fitness gets 15% weight
+        (taken proportionally from other components).
+        """
+        if self._use_style_blending and self.style_fitness > 0:
+            # With blending: redistribute weights to include style
+            return (
+                self.content_fitness * 0.35 +     # Slightly reduced
+                self.style_fitness * 0.15 +       # Ghost vector similarity
+                self.length_fitness * 0.18 +
+                self.transition_fitness * 0.12 +
+                self.vocabulary_fitness * 0.12 +
+                self.fluency_fitness * 0.08
+            )
+        else:
+            # Standard weights without blending
+            return (
+                self.content_fitness * 0.40 +
+                self.length_fitness * 0.20 +
+                self.transition_fitness * 0.15 +
+                self.vocabulary_fitness * 0.15 +
+                self.fluency_fitness * 0.10
+            )
 
     def __lt__(self, other):
         return self.total_fitness < other.total_fitness
@@ -253,6 +276,7 @@ class EvolutionarySentenceGenerator:
         max_generations: int = 3,
         elite_count: int = 2,
         mutation_rate: float = 0.8,
+        ghost_vector: Optional["GhostVector"] = None,
     ):
         """Initialize evolutionary generator.
 
@@ -263,6 +287,7 @@ class EvolutionarySentenceGenerator:
             max_generations: Maximum evolution iterations.
             elite_count: Number of top candidates to preserve.
             mutation_rate: Probability of applying mutations.
+            ghost_vector: Optional blended style target for SLERP-based scoring.
         """
         self.profile = profile
         self.llm_generate = llm_generate
@@ -270,6 +295,7 @@ class EvolutionarySentenceGenerator:
         self.max_generations = max_generations
         self.elite_count = elite_count
         self.mutation_rate = mutation_rate
+        self.ghost_vector = ghost_vector  # For style blending
 
         self.verifier = StyleVerifier(profile)
         self._nlp = None
@@ -1583,6 +1609,13 @@ class EvolutionarySentenceGenerator:
                         candidate.fluency_fitness *= 0.75
                         candidate.issues.append("recent_first_word")
 
+        # STYLE BLENDING: Score against ghost vector if available
+        # This computes cosine similarity to the SLERP-interpolated style target
+        if self.ghost_vector is not None:
+            candidate.style_fitness = self.ghost_vector.score_text(text)
+            candidate._use_style_blending = True
+            logger.debug(f"[GHOST] Style fitness: {candidate.style_fitness:.3f} for: {text[:50]}...")
+
         return candidate
 
     def _clean_sentence(self, text: str) -> str:
@@ -1670,13 +1703,24 @@ class EvolutionaryParagraphGenerator:
         llm_generate: Callable[[str], str],
         population_size: int = 5,
         max_generations: int = 3,
+        ghost_vector: Optional["GhostVector"] = None,
     ):
-        """Initialize paragraph generator."""
+        """Initialize paragraph generator.
+
+        Args:
+            profile: Target author's style profile.
+            llm_generate: Function to call LLM.
+            population_size: Number of candidates per generation.
+            max_generations: Maximum evolution iterations.
+            ghost_vector: Optional SLERP-blended style target for Critic scoring.
+        """
+        self.ghost_vector = ghost_vector
         self.generator = EvolutionarySentenceGenerator(
             profile=profile,
             llm_generate=llm_generate,
             population_size=population_size,
             max_generations=max_generations,
+            ghost_vector=ghost_vector,
         )
         self.profile = profile
         self.verifier = StyleVerifier(profile)

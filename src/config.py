@@ -12,6 +12,49 @@ logger = get_logger(__name__)
 
 
 @dataclass
+class StyleBlendingWeights:
+    """Fitness weights when style blending is enabled."""
+    enabled_weight: float = 0.15
+    content_with_blending: float = 0.35
+    length_with_blending: float = 0.18
+    transition_with_blending: float = 0.12
+    vocabulary_with_blending: float = 0.12
+    fluency_with_blending: float = 0.08
+
+
+@dataclass
+class FitnessWeightsConfig:
+    """Configuration for fitness function weights."""
+    content: float = 0.40
+    length: float = 0.20
+    transition: float = 0.15
+    vocabulary: float = 0.15
+    fluency: float = 0.10
+    style_blending: StyleBlendingWeights = field(default_factory=StyleBlendingWeights)
+
+
+@dataclass
+class ThresholdsConfig:
+    """Configuration for various strictness thresholds."""
+    overuse_word_count: int = 3  # Word appearing more than this is "overused"
+    severe_overuse_count: int = 5  # Severe overuse penalty threshold
+    entailment_score: float = 0.5  # Min entailment for semantic preservation
+    delta_score: float = 1.5  # Burrows' Delta threshold
+    content_preservation_min: float = 0.5  # Min content preservation ratio
+    novelty_min: float = 0.95  # Min novelty for anachronistic tests
+    anachronistic_pass_rate: float = 0.9  # Min pass rate for style generalization
+
+
+@dataclass
+class BlendingConfig:
+    """Configuration for SLERP-based author style blending."""
+    enabled: bool = False
+    embedding_model: str = "all-MiniLM-L6-v2"
+    cache_dir: str = "centroid_cache/"
+    authors: Dict[str, float] = field(default_factory=dict)  # author_name -> weight
+
+
+@dataclass
 class LLMProviderConfig:
     """Configuration for a specific LLM provider."""
     api_key: str = ""
@@ -109,6 +152,7 @@ class StyleConfig:
     """Configuration for style transfer settings."""
     perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person
     voice_injection: VoiceInjectionConfig = field(default_factory=VoiceInjectionConfig)
+    blending: BlendingConfig = field(default_factory=BlendingConfig)
 
     def validate_perspective(self) -> bool:
         """Check if perspective setting is valid."""
@@ -124,6 +168,8 @@ class StyleConfig:
 @dataclass
 class Config:
     """Main configuration container."""
+    fitness_weights: FitnessWeightsConfig = field(default_factory=FitnessWeightsConfig)
+    thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     chromadb: ChromaDBConfig = field(default_factory=ChromaDBConfig)
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
@@ -208,6 +254,39 @@ def load_config(config_path: str = "config.json") -> Config:
     # Parse each section
     config = Config()
 
+    # Parse fitness weights
+    if "fitness_weights" in data:
+        fw_data = data["fitness_weights"]
+        blending_data = fw_data.get("style_blending", {})
+        config.fitness_weights = FitnessWeightsConfig(
+            content=fw_data.get("content", 0.40),
+            length=fw_data.get("length", 0.20),
+            transition=fw_data.get("transition", 0.15),
+            vocabulary=fw_data.get("vocabulary", 0.15),
+            fluency=fw_data.get("fluency", 0.10),
+            style_blending=StyleBlendingWeights(
+                enabled_weight=blending_data.get("enabled_weight", 0.15),
+                content_with_blending=blending_data.get("content_with_blending", 0.35),
+                length_with_blending=blending_data.get("length_with_blending", 0.18),
+                transition_with_blending=blending_data.get("transition_with_blending", 0.12),
+                vocabulary_with_blending=blending_data.get("vocabulary_with_blending", 0.12),
+                fluency_with_blending=blending_data.get("fluency_with_blending", 0.08),
+            ),
+        )
+
+    # Parse thresholds
+    if "thresholds" in data:
+        th_data = data["thresholds"]
+        config.thresholds = ThresholdsConfig(
+            overuse_word_count=th_data.get("overuse_word_count", 3),
+            severe_overuse_count=th_data.get("severe_overuse_count", 5),
+            entailment_score=th_data.get("entailment_score", 0.5),
+            delta_score=th_data.get("delta_score", 1.5),
+            content_preservation_min=th_data.get("content_preservation_min", 0.5),
+            novelty_min=th_data.get("novelty_min", 0.95),
+            anachronistic_pass_rate=th_data.get("anachronistic_pass_rate", 0.9),
+        )
+
     if "llm" in data:
         config.llm = _parse_llm_config(data["llm"])
 
@@ -236,12 +315,19 @@ def load_config(config_path: str = "config.json") -> Config:
     if "style" in data:
         style_data = data["style"]
         voice_data = style_data.get("voice_injection", {})
+        blending_data = style_data.get("blending", {})
         config.style = StyleConfig(
             perspective=style_data.get("perspective", "preserve"),
             voice_injection=VoiceInjectionConfig(
                 enabled=voice_data.get("enabled", True),
                 assertiveness_weight=voice_data.get("assertiveness_weight", 0.7),
                 rhetorical_weight=voice_data.get("rhetorical_weight", 0.8),
+            ),
+            blending=BlendingConfig(
+                enabled=blending_data.get("enabled", False),
+                embedding_model=blending_data.get("embedding_model", "all-MiniLM-L6-v2"),
+                cache_dir=blending_data.get("cache_dir", "centroid_cache/"),
+                authors=blending_data.get("authors", {}),
             ),
         )
         if not config.style.validate_perspective():

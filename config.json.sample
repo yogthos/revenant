@@ -1,4 +1,28 @@
 {
+  "fitness_weights": {
+    "content": 0.40,
+    "length": 0.20,
+    "transition": 0.15,
+    "vocabulary": 0.15,
+    "fluency": 0.10,
+    "style_blending": {
+      "enabled_weight": 0.15,
+      "content_with_blending": 0.35,
+      "length_with_blending": 0.18,
+      "transition_with_blending": 0.12,
+      "vocabulary_with_blending": 0.12,
+      "fluency_with_blending": 0.08
+    }
+  },
+  "thresholds": {
+    "overuse_word_count": 3,
+    "severe_overuse_count": 5,
+    "entailment_score": 0.5,
+    "delta_score": 1.5,
+    "content_preservation_min": 0.5,
+    "novelty_min": 0.95,
+    "anachronistic_pass_rate": 0.9
+  },
   "llm": {
     "provider": "deepseek",
     "providers": {
@@ -65,6 +89,12 @@
       "enabled": true,
       "assertiveness_weight": 0.7,
       "rhetorical_weight": 0.8
+    },
+    "blending": {
+      "enabled": false,
+      "embedding_model": "all-MiniLM-L6-v2",
+      "cache_dir": "centroid_cache/",
+      "authors": {}
     }
   },
   "validation": {
