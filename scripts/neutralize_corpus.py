@@ -2,33 +2,33 @@
 """Convert author corpus to content descriptions for LoRA training.
 
 This script takes an author's distinctive text and generates content descriptions
-(what happens, characters, POV) rather than paraphrases. This follows the
+(what happens, atmosphere, relationships) rather than paraphrases. This follows the
 "instruction back-translation" approach from the Gertrude Stein paper.
 
 The output is used for training: description → author style pairs.
-
-Uses MLX for local generation (self-contained, no external services needed).
+Proper nouns are automatically replaced with generic descriptions to capture
+STYLE rather than specific content.
 
 Usage:
+    # Default: Uses DeepSeek (best instruction following, requires API key)
     python scripts/neutralize_corpus.py \
-        --input styles/sample_mao.txt \
-        --output data/neutralized/mao.jsonl \
-        --author "Mao"
+        --input styles/sample_author.txt \
+        --output data/neutralized/author.jsonl \
+        --author "Author Name"
 
-    # With parallelization (Ollama only - MLX is single-GPU):
+    # With parallelization:
     python scripts/neutralize_corpus.py \
-        --input styles/sample_mao.txt \
-        --output data/neutralized/mao.jsonl \
-        --author "Mao" \
-        --llm ollama:qwen3:8b \
+        --input styles/sample_author.txt \
+        --output data/neutralized/author.jsonl \
+        --author "Author Name" \
         --workers 4
 
-    # Or use Ollama (requires ollama server running):
+    # Use local MLX (no API key needed, slower):
     python scripts/neutralize_corpus.py \
-        --input styles/sample_mao.txt \
-        --output data/neutralized/mao.jsonl \
-        --author "Mao" \
-        --llm ollama:qwen3:8b
+        --input styles/sample_author.txt \
+        --output data/neutralized/author.jsonl \
+        --author "Author Name" \
+        --llm mlx
 """
 
 import argparse
@@ -41,6 +41,43 @@ from pathlib import Path
 # Add project root to path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
+
+
+def create_deepseek_generator(model: str = "deepseek-chat", timeout: int = 120):
+    """Create a DeepSeek generator function (best instruction following)."""
+    import os
+    import requests
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        raise ValueError("DEEPSEEK_API_KEY environment variable required")
+
+    def generate(prompt: str) -> str:
+        try:
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 512,
+                },
+                timeout=timeout,
+            )
+            if response.status_code == 200:
+                return response.json()["choices"][0]["message"]["content"]
+            else:
+                print(f"DeepSeek error: {response.status_code} {response.text}")
+                return ""
+        except Exception as e:
+            print(f"DeepSeek error: {e}")
+            return ""
+
+    return generate
 
 
 def create_ollama_generator(model: str = "qwen3:8b", timeout: int = 300):
@@ -87,12 +124,21 @@ def create_mlx_generator(model: str = None):
 
 # Content description prompt - following the paper's approach
 # This generates semantic descriptions rather than paraphrases
-DESCRIBE_PROMPT = """Describe in detail what is happening in this excerpt. Mention any characters and whether the voice is in first or third person. Maintain the order of sentences while describing. Be concise but complete.
+# We abstract away specific names to capture STYLE not CONTENT
+DESCRIBE_PROMPT = """Summarize what happens in 50-100 words. You MUST replace ALL proper nouns with generic descriptions.
 
-EXCERPT:
+ABSOLUTE RULES - VIOLATION IS FAILURE:
+1. NO CHARACTER NAMES (John, Mary, Jervas) → "a young man", "the woman", "the protagonist"
+2. NO PLACE NAMES (London, Arkham, the Misty Valley) → "a city", "a dark forest", "a valley"
+3. NO FAMILY/CLAN NAMES (the Smiths, the Hydes, House Stark) → "a noble family", "an old lineage", "the ancient house"
+4. Start directly with action, never with "The passage..." or "The narrator..."
+
+If you see ANY capitalized name, replace it with a generic description.
+
+PASSAGE:
 {chunk}
 
-DESCRIPTION:"""
+SUMMARY:"""
 
 
 # Re-segmentation prompt for cleaning up chunk boundaries
@@ -153,7 +199,81 @@ def describe_chunk(chunk: str, llm_generate) -> str:
         if last_period > len(description) * 0.5:
             description = description[:last_period + 1]
 
-    return description.strip()
+    # Post-process to remove any proper nouns that slipped through
+    description = remove_proper_nouns(description.strip())
+
+    return description
+
+
+# Lazy-loaded spaCy model for NER
+_nlp = None
+
+
+def get_nlp():
+    """Get spaCy model, loading if needed."""
+    global _nlp
+    if _nlp is None:
+        import spacy
+        _nlp = spacy.load("en_core_web_sm")
+    return _nlp
+
+
+def remove_proper_nouns(text: str) -> str:
+    """Use spaCy NER to replace proper nouns with generic descriptions."""
+    import re
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    # Map entity types to generic replacements
+    replacements = {
+        "PERSON": "someone",
+        "GPE": "a place",
+        "LOC": "a location",
+        "FAC": "a building",
+        "ORG": "an organization",
+        "NORP": "a group",
+    }
+
+    # Build replacement list (reverse order to preserve offsets)
+    to_replace = []
+    for ent in doc.ents:
+        if ent.label_ in replacements:
+            to_replace.append((ent.start_char, ent.end_char, ent.text, ent.label_))
+
+    # Apply replacements in reverse order
+    result = text
+    for start, end, original, label in reversed(to_replace):
+        replacement = replacements[label]
+        before = result[:start]
+        after = result[end:]
+
+        # Handle common patterns
+        # "named X" -> remove the name entirely
+        if re.search(r'\bnamed\s*$', before, re.IGNORECASE):
+            before = re.sub(r'\bnamed\s*$', '', before, flags=re.IGNORECASE)
+            replacement = ""
+        # "the X family" -> "an old family"
+        elif re.search(r'\bthe\s*$', before, re.IGNORECASE) and re.match(r'\s*family\b', after, re.IGNORECASE):
+            before = re.sub(r'\bthe\s*$', '', before, flags=re.IGNORECASE)
+            replacement = "an old"
+        # "X family" -> "an old family"
+        elif re.match(r'\s*family\b', after, re.IGNORECASE):
+            replacement = "an old"
+        # "the X" -> "the person/place"
+        elif re.search(r'\b(the|The)\s*$', before):
+            replacement = replacement.replace("a ", "").replace("an ", "")
+        # "a X" or "an X" -> keep the article, just use noun
+        elif re.search(r'\b(a|an|A|An)\s*$', before):
+            replacement = replacement.replace("a ", "").replace("an ", "")
+
+        result = before + replacement + after
+
+    # Clean up any double spaces
+    result = re.sub(r'  +', ' ', result)
+    # Clean up ", ," patterns
+    result = re.sub(r',\s*,', ',', result)
+
+    return result.strip()
 
 
 def needs_resegmentation(chunk: str) -> bool:
@@ -249,6 +369,72 @@ def split_long_paragraph(para: str, max_words: int) -> list:
     return segments
 
 
+def is_quality_paragraph(para: str) -> tuple:
+    """Check if a paragraph is suitable for style training.
+
+    Returns:
+        Tuple of (is_quality, reason_if_rejected)
+    """
+    import re
+
+    para = para.strip()
+    if not para:
+        return False, "empty"
+
+    words = para.split()
+    word_count = len(words)
+
+    # Too short - likely headers, captions, or fragments
+    if word_count < 20:
+        return False, "too short"
+
+    # Single line without sentence structure (likely a header or title)
+    if '\n' not in para and '.' not in para and word_count < 50:
+        return False, "single line without periods"
+
+    # Mostly a quote (starts and ends with quotes, or > 50% quoted)
+    quote_chars = para.count('"') + para.count('"') + para.count('"')
+    if quote_chars > len(para) * 0.1:  # More than 10% quote marks
+        return False, "mostly quotes"
+
+    # Starts with common non-prose patterns
+    skip_starters = [
+        'chapter', 'part', 'section', 'book', 'volume',
+        'table of contents', 'contents', 'index',
+        'copyright', 'published', 'printed', 'isbn',
+        'acknowledgment', 'dedication', 'preface', 'foreword',
+        'introduction by', 'edited by', 'translated by',
+        'about the author', 'bibliography', 'notes', 'appendix',
+    ]
+    para_lower = para.lower()
+    for starter in skip_starters:
+        if para_lower.startswith(starter):
+            return False, f"starts with '{starter}'"
+
+    # Too many special characters (likely corrupted or non-prose)
+    special_count = len(re.findall(r'[^a-zA-Z0-9\s.,!?;:\'"()\-—–]', para))
+    if special_count > len(para) * 0.05:  # More than 5% special chars
+        return False, "too many special characters"
+
+    # All caps (likely a header)
+    if para.isupper() and word_count < 20:
+        return False, "all caps header"
+
+    # Looks like a list (multiple lines starting with numbers or bullets)
+    lines = para.split('\n')
+    list_lines = sum(1 for line in lines if re.match(r'^\s*(\d+[.)]|\*|\-|•)', line.strip()))
+    if list_lines > len(lines) * 0.5:
+        return False, "looks like a list"
+
+    # Check for at least one complete sentence
+    sentences = re.split(r'[.!?]+', para)
+    complete_sentences = [s for s in sentences if s.strip() and len(s.split()) >= 5]
+    if len(complete_sentences) < 1:
+        return False, "no complete sentences"
+
+    return True, "ok"
+
+
 def segment_corpus(text: str, min_words: int = 250, max_words: int = 650, overlap: bool = True) -> list:
     """Segment corpus into overlapping chunks.
 
@@ -263,13 +449,26 @@ def segment_corpus(text: str, min_words: int = 250, max_words: int = 650, overla
     """
     raw_paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
 
-    # Split any paragraphs that exceed max_words
+    # Filter out low-quality paragraphs and split long ones
     paragraphs = []
+    skipped_reasons = {}
     for para in raw_paragraphs:
+        is_quality, reason = is_quality_paragraph(para)
+        if not is_quality:
+            skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
+            continue
+
         if len(para.split()) > max_words:
             paragraphs.extend(split_long_paragraph(para, max_words))
         else:
             paragraphs.append(para)
+
+    # Report skipped paragraphs
+    if skipped_reasons:
+        total_skipped = sum(skipped_reasons.values())
+        print(f"\nFiltered out {total_skipped} low-quality paragraphs:")
+        for reason, count in sorted(skipped_reasons.items(), key=lambda x: -x[1]):
+            print(f"  - {reason}: {count}")
 
     chunks = []
     current_chunk = []
@@ -473,8 +672,8 @@ def main():
     parser.add_argument("--author", "-a", required=True, help="Author name")
     parser.add_argument(
         "--llm",
-        default="mlx",
-        help="LLM provider: 'mlx' (default, self-contained) or 'ollama:model'"
+        default="deepseek",
+        help="LLM provider: 'deepseek' (default, best quality), 'mlx', or 'ollama:model'"
     )
     parser.add_argument("--min-words", type=int, default=250, help="Min chunk words (default: 250)")
     parser.add_argument("--max-words", type=int, default=650, help="Max chunk words (default: 650)")
@@ -485,7 +684,7 @@ def main():
         "--workers", "-w",
         type=int,
         default=1,
-        help="Number of parallel workers (Ollama only, MLX is single-GPU). Default: 1"
+        help="Number of parallel workers (DeepSeek/Ollama, MLX is single-GPU). Default: 1"
     )
 
     args = parser.parse_args()
@@ -522,7 +721,13 @@ def main():
     print(f"\nSegmented into {len(chunks)} {'overlapping ' if use_overlap else ''}chunks")
 
     # Set up LLM
-    if args.llm == "mlx" or args.llm.startswith("mlx:"):
+    if args.llm == "deepseek" or args.llm.startswith("deepseek:"):
+        # Use DeepSeek (best instruction following)
+        parts = args.llm.split(":", 1)
+        model = parts[1] if len(parts) > 1 else "deepseek-chat"
+        print(f"Using DeepSeek: {model}")
+        llm_generate = create_deepseek_generator(model)
+    elif args.llm == "mlx" or args.llm.startswith("mlx:"):
         # Use MLX (self-contained, no external services)
         parts = args.llm.split(":", 1)
         model = parts[1] if len(parts) > 1 else None
@@ -536,7 +741,7 @@ def main():
         llm_generate = create_ollama_generator(model)
     else:
         print(f"Unknown LLM provider: {args.llm}")
-        print("Use 'mlx' (default) or 'ollama:model_name'")
+        print("Use 'deepseek' (default), 'mlx', or 'ollama:model_name'")
         sys.exit(1)
 
     # Process chunks with checkpointing

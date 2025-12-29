@@ -9,7 +9,6 @@ from ..utils.logging import get_logger
 from .provider import (
     LLMProvider,
     LLMError,
-    LLMRateLimitError,
     LLMTimeoutError,
     LLMResponseError,
     register_provider

@@ -6,15 +6,13 @@ or hallucinated content.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Tuple, Optional, Set
-import re
+from typing import List, Optional
 
 from ..ingestion.proposition_extractor import (
     PropositionExtractor as RichPropositionExtractor,
     PropositionNode,
-    ContentAnchor,
 )
-from ..utils.nlp import get_nlp, split_into_sentences
+from ..utils.nlp import get_nlp
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 
@@ -231,7 +229,6 @@ class PropositionValidator:
     ) -> PropositionMatch:
         """Check if a proposition is preserved in generated text."""
         gen_lower = generated_text.lower()
-        prop_lower = prop.text.lower()
 
         # Calculate match score based on keyword overlap
         prop_keywords = set(prop.keywords)
@@ -337,7 +334,6 @@ class PropositionValidator:
         for token in gen_doc:
             if token.dep_ == "nsubj" and token.head.pos_ == "VERB":
                 subject_text = token.text.lower()
-                verb_text = token.head.lemma_.lower()
 
                 # Check if this subject appears in source
                 if subject_text not in source_lower and len(subject_text) > 3:

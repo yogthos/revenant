@@ -6,7 +6,7 @@ and content anchor identification for semantic fidelity in style transfer.
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple
 import uuid
 
 from ..utils.nlp import get_nlp, split_into_sentences, extract_citations
@@ -615,7 +615,6 @@ class PropositionExtractor:
 
         # Check for specific/concrete entities (examples tend to be more concrete)
         named_entities = [ent for ent in doc.ents]
-        concrete_nouns = [t for t in doc if t.pos_ == "NOUN" and not t.is_stop]
 
         # If sentence has specific named entities and isn't first, likely an example
         if named_entities and not is_first:

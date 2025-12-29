@@ -8,10 +8,10 @@ Provides explicit, actionable feedback for fixing quality issues:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Tuple, Optional
+from typing import List, Dict, Optional
 from collections import Counter
 
-from ..utils.nlp import get_nlp, split_into_sentences
+from ..utils.nlp import get_nlp
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 

@@ -12,7 +12,6 @@ from .provider import (
     create_critic_provider,
     register_provider,
 )
-from .session import LLMSession, SessionConfig
 from .mlx_provider import MLXGenerator, TextNeutralizer, create_mlx_generator
 
 # Import providers to register them
@@ -31,9 +30,6 @@ __all__ = [
     "create_writer_provider",
     "create_critic_provider",
     "register_provider",
-    # Session
-    "LLMSession",
-    "SessionConfig",
     # MLX
     "MLXGenerator",
     "TextNeutralizer",

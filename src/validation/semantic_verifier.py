@@ -6,7 +6,7 @@ including epistemic stance, logical relations, and content anchors.
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from ..ingestion.proposition_extractor import (
     PropositionNode,

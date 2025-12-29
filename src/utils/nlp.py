@@ -1,7 +1,7 @@
 """NLP utilities using spaCy and NLTK."""
 
 import re
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 from .logging import get_logger
 

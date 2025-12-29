@@ -10,18 +10,17 @@ Performance target: ~5-10 seconds per paragraph generation.
 """
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
 from ..utils.logging import get_logger
-from ..utils.prompts import format_prompt, get_prompt_with_fallback
+from ..utils.prompts import format_prompt
 
 logger = get_logger(__name__)
 
 # Check MLX availability at module level
 try:
-    import mlx.core as mx
     from mlx_lm import load, generate
     from mlx_lm.sample_utils import make_sampler, make_repetition_penalty
     MLX_AVAILABLE = True
@@ -177,6 +176,7 @@ class LoRAStyleGenerator:
         context: Optional[str] = None,
         system_override: Optional[str] = None,
         max_tokens: Optional[int] = None,
+        context_hint: Optional[str] = None,
     ) -> str:
         """Generate styled text from content description.
 
@@ -186,6 +186,8 @@ class LoRAStyleGenerator:
             context: Optional previous paragraph for continuity.
             system_override: Optional custom system prompt.
             max_tokens: Override for max tokens (defaults to config).
+            context_hint: Optional brief hint about document type (e.g., "formal analytical").
+                         Only used for instruct models, ignored for base models.
 
         Returns:
             Generated text in the author's style.
@@ -215,9 +217,12 @@ class LoRAStyleGenerator:
 
         if is_base_model:
             # For base models, match the training format (instruction back-translation)
+            # Optionally include context hint (e.g., "formal analytical ")
+            hint = f"{context_hint} " if context_hint else ""
             instruction = format_prompt(
-                "style_transfer_base_model",
+                "style_transfer_base_model_with_context",
                 target_words=target_words,
+                context_hint=hint,
                 author=author
             )
             prompt = f"{instruction}\n\n{user}\n\n"

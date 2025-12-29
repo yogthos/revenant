@@ -1,15 +1,15 @@
-"""Fast style transfer pipeline using LoRA.
+"""Style transfer pipeline using LoRA.
 
-This module provides a simplified style transfer pipeline that uses
-LoRA-adapted models for fast, consistent style transfer.
+This module provides a style transfer pipeline that uses LoRA-adapted models
+for consistent style transfer with a critic/repair loop.
 
 Pipeline:
-1. Extract propositions (what to say)
-2. Generate styled text (single LoRA call)
-3. Verify meaning preserved (lightweight check)
-4. Optional single repair pass
-
-Target: <30 seconds per paragraph (vs 10+ minutes with evolutionary approach).
+1. Extract document context (thesis, intent, tone)
+2. For each paragraph:
+   - Generate styled text (LoRA call)
+   - Validate propositions preserved
+   - Repair with critic if needed
+3. Post-process to reduce repetition
 """
 
 from dataclasses import dataclass, field
@@ -17,6 +17,7 @@ from typing import List, Optional, Callable, Tuple
 import time
 
 from .lora_generator import LoRAStyleGenerator, GenerationConfig
+from .document_context import DocumentContext, extract_document_context
 from ..utils.nlp import (
     split_into_paragraphs,
     split_into_sentences,
@@ -24,7 +25,6 @@ from ..utils.nlp import (
 )
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
-from ..ingestion.proposition_extractor import PropositionNode
 
 logger = get_logger(__name__)
 
@@ -62,6 +62,9 @@ class TransferConfig:
     # Content extraction
     skip_headings: bool = True
     min_paragraph_words: int = 10  # Skip very short paragraphs
+
+    # Document context settings
+    use_document_context: bool = True  # Extract and use document-level context
 
 
 @dataclass
@@ -125,29 +128,11 @@ class PropositionExtractor:
 
         return propositions
 
-    def extract_with_keywords(self, text: str) -> Tuple[List[str], List[str]]:
-        """Extract propositions and keywords.
 
-        Args:
-            text: Input text.
+class StyleTransfer:
+    """Style transfer using LoRA with critic/repair loop.
 
-        Returns:
-            Tuple of (propositions, keywords).
-        """
-        propositions = self.extract(text)
-        try:
-            keywords = extract_keywords(text, top_n=10)
-        except Exception as e:
-            logger.warning(f"Failed to extract keywords: {e}")
-            keywords = []
-        return propositions, keywords
-
-
-class FastStyleTransfer:
-    """Simplified style transfer using LoRA.
-
-    This is the main entry point for fast style transfer. It replaces
-    the complex evolutionary pipeline with a streamlined approach:
+    This is the main entry point for style transfer. Pipeline:
 
     1. Extract propositions (rule-based or LLM)
     2. Single LoRA generation pass
@@ -155,7 +140,7 @@ class FastStyleTransfer:
     4. Optional single repair pass
 
     Example usage:
-        transfer = FastStyleTransfer(
+        transfer = StyleTransfer(
             adapter_path="lora_adapters/sagan",
             author_name="Carl Sagan",
         )
@@ -228,6 +213,9 @@ class FastStyleTransfer:
         # Set up entailment verifier if requested
         if self.config.verify_entailment and self.verify_fn is None:
             self.verify_fn = self._create_default_verifier()
+
+        # Document context (extracted at transfer time)
+        self.document_context: Optional[DocumentContext] = None
 
         logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
 
@@ -317,11 +305,17 @@ class FastStyleTransfer:
         # Generate with token limit based on input (allow 1.5x for style variation)
         max_tokens = max(100, int(word_count * 1.8))
 
+        # Get context hint for generation (if document context available)
+        context_hint = None
+        if self.document_context:
+            context_hint = self.document_context.to_generation_hint()
+
         output = self.generator.generate(
             content=paragraph,
             author=self.author,
             context=previous,
             max_tokens=max_tokens,
+            context_hint=context_hint,
         )
 
         # Proposition-based validation and repair loop
@@ -423,10 +417,18 @@ class FastStyleTransfer:
 
         instruction_text = "\n".join(f"- {inst}" for inst in instructions)
 
-        system_prompt = format_prompt(
-            "critic_repair_system",
-            instructions=instruction_text
-        )
+        # Use context-aware prompt if document context is available
+        if self.document_context:
+            system_prompt = format_prompt(
+                "critic_repair_with_context",
+                document_context=self.document_context.to_critic_context(),
+                instructions=instruction_text
+            )
+        else:
+            system_prompt = format_prompt(
+                "critic_repair_system",
+                instructions=instruction_text
+            )
 
         user_prompt = format_prompt(
             "critic_repair_user",
@@ -544,12 +546,18 @@ class FastStyleTransfer:
             input_words = len(original.split())
             max_tokens = max(100, int(input_words * 2.0))
 
+            # Get context hint for generation (if document context available)
+            context_hint = None
+            if self.document_context:
+                context_hint = self.document_context.to_generation_hint()
+
             output = self.generator.generate(
                 content=original,
                 author=self.author,
                 context=previous,
                 system_override=repair_system,
                 max_tokens=max_tokens,
+                context_hint=context_hint,
             )
         finally:
             self.generator.config.temperature = old_temp
@@ -595,6 +603,14 @@ class FastStyleTransfer:
         if not paragraphs:
             logger.warning("No content paragraphs found")
             return text, self._transfer_stats
+
+        # Extract document context for improved generation and critique
+        if self.config.use_document_context:
+            logger.info("Extracting document context...")
+            self.document_context = extract_document_context(
+                text,
+                llm_provider=self.critic_provider,
+            )
 
         logger.info(f"Transferring {len(paragraphs)} paragraphs")
 
@@ -684,13 +700,13 @@ class FastStyleTransfer:
         logger.info(f"Switched to author: {author_name}")
 
 
-def create_fast_transfer(
+def create_style_transfer(
     adapter_path: str,
     author_name: str,
     verify: bool = True,
     temperature: float = 0.7,
-) -> FastStyleTransfer:
-    """Convenience function to create a fast transfer pipeline.
+) -> StyleTransfer:
+    """Convenience function to create a style transfer pipeline.
 
     Args:
         adapter_path: Path to LoRA adapter.
@@ -699,14 +715,14 @@ def create_fast_transfer(
         temperature: Generation temperature.
 
     Returns:
-        Configured FastStyleTransfer instance.
+        Configured StyleTransfer instance.
     """
     config = TransferConfig(
         verify_entailment=verify,
         temperature=temperature,
     )
 
-    return FastStyleTransfer(
+    return StyleTransfer(
         adapter_path=adapter_path,
         author_name=author_name,
         config=config,

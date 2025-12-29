@@ -1,17 +1,3 @@
-Preface
-
-
-This text was compiled and released by CthulhuChick.com. This book is licensed for distribution under the Creative Commons Attribution-Noncommercial 3.0 Unported (CC BY-NC 3.0). This means that it can be shared and remixed freely, but not used commercially and requires attribution. Visit CthulhuChick.com/contact if you have any questions on the subject. CthulhuChick.com would like to thank HPLovecraft.com, DagonBytes.com, and branches of Project Gutenberg for the free resources they provide. Thanks for the cover image by Santiago Casares of santiagocasares.com.
-
-Howard Phillips Lovecraft (August 20, 1890 – March 15, 1937), a prolific and problematic writer, is often considered one of the greatest authors of early American horror, science-fiction, and "weird" fiction. His stories echo such great horror and fantasy authors as Poe, Dunsany, and Chambers. But Lovecraft also brought to his writing a "cosmic horror," which sprang out of his fantasies and nightmares.
-
-The Complete Works of H.P. Lovecraft contains all Lovecraft's solo writings as an adult, beginning in 1917 with "The Tomb" and ending in 1935 with "The Haunter of the Dark." His collaborative works and revisions are not included.
-
-The Tomb
-
-
-(1917)
-
 In relating the circumstances which have led to my confinement within this refuge for the demented, I am aware that my present position will create a natural doubt of the authenticity of my narrative. It is an unfortunate fact that the bulk of humanity is too limited in its mental vision to weigh with patience and intelligence those isolated phenomena, seen and felt only by a psychologically sensitive few, which lie outside its common experience. Men of broader intellect know that there is no sharp distinction betwixt the real and the unreal; that all things appear as they do only by virtue of the delicate individual physical and mental media through which we are made conscious of them; but the prosaic materialism of the majority condemns as madness the flashes of super-sight which penetrate the common veil of obvious empiricism.
 
 My name is Jervas Dudley, and from earliest childhood I have been a dreamer and a visionary. Wealthy beyond the necessity of a commercial life, and temperamentally unfitted for the formal studies and social recreations of my acquaintances, I have dwelt ever in realms apart from the visible world; spending my youth and adolescence in ancient and little-known books, and in roaming the fields and groves of the region near my ancestral home. I do not think that what I read in these books or saw in these fields and groves was exactly what other boys read and saw there; but of this I must say little, since detailed speech would but confirm those cruel slanders upon my intellect which I sometimes overhear from the whispers of the stealthy attendants around me. It is sufficient for me to relate events without analysing causes.
@@ -36,79 +22,7 @@ It was in the soft glow of late afternoon that I first entered the vault on the 
 
 In the grey light of dawn I staggered from the vault and locked the chain of the door behind me. I was no longer a young man, though but twenty-one winters had chilled my bodily frame. Early-rising villagers who observed my homeward progress looked at me strangely, and marvelled at the signs of ribald revelry which they saw in one whose life was known to be sober and solitary. I did not appear before my parents till after a long and refreshing sleep.
 
-Henceforward I haunted the tomb each night; seeing, hearing, and doing things I must never reveal. My speech, always susceptible to environmental influences, was the first thing to succumb to the change; and my suddenly acquired archaism of diction was soon remarked upon. Later a queer boldness and recklessness came into my demeanour, till I unconsciously grew to possess the bearing of a man of the world despite my lifelong seclusion. My formerly silent tongue waxed voluble with the easy grace of a Chesterfield or the godless cynicism of a Rochester. I displayed a peculiar erudition utterly unlike the fantastic, monkish lore over which I had pored in youth; and covered the flyleaves of my books with facile impromptu epigrams which brought up suggestions of Gay, Prior, and the sprightliest of the Augustan wits and rimesters. One morning at breakfast I came close to disaster by declaiming in palpably liquorish accents an effusion of eighteenth-century Bacchanalian mirth; a bit of Georgian playfulness never recorded in a book, which ran something like this:
-
-Come hither, my lads, with your tankards of ale,
-
-And drink to the present before it shall fail;
-
-Pile each on your platter a mountain of beef,
-
-For ’tis eating and drinking that bring us relief:
-
-
-
-So fill up your glass,
-
-For life will soon pass;
-
-When you’re dead ye’ll ne’er drink to your king or your lass!
-
-
-
-Anacreon had a red nose, so they say;
-
-But what’s a red nose if ye’re happy and gay?
-
-Gad split me! I’d rather be red whilst I’m here,
-
-
-
-Than white as a lily—and dead half a year!
-
-So Betty, my miss,
-
-Come give me a kiss;
-
-In hell there’s no innkeeper’s daughter like this!
-
-
-
-Young Harry, propp’d up just as straight as he’s able,
-
-Will soon lose his wig and slip under the table;
-
-But fill up your goblets and pass ’em around—
-
-Better under the table than under the ground!
-
-So revel and chaff
-
-As ye thirstily quaff:
-
-Under six feet of dirt ’tis less easy to laugh!
-
-
-
-The fiend strike me blue! I’m scarce able to walk,
-
-And damn me if I can stand upright or talk!
-
-
-
-Here, landlord, bid Betty to summon a chair;
-
-I’ll try home for a while, for my wife is not there!
-
-So lend me a hand;
-
-I’m not able to stand,
-
-But I’m gay whilst I linger on top of the land!
-
-
-
-
+Henceforward I haunted the tomb each night; seeing, hearing, and doing things I must never reveal. My speech, always susceptible to environmental influences, was the first thing to succumb to the change; and my suddenly acquired archaism of diction was soon remarked upon. Later a queer boldness and recklessness came into my demeanour, till I unconsciously grew to possess the bearing of a man of the world despite my lifelong seclusion. My formerly silent tongue waxed voluble with the easy grace of a Chesterfield or the godless cynicism of a Rochester. I displayed a peculiar erudition utterly unlike the fantastic, monkish lore over which I had pored in youth; and covered the flyleaves of my books with facile impromptu epigrams which brought up suggestions of Gay, Prior, and the sprightliest of the Augustan wits and rimesters. One morning at breakfast I came close to disaster by declaiming in palpably liquorish accents an effusion of eighteenth-century Bacchanalian mirth; a bit of Georgian playfulness never recorded in a book, which ran something like this.
 
 About this time I conceived my present fear of fire and thunderstorms. Previously indifferent to such things, I had now an unspeakable horror of them; and would retire to the innermost recesses of the house whenever the heavens threatened an electrical display. A favourite haunt of mine during the day was the ruined cellar of the mansion that had burned down, and in fancy I would picture the structure as it had been in its prime. On one occasion I startled a villager by leading him confidently to a shallow sub-cellar, of whose existence I seemed to know in spite of the fact that it had been unseen and forgotten for many generations.
 
@@ -123,17 +37,6 @@ As the phantom of the burning house faded, I found myself screaming and struggli
 On the following day I was brought to this room with the barred windows, but I have been kept informed of certain things through an aged and simple-minded servitor, for whom I bore a fondness in infancy, and who like me loves the churchyard. What I have dared relate of my experiences within the vault has brought me only pitying smiles. My father, who visits me frequently, declares that at no time did I pass the chained portal, and swears that the rusted padlock had not been touched for fifty years when he examined it. He even says that all the village knew of my journeys to the tomb, and that I was often watched as I slept in the bower outside the grim facade, my half-open eyes fixed on the crevice that leads to the interior. Against these assertions I have no tangible proof to offer, since my key to the padlock was lost in the struggle on that night of horrors. The strange things of the past which I learnt during those nocturnal meetings with the dead he dismisses as the fruits of my lifelong and omnivorous browsing amongst the ancient volumes of the family library. Had it not been for my old servant Hiram, I should have by this time become quite convinced of my madness.
 
 But Hiram, loyal to the last, has held faith in me, and has done that which impels me to make public at least a part of my story. A week ago he burst open the lock which chains the door of the tomb perpetually ajar, and descended with a lantern into the murky depths. On a slab in an alcove he found an old but empty coffin whose tarnished plate bears the single word “Jervas”. In that coffin and in that vault they have promised me I shall be buried.
-
-Return to Table of Contents
-
-
-
-
-
-Dagon
-
-
-(1917)
 
 I am writing this under an appreciable mental strain, since by tonight I shall be no more. Penniless, and at the end of my supply of the drug which alone makes life endurable, I can bear the torture no longer; and shall cast myself from this garret window into the squalid street below. Do not think from my slavery to morphine that I am a weakling or a degenerate. When you have read these hastily scrawled pages you may guess, though never fully realise, why it is that I must have forgetfulness or death.
 
@@ -173,17 +76,6 @@ It is at night, especially when the moon is gibbous and waning, that I see the t
 
 The end is near. I hear a noise at the door, as of some immense slippery body lumbering against it. It shall not find me. God, that hand! The window! The window!
 
-Return to Table of Contents
-
-
-
-
-
-Polaris
-
-
-(1918)
-
 Into the north window of my chamber glows the Pole Star with uncanny light. All through the long hellish hours of blackness it shines there. And in the autumn of the year, when the winds from the north curse and whine, and the red-leaved trees of the swamp mutter things to one another in the small hours of the morning under the horned waning moon, I sit by the casement and watch that star. Down from the heights reels the glittering Cassiopeia as the hours wear on, while Charles’ Wain lumbers up from behind the vapour-soaked swamp trees that sway in the night-wind. Just before dawn Arcturus winks ruddily from above the cemetery on the low hillock, and Coma Berenices shimmers weirdly afar off in the mysterious east; but still the Pole Star leers down from the same place in the black vault, winking hideously like an insane watching eye which strives to convey some strange message, yet recalls nothing save that it once had a message to convey. Sometimes, when it is cloudy, I can sleep.
 
 Well do I remember the night of the great Aurora, when over the swamp played the shocking coruscations of the daemon-light. After the beams came clouds, and then I slept.
@@ -202,46 +94,11 @@ Alone I mounted the tower, for every man of stout body was needed in the passes 
 
 But as I stood in the tower’s topmost chamber, I beheld the horned waning moon, red and sinister, quivering through the vapours that hovered over the distant valley of Banof. And through an opening in the roof glittered the pale Pole Star, fluttering as if alive, and leering like a fiend and tempter. Methought its spirit whispered evil counsel, soothing me to traitorous somnolence with a damnable rhythmical promise which it repeated over and over:
 
-“Slumber, watcher, till the spheres
-
-Six and twenty thousand years
-
-Have revolv’d, and I return
-
-To the spot where now I burn.
-
-Other stars anon shall rise
-
-To the axis of the skies;
-
-Stars that soothe and stars that bless
-
-With a sweet forgetfulness:
-
-Only when my round is o’er
-
-Shall the past disturb thy door.”
-
 Vainly did I struggle with my drowsiness, seeking to connect these strange words with some lore of the skies which I had learnt from the Pnakotic manuscripts. My head, heavy and reeling, drooped to my breast, and when next I looked up it was in a dream; with the Pole Star grinning at me through a window from over the horrible swaying trees of a dream-swamp. And I am still dreaming.
 
 In my shame and despair I sometimes scream frantically, begging the dream-creatures around me to waken me ere the Inutos steal up the pass behind the peak Noton and take the citadel by surprise; but these creatures are daemons, for they laugh at me and tell me I am not dreaming. They mock me whilst I sleep, and whilst the squat yellow foe may be creeping silently upon us. I have failed in my duty and betrayed the marble city of Olathoë; I have proven false to Alos, my friend and commander. But still these shadows of my dream deride me. They say there is no land of Lomar, save in my nocturnal imaginings; that in those realms where the Pole Star shines high and red Aldebaran crawls low around the horizon, there has been naught save ice and snow for thousands of years, and never a man save squat yellow creatures, blighted by the cold, whom they call “Esquimaux”.
 
 And as I writhe in my guilty agony, frantic to save the city whose peril every moment grows, and vainly striving to shake off this unnatural dream of a house of stone and brick south of a sinister swamp and a cemetery on a low hillock; the Pole Star, evil and monstrous, leers down from the black vault, winking hideously like an insane watching eye which strives to convey some strange message, yet recalls nothing save that it once had a message to convey.
-
-Return to Table of Contents
-
-
-
-
-
-Beyond the Wall of Sleep
-
-
-(1919)
-
-“I have an exposition of sleep come upon me.”
-
-—Shakespeare.
 
 I have frequently wondered if the majority of mankind ever pause to reflect upon the occasionally titanic significance of dreams, and of the obscure world to which they belong. Whilst the greater number of our nocturnal visions are perhaps no more than faint and fantastic reflections of our waking experiences—Freud to the contrary with his puerile symbolism—there are still a certain remainder whose immundane and ethereal character permits of no ordinary interpretation, and whose vaguely exciting and disquieting effect suggests possible minute glimpses into a sphere of mental existence no less important than physical life, yet separated from that life by an all but impassable barrier. From my experience I cannot doubt but that man, when lost to terrestrial consciousness, is indeed sojourning in another and uncorporeal life of far different nature from the life we know; and of which only the slightest and most indistinct memories linger after waking. From those blurred and fragmentary memories we may infer much, yet prove little. We may guess that in dreams life, matter, and vitality, as the earth knows such things, are not necessarily constant; and that time and space do not exist as our waking selves comprehend them. Sometimes I believe that this less material life is our truer life, and that our vain presence on the terraqueous globe is itself the secondary or merely virtual phenomenon.
 
@@ -267,8 +124,6 @@ And yet I could extract nothing definite from the man. The sum of all my investi
 
 It had long been my belief that human thought consists basically of atomic or molecular motion, convertible into ether waves of radiant energy like heat, light, and electricity. This belief had early led me to contemplate the possibility of telepathy or mental communication by means of suitable apparatus, and I had in my college days prepared a set of transmitting and receiving instruments somewhat similar to the cumbrous devices employed in wireless telegraphy at that crude, pre-radio period. These I had tested with a fellow-student; but achieving no result, had soon packed them away with other scientific odds and ends for possible future use. Now, in my intense desire to probe into the dream life of Joe Slater, I sought these instruments again; and spent several days in repairing them for action. When they were complete once more I missed no opportunity for their trial. At each outburst of Slater’s violence, I would fit the transmitter to his forehead and the receiver to my own; constantly making delicate adjustments for various hypothetical wave-lengths of intellectual energy. I had but little notion of how the thought-impressions would, if successfully conveyed, arouse an intelligent response in my brain; but I felt certain that I could detect and interpret them. Accordingly I continued my experiments, though informing no one of their nature.
 
-—
-
 It was on the twenty-first of February, 1901, that the thing finally occurred. As I look back across the years I realise how unreal it seems; and sometimes half wonder if old Dr. Fenton was not right when he charged it all to my excited imagination. I recall that he listened with great kindness and patience when I told him, but afterward gave me a nerve-powder and arranged for the half-year’s vacation on which I departed the next week. That fateful night I was wildly agitated and perturbed, for despite the excellent care he had received, Joe Slater was unmistakably dying. Perhaps it was his mountain freedom that he missed, or perhaps the turmoil in his brain had grown too acute for his rather sluggish physique; but at all events the flame of vitality flickered low in the decadent body. He was drowsy near the end, and as darkness fell he dropped off into a troubled sleep. I did not strap on the strait-jacket as was customary when he slept, since I saw that he was too feeble to be dangerous, even if he woke in mental disorder once more before passing away. But I did place upon his head and mine the two ends of my cosmic “radio”; hoping against hope for a first and last message from the dream-world in the brief time remaining. In the cell with us was one nurse, a mediocre fellow who did not understand the purpose of the apparatus, or think to inquire into my course. As the hours wore on I saw his head droop awkwardly in sleep, but I did not disturb him. I myself, lulled by the rhythmical breathing of the healthy and the dying man, must have nodded a little later.
 
 The sound of weird lyric melody was what aroused me. Chords, vibrations, and harmonic ecstasies echoed passionately on every hand; while on my ravished sight burst the stupendous spectacle of ultimate beauty. Walls, columns, and architraves of living fire blazed effulgently around the spot where I seemed to float in air; extending upward to an infinitely high vaulted dome of indescribable splendour. Blending with this display of palatial magnificence, or rather, supplanting it at times in kaleidoscopic rotation, were glimpses of wide plains and graceful valleys, high mountains and inviting grottoes; covered with every lovely attribute of scenery which my delighted eye could conceive of, yet formed wholly of some glowing, ethereal, plastic entity, which in consistency partook as much of spirit as of matter. As I gazed, I perceived that my own brain held the key to these enchanting metamorphoses; for each vista which appeared to me, was the one my changing mind most wished to behold. Amidst this elysian realm I dwelt not as a stranger, for each sight and sound was familiar to me; just as it had been for uncounted aeons of eternity before, and would be for like eternities to come.
@@ -287,17 +142,6 @@ The climax? What plain tale of science can boast of such a rhetorical effect? I 
 
 On February 22, 1901, a marvellous new star was discovered by Dr. Anderson, of Edinburgh, not very far from Algol. No star had been visible at that point before. Within twenty-four hours the stranger had become so bright that it outshone Capella. In a week or two it had visibly faded, and in the course of a few months it was hardly discernible with the naked eye.”
 
-Return to Table of Contents
-
-
-
-
-
-Memory
-
-
-(1919)
-
 In the valley of Nis the accursed waning moon shines thinly, tearing a path for its light with feeble horns through the lethal foliage of a great upas-tree. And within the depths of the valley, where the light reaches not, move forms not meet to be beheld. Rank is the herbage on each slope, where evil vines and creeping plants crawl amidst the stones of ruined palaces, twining tightly about broken columns and strange monoliths, and heaving up marble pavements laid by forgotten hands. And in trees that grow gigantic in crumbling courtyards leap little apes, while in and out of deep treasure-vaults writhe poison serpents and scaly things without a name.
 
 Vast are the stones which sleep beneath coverlets of dank moss, and mighty were the walls from which they fell. For all time did their builders erect them, and in sooth they yet serve nobly, for beneath them the grey toad makes his habitation.
@@ -307,17 +151,6 @@ At the very bottom of the valley lies the river Than, whose waters are slimy and
 The Genie that haunts the moonbeams spake to the Daemon of the Valley, saying, “I am old, and forget much. Tell me the deeds and aspect and name of them who built these things of stone.” And the Daemon replied, “I am Memory, and am wise in lore of the past, but I too am old. These beings were like the waters of the river Than, not to be understood. Their deeds I recall not, for they were but of the moment. Their aspect I recall dimly, for it was like to that of the little apes in the trees. Their name I recall clearly, for it rhymed with that of the river. These beings of yesterday were called Man.”
 
 So the Genie flew back to the thin horned moon, and the Daemon looked intently at a little ape in a tree that grew in a crumbling courtyard.
-
-Return to Table of Contents
-
-
-
-
-
-Old Bugs
-
-
-(1919)
 
 Sheehan’s Pool Room, which adorns one of the lesser alleys in the heart of Chicago’s stockyard district, is not a nice place. Its air, freighted with a thousand odours such as Coleridge may have found at Cologne, too seldom knows the purifying rays of the sun; but fights for space with the acrid fumes of unnumbered cheap cigars and cigarettes which dangle from the coarse lips of unnumbered human animals that haunt the place day and night. But the popularity of Sheehan’s remains unimpaired; and for this there is a reason—a reason obvious to anyone who will take the trouble to analyse the mixed stenches prevailing there. Over and above the fumes and sickening closeness rises an aroma once familiar throughout the land, but now happily banished to the back streets of life by the edict of a benevolent government—the aroma of strong, wicked whiskey—a precious kind of forbidden fruit indeed in this year of grace 1950.
 
@@ -375,19 +208,6 @@ Then the picture was passed to Trever, and a change came over the youth. After t
 
 But Alfred Trever did not speak the truth, as many guessed when he offered to take charge of the body and secure its interment in Appleton. Over the library mantel in his home hung the exact replica of that picture, and all his life he had known and loved its original.
 
-For the gentle and noble features were those of his own mother.
-
-Return to Table of Contents
-
-
-
-
-
-The Transition of Juan Romero
-
-
-(1919)
-
 Of the events which took place at the Norton Mine on October 18th and 19th, 1894, I have no desire to speak. A sense of duty to science is all that impels me to recall, in these last years of my life, scenes and happenings fraught with a terror doubly acute because I cannot wholly define it. But I believe that before I die I should tell what I know of the—shall I say transition—of Juan Romero.
 
 My name and origin need not be related to posterity; in fact, I fancy it is better that they should not be, for when a man suddenly migrates to the States or the Colonies, he leaves his past behind him. Besides, what I once was is not in the least relevant to my narrative; save perhaps the fact that during my service in India I was more at home amongst white-bearded native teachers than amongst my brother-officers. I had delved not a little into odd Eastern lore when overtaken by the calamities which brought about my new life in America’s vast West—a life wherein I found it well to accept a name—my present one—which is very common and carries no meaning.
@@ -404,19 +224,7 @@ Shortly afterward the pale-faced workmen apprised the Superintendent of their fa
 
 At two in the morning a lone coyote on the mountain began to howl dismally. From somewhere within the works a dog barked in answer; either to the coyote—or to something else. A storm was gathering around the peaks of the range, and weirdly shaped clouds scudded horribly across the blurred patch of celestial light which marked a gibbous moon’s attempts to shine through many layers of cirro-stratus vapours. It was Romero’s voice, coming from the bunk above, that awakened me; a voice excited and tense with some vague expectation I could not understand:
 
-“¡Madre de Dios!—el sonido—ese sonido—¡oiga Vd! ¿lo oye Vd?—Señor, THAT SOUND!”
-
-I listened, wondering what sound he meant. The coyote, the dog, the storm, all were audible; the last named now gaining ascendancy as the wind shrieked more and more frantically. Flashes of lightning were visible through the bunk-house window. I questioned the nervous Mexican, repeating the sounds I had heard:
-
-“¿El coyote?—¿el perro?—¿el viento?”
-
-But Romero did not reply. Then he commenced whispering as in awe:
-
-“El ritmo, Señor—el ritmo de la tierra—THAT THROB DOWN IN THE GROUND!”
-
 And now I also heard; heard and shivered and without knowing why. Deep, deep, below me was a sound—a rhythm, just as the peon had said—which, though exceedingly faint, yet dominated even the dog, the coyote, and the increasing tempest. To seek to describe it were useless—for it was such that no description is possible. Perhaps it was like the pulsing of the engines far down in a great liner, as sensed from the deck, yet it was not so mechanical; not so devoid of the element of life and consciousness. Of all its qualities, remoteness in the earth most impressed me. To my mind rushed fragments of a passage in Joseph Glanvill which Poe has quoted with tremendous effect—
-
-“—the vastness, profundity, and unsearchableness of His works, which have a depth in them greater than the well of Democritus.”
 
 Suddenly Romero leaped from his bunk; pausing before me to gaze at the strange ring on my hand, which glistened queerly in every flash of lightning, and then staring intently in the direction of the mine shaft. I also rose, and both stood motionless for a time, straining our ears as the uncanny rhythm seemed more and more to take on a vital quality. Then without apparent volition we began to move toward the door, whose rattling in the gale held a comforting suggestion of earthly reality. The chanting in the depths—for such the sound now seemed to be—grew in volume and distinctness; and we felt irresistibly urged out into the storm and thence to the gaping blackness of the shaft.
 
@@ -435,17 +243,6 @@ Upon the resumption of work Superintendent Arthur called on some especially depe
 One other thing is curious. Shortly after waking on that morning after the storm, I noticed the unaccountable absence of my Hindoo ring from my finger. I had prized it greatly, yet nevertheless felt a sensation of relief at its disappearance. If one of my fellow-miners appropriated it, he must have been quite clever in disposing of his booty, for despite advertisements and a police search the ring was never seen again. Somehow I doubt if it was stolen by mortal hands, for many strange things were taught me in India.
 
 My opinion of my whole experience varies from time to time. In broad daylight, and at most seasons I am apt to think the greater part of it a mere dream; but sometimes in the autumn, about two in the morning when winds and animals howl dismally, there comes from inconceivable depths below a damnable suggestion of rhythmical throbbing . . . and I feel that the transition of Juan Romero was a terrible one indeed.
-
-Return to Table of Contents
-
-
-
-
-
-The White Ship
-
-
-(1919)
 
 I am Basil Elton, keeper of the North Point light that my father and grandfather kept before me. Far from the shore stands the grey lighthouse, above sunken slimy rocks that are seen when the tide is low, but unseen when the tide is high. Past that beacon for a century have swept the majestic barques of the seven seas. In the days of my grandfather there were many; in the days of my father not so many; and now there are so few that I sometimes feel strangely alone, as though I were the last man on our planet.
 
@@ -483,17 +280,6 @@ And in the later watches of the night, when I went within the tower, I saw on th
 
 And thereafter the ocean told me its secrets no more; and though many times since has the moon shone full and high in the heavens, the White Ship from the South came never again.
 
-Return to Table of Contents
-
-
-
-
-
-The Doom That Came to Sarnath
-
-
-(1919)
-
 There is in the land of Mnar a vast still lake that is fed by no stream and out of which no stream flows. Ten thousand years ago there stood by its shore the mighty city of Sarnath, but Sarnath stands there no more.
 
 It is told that in the immemorial years when the world was young, before ever the men of Sarnath came to the land of Mnar, another city stood beside the lake; the grey stone city of Ib, which was old as the lake itself, and peopled with beings not pleasing to behold. Very odd and ugly were these beings, as indeed are most beings of a world yet inchoate and rudely fashioned. It is written on the brick cylinders of Kadatheron that the beings of Ib were in hue as green as the lake and the mists that rise above it; that they had bulging eyes, pouting, flabby lips, and curious ears, and were without voice. It is also written that they descended one night from the moon in a mist; they and the vast still lake and grey stone city Ib. However this may be, it is certain that they worshipped a sea-green stone idol chiselled in the likeness of Bokrug, the great water-lizard; before which they danced horribly when the moon was gibbous. And it is written in the papyrus of Ilarnek, that they one day discovered fire, and thereafter kindled flames on many ceremonial occasions. But not much is written of these beings, because they lived in very ancient times, and man is young, and knows little of the very ancient living things.
@@ -527,17 +313,6 @@ Then, close to the hour of midnight, all the bronze gates of Sarnath burst open 
 Through all the land of Mnar and the lands adjacent spread the tales of those who had fled from Sarnath, and caravans sought that accursed city and its precious metals no more. It was long ere any traveller went thither, and even then only the brave and adventurous young men of distant Falona dared make the journey; adventurous young men of yellow hair and blue eyes, who are no kin to the men of Mnar. These men indeed went to the lake to view Sarnath; but though they found the vast still lake itself, and the grey rock Akurion which rears high above it near the shore, they beheld not the wonder of the world and pride of all mankind. Where once had risen walls of 300 cubits and towers yet higher, now stretched only the marshy shore, and where once had dwelt fifty millions of men now crawled only the detestable green water-lizard. Not even the mines of precious metal remained, for DOOM had come to Sarnath.
 
 But half buried in the rushes was spied a curious green idol of stone; an exceedingly ancient idol coated with seaweed and chiselled in the likeness of Bokrug, the great water-lizard. That idol, enshrined in the high temple at Ilarnek, was subsequently worshipped beneath the gibbous moon throughout the land of Mnar.
-
-Return to Table of Contents
-
-
-
-
-
-The Statement of Randolph Carter
-
-
-(1920)
 
 I repeat to you, gentlemen, that your inquisition is fruitless. Detain me here forever if you will; confine or execute me if you must have a victim to propitiate the illusion you call justice; but I can say no more than I have said already. Everything that I can remember, I have told with perfect candour. Nothing has been distorted or concealed, and if anything remains vague, it is only because of the dark cloud which has come over my mind—that cloud and the nebulous nature of the horrors which brought it upon me.
 
@@ -591,19 +366,6 @@ After that was silence. I know not how many interminable aeons I sat stupefied; 
 
 And then there came to me the crowning horror of all—the unbelievable, unthinkable, almost unmentionable thing. I have said that aeons seemed to elapse after Warren shrieked forth his last despairing warning, and that only my own cries now broke the hideous silence. But after a while there was a further clicking in the receiver, and I strained my ears to listen. Again I called down, “Warren, are you there?”, and in answer heard the thing which has brought this cloud over my mind. I do not try, gentlemen, to account for that thing—that voice—nor can I venture to describe it in detail, since the first words took away my consciousness and created a mental blank which reaches to the time of my awakening in the hospital. Shall I say that the voice was deep; hollow; gelatinous; remote; unearthly; inhuman; disembodied? What shall I say? It was the end of my experience, and is the end of my story. I heard it, and knew no more. Heard it as I sat petrified in that unknown cemetery in the hollow, amidst the crumbling stones and the falling tombs, the rank vegetation and the miasmal vapours. Heard it well up from the innermost depths of that damnable open sepulchre as I watched amorphous, necrophagous shadows dance beneath an accursed waning moon. And this is what it said:
 
-“YOU FOOL, WARREN IS DEAD!”
-
-Return to Table of Contents
-
-
-
-
-
-The Terrible Old Man
-
-
-(1920)
-
 It was the design of Angelo Ricci and Joe Czanek and Manuel Silva to call on the Terrible Old Man. This old man dwells all alone in a very ancient house on Water Street near the sea, and is reputed to be both exceedingly rich and exceedingly feeble; which forms a situation very attractive to men of the profession of Messrs. Ricci, Czanek, and Silva, for that profession was nothing less dignified than robbery.
 
 The inhabitants of Kingsport say and think many things about the Terrible Old Man which generally keep him safe from the attention of gentlemen like Mr. Ricci and his colleagues, despite the almost certain fact that he hides a fortune of indefinite magnitude somewhere about his musty and venerable abode. He is, in truth, a very strange person, believed to have been a captain of East India clipper ships in his day; so old that no one can remember when he was young, and so taciturn that few know his real name. Among the gnarled trees in the front yard of his aged and neglected place he maintains a strange collection of large stones, oddly grouped and painted so that they resemble the idols in some obscure Eastern temple. This collection frightens away most of the small boys who love to taunt the Terrible Old Man about his long white hair and beard, or to break the small-paned windows of his dwelling with wicked missiles; but there are other things which frighten the older and more curious folk who sometimes steal up to the house to peer in through the dusty panes. These folk say that on a table in a bare room on the ground floor are many peculiar bottles, in each a small piece of lead suspended pendulum-wise from a string. And they say that the Terrible Old Man talks to these bottles, addressing them by such names as Jack, Scar-Face, Long Tom, Spanish Joe, Peters, and Mate Ellis, and that whenever he speaks to a bottle the little lead pendulum within makes certain definite vibrations as if in answer. Those who have watched the tall, lean, Terrible Old Man in these peculiar conversations, do not watch him again. But Angelo Ricci and Joe Czanek and Manuel Silva were not of Kingsport blood; they were of that new and heterogeneous alien stock which lies outside the charmed circle of New England life and traditions, and they saw in the Terrible Old Man merely a tottering, almost helpless greybeard, who could not walk without the aid of his knotted cane, and whose thin, weak hands shook pitifully. They were really quite sorry in their way for the lonely, unpopular old fellow, whom everybody shunned, and at whom all the dogs barked singularly. But business is business, and to a robber whose soul is in his profession, there is a lure and a challenge about a very old and very feeble man who has no account at the bank, and who pays for his few necessities at the village store with Spanish gold and silver minted two centuries ago.
@@ -615,19 +377,6 @@ As prearranged, the three adventurers started out separately in order to prevent
 Waiting seemed very long to Mr. Czanek as he fidgeted restlessly in the covered motor-car by the Terrible Old Man’s back gate in Ship Street. He was more than ordinarily tender-hearted, and he did not like the hideous screams he had heard in the ancient house just after the hour appointed for the deed. Had he not told his colleagues to be as gentle as possible with the pathetic old sea-captain? Very nervously he watched that narrow oaken gate in the high and ivy-clad stone wall. Frequently he consulted his watch, and wondered at the delay. Had the old man died before revealing where his treasure was hidden, and had a thorough search become necessary? Mr. Czanek did not like to wait so long in the dark in such a place. Then he sensed a soft tread or tapping on the walk inside the gate, heard a gentle fumbling at the rusty latch, and saw the narrow, heavy door swing inward. And in the pallid glow of the single dim street-lamp he strained his eyes to see what his colleagues had brought out of that sinister house which loomed so close behind. But when he looked, he did not see what he had expected; for his colleagues were not there at all, but only the Terrible Old Man leaning quietly on his knotted cane and smiling hideously. Mr. Czanek had never before noticed the colour of that man’s eyes; now he saw that they were yellow.
 
 Little things make considerable excitement in little towns, which is the reason that Kingsport people talked all that spring and summer about the three unidentifiable bodies, horribly slashed as with many cutlasses, and horribly mangled as by the tread of many cruel boot-heels, which the tide washed in. And some people even spoke of things as trivial as the deserted motor-car found in Ship Street, or certain especially inhuman cries, probably of a stray animal or migratory bird, heard in the night by wakeful citizens. But in this idle village gossip the Terrible Old Man took no interest at all. He was by nature reserved, and when one is aged and feeble one’s reserve is doubly strong. Besides, so ancient a sea-captain must have witnessed scores of things much more stirring in the far-off days of his unremembered youth.
-
-Return to Table of Contents
-
-
-
-
-
-The Tree
-
-
-(1920)
-
-“Fata viam invenient.”
 
 On a verdant slope of Mount Maenalus, in Arcadia, there stands an olive grove about the ruins of a villa. Close by is a tomb, once beautiful with the sublimest sculptures, but now fallen into as great decay as the house. At one end of that tomb, its curious roots displacing the time-stained blocks of Pentelic marble, grows an unnaturally large olive tree of oddly repellent shape; so like to some grotesque man, or death-distorted body of a man, that the country folk fear to pass it at night when the moon shines faintly through the crooked boughs. Mount Maenalus is a chosen haunt of dreaded Pan, whose queer companions are many, and simple swains believe that the tree must have some hideous kinship to these weird Panisci; but an old bee-keeper who lives in the neighbouring cottage told me a different story.
 
@@ -657,17 +406,6 @@ In the sunshine of the morning the proxenoi led the Tyrant’s messengers up the
 
 But the olive grove still stands, as does the tree growing out of the tomb of Kalos, and the old bee-keeper told me that sometimes the boughs whisper to one another in the night-wind, saying over and over again, “Oida! Oida!—I know! I know!”
 
-Return to Table of Contents
-
-
-
-
-
-The Cats of Ulthar
-
-
-(1920)
-
 It is said that in Ulthar, which lies beyond the river Skai, no man may kill a cat; and this I can verily believe as I gaze upon him who sitteth purring before the fire. For the cat is cryptic, and close to strange things which men cannot see. He is the soul of antique Aegyptus, and bearer of tales from forgotten cities in Meroë and Ophir. He is the kin of the jungle’s lords, and heir to the secrets of hoary and sinister Africa. The Sphinx is his cousin, and he speaks her language; but he is more ancient than the Sphinx, and remembers that which she hath forgotten.
 
 In Ulthar, before ever the burgesses forbade the killing of cats, there dwelt an old cotter and his wife who delighted to trap and slay the cats of their neighbours. Why they did this I know not; save that many hate the voice of the cat in the night, and take it ill that cats should run stealthily about yards and gardens at twilight. But whatever the reason, this old man and woman took pleasure in trapping and slaying every cat which came near to their hovel; and from some of the sounds heard after dark, many villagers fancied that the manner of slaying was exceedingly peculiar. But the villagers did not discuss such things with the old man and his wife; because of the habitual expression on the withered faces of the two, and because their cottage was so small and so darkly hidden under spreading oaks at the back of a neglected yard. In truth, much as the owners of cats hated these odd folk, they feared them more; and instead of berating them as brutal assassins, merely took care that no cherished pet or mouser should stray toward the remote hovel under the dark trees. When through some unavoidable oversight a cat was missed, and sounds heard after dark, the loser would lament impotently; or console himself by thanking Fate that it was not one of his children who had thus vanished. For the people of Ulthar were simple, and knew not whence it is all cats first came.
@@ -687,19 +425,6 @@ It was fully a week before the villagers noticed that no lights were appearing a
 There was subsequently much talk among the burgesses of Ulthar. Zath, the coroner, disputed at length with Nith, the lean notary; and Kranon and Shang and Thul were overwhelmed with questions. Even little Atal, the innkeeper’s son, was closely questioned and given a sweetmeat as reward. They talked of the old cotter and his wife, of the caravan of dark wanderers, of small Menes and his black kitten, of the prayer of Menes and of the sky during that prayer, of the doings of the cats on the night the caravan left, and of what was later found in the cottage under the dark trees in the repellent yard.
 
 And in the end the burgesses passed that remarkable law which is told of by traders in Hatheg and discussed by travellers in Nir; namely, that in Ulthar no man may kill a cat.
-
-Return to Table of Contents
-
-
-
-
-
-The Temple
-
-
-(1920)
-
-(Manuscript found on the coast of Yucatan.)
 
 On August 20, 1917, I, Karl Heinrich, Graf von Altberg-Ehrenstein, Lieutenant-Commander in the Imperial German Navy and in charge of the submarine U-29, deposit this bottle and record in the Atlantic Ocean at a point to me unknown but probably about N. Latitude 20°, W. Longitude 35°, where my ship lies disabled on the ocean floor. I do so because of my desire to set certain unusual facts before the public; a thing I shall not in all probability survive to accomplish in person, since the circumstances surrounding me are as menacing as they are extraordinary, and involve not only the hopeless crippling of the U-29, but the impairment of my iron German will in a manner most disastrous.
 
@@ -773,17 +498,6 @@ The rest is very simple. My impulse to visit and enter the temple has now become
 
 I have no fear, not even from the prophecies of the madman Klenze. What I have seen cannot be true, and I know that this madness of my own will at most lead only to suffocation when my air is gone. The light in the temple is a sheer delusion, and I shall die calmly, like a German, in the black and forgotten depths. This daemoniac laughter which I hear as I write comes only from my own weakening brain. So I will carefully don my diving suit and walk boldly up the steps into that primal shrine; that silent secret of unfathomed waters and uncounted years.
 
-Return to Table of Contents
-
-
-
-
-
-Facts Concerning the Late Arthur Jermyn and His Family
-
-
-(1920)
-
 Life is a hideous thing, and from the background behind what we know of it peer daemoniacal hints of truth which make it sometimes a thousandfold more hideous. Science, already oppressive with its shocking revelations, will perhaps be the ultimate exterminator of our human species—if separate species we be—for its reserve of unguessed horrors could never be borne by mortal brains if loosed upon the world. If we knew what we are, we should do as Sir Arthur Jermyn did; and Arthur Jermyn soaked himself in oil and set fire to his clothing one night. No one placed the charred fragments in an urn or set a memorial to him who had been; for certain papers and a certain boxed object were found, which made men wish to forget. Some who knew him do not admit that he ever existed.
 
 Arthur Jermyn went out on the moor and burned himself after seeing the boxed object which had come from Africa. It was this object, and not his peculiar personal appearance, which made him end his life. Many would have disliked to live if possessed of the peculiar features of Arthur Jermyn, but he had been a poet and scholar and had not minded. Learning was in his blood, for his great-grandfather, Sir Robert Jermyn, Bt., had been an anthropologist of note, whilst his great-great-great-grandfather, Sir Wade Jermyn, was one of the earliest explorers of the Congo region, and had written eruditely of its tribes, animals, and supposed antiquities. Indeed, old Sir Wade had possessed an intellectual zeal amounting almost to a mania; his bizarre conjectures on a prehistoric white Congolese civilisation earning him much ridicule when his book, Observations on the Several Parts of Africa, was published. In 1765 this fearless explorer had been placed in a madhouse at Huntingdon.
@@ -799,8 +513,6 @@ In the son of Sir Philip Jermyn the now accepted family peculiarity took a stran
 Friends said that it was this series of griefs which unhinged the mind of Sir Robert Jermyn, yet it was probably merely a bit of African folklore which caused the disaster. The elderly scholar had been collecting legends of the Onga tribes near the field of his grandfather’s and his own explorations, hoping in some way to account for Sir Wade’s wild tales of a lost city peopled by strange hybrid creatures. A certain consistency in the strange papers of his ancestor suggested that the madman’s imagination might have been stimulated by native myths. On October 19, 1852, the explorer Samuel Seaton called at Jermyn House with a manuscript of notes collected among the Ongas, believing that certain legends of a grey city of white apes ruled by a white god might prove valuable to the ethnologist. In his conversation he probably supplied many additional details; the nature of which will never be known, since a hideous series of tragedies suddenly burst into being. When Sir Robert Jermyn emerged from his library he left behind the strangled corpse of the explorer, and before he could be restrained, had put an end to all three of his children; the two who were never seen, and the son who had run away. Nevil Jermyn died in the successful defence of his own two-year-old son, who had apparently been included in the old man’s madly murderous scheme. Sir Robert himself, after repeated attempts at suicide and a stubborn refusal to utter any articulate sound, died of apoplexy in the second year of his confinement.
 
 Sir Alfred Jermyn was a baronet before his fourth birthday, but his tastes never matched his title. At twenty he had joined a band of music-hall performers, and at thirty-six had deserted his wife and child to travel with an itinerant American circus. His end was very revolting. Among the animals in the exhibition with which he travelled was a huge bull gorilla of lighter colour than the average; a surprisingly tractable beast of much popularity with the performers. With this gorilla Alfred Jermyn was singularly fascinated, and on many occasions the two would eye each other for long periods through the intervening bars. Eventually Jermyn asked and obtained permission to train the animal, astonishing audiences and fellow-performers alike with his success. One morning in Chicago, as the gorilla and Alfred Jermyn were rehearsing an exceedingly clever boxing match, the former delivered a blow of more than usual force, hurting both the body and dignity of the amateur trainer. Of what followed, members of “The Greatest Show on Earth” do not like to speak. They did not expect to hear Sir Alfred Jermyn emit a shrill, inhuman scream, or to see him seize his clumsy antagonist with both hands, dash it to the floor of the cage, and bite fiendishly at its hairy throat. The gorilla was off its guard, but not for long, and before anything could be done by the regular trainer the body which had belonged to a baronet was past recognition.
-
-II.
 
 Arthur Jermyn was the son of Sir Alfred Jermyn and a music-hall singer of unknown origin. When the husband and father deserted his family, the mother took the child to Jermyn House; where there was none left to object to her presence. She was not without notions of what a nobleman’s dignity should be, and saw to it that her son received the best education which limited money could provide. The family resources were now sadly slender, and Jermyn House had fallen into woeful disrepair, but young Arthur loved the old edifice and all its contents. He was not like any other Jermyn who had ever lived, for he was a poet and a dreamer. Some of the neighbouring families who had heard tales of old Sir Wade Jermyn’s unseen Portuguese wife declared that her Latin blood must be shewing itself; but most persons merely sneered at his sensitiveness to beauty, attributing it to his music-hall mother, who was socially unrecognised. The poetic delicacy of Arthur Jermyn was the more remarkable because of his uncouth personal appearance. Most of the Jermyns had possessed a subtly odd and repellent cast, but Arthur’s case was very striking. It is hard to say just what he resembled, but his expression, his facial angle, and the length of his arms gave a thrill of repulsion to those who met him for the first time.
 
@@ -821,17 +533,6 @@ In June, 1913, a letter arrived from M. Verhaeren, telling of the finding of the
 The boxed object was delivered at Jermyn House on the afternoon of August 3, 1913, being conveyed immediately to the large chamber which housed the collection of African specimens as arranged by Sir Robert and Arthur. What ensued can best be gathered from the tales of servants and from things and papers later examined. Of the various tales that of aged Soames, the family butler, is most ample and coherent. According to this trustworthy man, Sir Arthur Jermyn dismissed everyone from the room before opening the box, though the instant sound of hammer and chisel shewed that he did not delay the operation. Nothing was heard for some time; just how long Soames cannot exactly estimate; but it was certainly less than a quarter of an hour later that the horrible scream, undoubtedly in Jermyn’s voice, was heard. Immediately afterward Jermyn emerged from the room, rushing frantically toward the front of the house as if pursued by some hideous enemy. The expression on his face, a face ghastly enough in repose, was beyond description. When near the front door he seemed to think of something, and turned back in his flight, finally disappearing down the stairs to the cellar. The servants were utterly dumbfounded, and watched at the head of the stairs, but their master did not return. A smell of oil was all that came up from the regions below. After dark a rattling was heard at the door leading from the cellar into the courtyard; and a stable-boy saw Arthur Jermyn, glistening from head to foot with oil and redolent of that fluid, steal furtively out and vanish on the black moor surrounding the house. Then, in an exaltation of supreme horror, everyone saw the end. A spark appeared on the moor, a flame arose, and a pillar of human fire reached to the heavens. The house of Jermyn no longer existed.
 
 The reason why Arthur Jermyn’s charred fragments were not collected and buried lies in what was found afterward, principally the thing in the box. The stuffed goddess was a nauseous sight, withered and eaten away, but it was clearly a mummified white ape of some unknown species, less hairy than any recorded variety, and infinitely nearer mankind—quite shockingly so. Detailed description would be rather unpleasant, but two salient particulars must be told, for they fit in revoltingly with certain notes of Sir Wade Jermyn’s African expeditions and with the Congolese legends of the white god and the ape-princess. The two particulars in question are these: the arms on the golden locket about the creature’s neck were the Jermyn arms, and the jocose suggestion of M. Verhaeren about a certain resemblance as connected with the shrivelled face applied with vivid, ghastly, and unnatural horror to none other than the sensitive Arthur Jermyn, great-great-great-grandson of Sir Wade Jermyn and an unknown wife. Members of the Royal Anthropological Institute burned the thing and threw the locket into a well, and some of them do not admit that Arthur Jermyn ever existed.
-
-Return to Table of Contents
-
-
-
-
-
-The Street
-
-
-(1920)
 
 There be those who say that things and places have souls, and there be those who say they have not; I dare not say, myself, but I will tell of The Street.
 
@@ -869,17 +570,6 @@ A poet and a traveller, who came with the mighty crowd that sought the scene, te
 
 There be those who say that things and places have souls, and there be those who say they have not; I dare not say, myself, but I have told you of The Street.
 
-Return to Table of Contents
-
-
-
-
-
-Celephaïs
-
-
-(1920)
-
 In a dream Kuranes saw the city in the valley, and the sea-coast beyond, and the snowy peak overlooking the sea, and the gaily painted galleys that sail out of the harbour toward the distant regions where the sea meets the sky. In a dream it was also that he came by his name of Kuranes, for when awake he was called by another name. Perhaps it was natural for him to dream a new name; for he was the last of his family, and alone among the indifferent millions of London, so there were not many to speak to him and remind him who he had been. His money and lands were gone, and he did not care for the ways of people about him, but preferred to dream and write of his dreams. What he wrote was laughed at by those to whom he shewed it, so that after a time he kept his writings to himself, and finally ceased to write. The more he withdrew from the world about him, the more wonderful became his dreams; and it would have been quite futile to try to describe them on paper. Kuranes was not modern, and did not think like others who wrote. Whilst they strove to strip from life its embroidered robes of myth, and to shew in naked ugliness the foul thing that is reality, Kuranes sought for beauty alone. When truth and experience failed to reveal it, he sought it in fancy and illusion, and found it on his very doorstep, amid the nebulous memories of childhood tales and dreams.
 
 There are not many persons who know what wonders are opened to them in the stories and visions of their youth; for when as children we listen and dream, we think but half-formed thoughts, and when as men we try to remember, we are dulled and prosaic with the poison of life. But some of us awake in the night with strange phantasms of enchanted hills and gardens, of fountains that sing in the sun, of golden cliffs overhanging murmuring seas, of plains that stretch down to sleeping cities of bronze and stone, and of shadowy companies of heroes that ride caparisoned white horses along the edges of thick forests; and then we know that we have looked back through the ivory gates into that world of wonder which was ours before we were wise and unhappy.
@@ -901,17 +591,6 @@ So Kuranes sought fruitlessly for the marvellous city of Celephaïs and its gall
 Handsome knights they were, astride roan horses and clad in shining armour with tabards of cloth-of-gold curiously emblazoned. So numerous were they, that Kuranes almost mistook them for an army, but their leader told him they were sent in his honour; since it was he who had created Ooth-Nargai in his dreams, on which account he was now to be appointed its chief god for evermore. Then they gave Kuranes a horse and placed him at the head of the cavalcade, and all rode majestically through the downs of Surrey and onward toward the region where Kuranes and his ancestors were born. It was very strange, but as the riders went on they seemed to gallop back through Time; for whenever they passed through a village in the twilight they saw only such houses and villages as Chaucer or men before him might have seen, and sometimes they saw knights on horseback with small companies of retainers. When it grew dark they travelled more swiftly, till soon they were flying uncannily as if in the air. In the dim dawn they came upon the village which Kuranes had seen alive in his childhood, and asleep or dead in his dreams. It was alive now, and early villagers courtesied as the horsemen clattered down the street and turned off into the lane that ends in the abyss of dream. Kuranes had previously entered that abyss only at night, and wondered what it would look like by day; so he watched anxiously as the column approached its brink. Just as they galloped up the rising ground to the precipice a golden glare came somewhere out of the east and hid all the landscape in its effulgent draperies. The abyss was now a seething chaos of roseate and cerulean splendour, and invisible voices sang exultantly as the knightly entourage plunged over the edge and floated gracefully down past glittering clouds and silvery coruscations. Endlessly down the horsemen floated, their chargers pawing the aether as if galloping over golden sands; and then the luminous vapours spread apart to reveal a greater brightness, the brightness of the city Celephaïs, and the sea-coast beyond, and the snowy peak overlooking the sea, and the gaily painted galleys that sail out of the harbour toward distant regions where the sea meets the sky.
 
 And Kuranes reigned thereafter over Ooth-Nargai and all the neighbouring regions of dream, and held his court alternately in Celephaïs and in the cloud-fashioned Serannian. He reigns there still, and will reign happily forever, though below the cliffs at Innsmouth the channel tides played mockingly with the body of a tramp who had stumbled through the half-deserted village at dawn; played mockingly, and cast it upon the rocks by ivy-covered Trevor Towers, where a notably fat and especially offensive millionaire brewer enjoys the purchased atmosphere of extinct nobility.
-
-Return to Table of Contents
-
-
-
-
-
-From Beyond
-
-
-(1920)
 
 Horrible beyond conception was the change which had taken place in my best friend, Crawford Tillinghast. I had not seen him since that day, two months and a half before, when he had told me toward what goal his physical and metaphysical researches were leading; when he had answered my awed and almost frightened remonstrances by driving me from his laboratory and his house in a burst of fanatical rage. I had known that he now remained mostly shut in the attic laboratory with that accursed electrical machine, eating little and excluding even the servants, but I had not thought that a brief period of ten weeks could so alter and disfigure any human creature. It is not pleasant to see a stout man suddenly grown thin, and it is even worse when the baggy skin becomes yellowed or greyed, the eyes sunken, circled, and uncannily glowing, the forehead veined and corrugated, and the hands tremulous and twitching. And if added to this there be a repellent unkemptness; a wild disorder of dress, a bushiness of dark hair white at the roots, and an unchecked growth of pure white beard on a face once clean-shaven, the cumulative effect is quite shocking. But such was the aspect of Crawford Tillinghast on the night his half-coherent message brought me to his door after my weeks of exile; such the spectre that trembled as it admitted me, candle in hand, and glanced furtively over its shoulder as if fearful of unseen things in the ancient, lonely house set back from Benevolent Street.
 
@@ -947,19 +626,6 @@ What remains to be told is very brief, and may be familiar to you from the newsp
 
 I wish I could believe that doctor. It would help my shaky nerves if I could dismiss what I now have to think of the air and the sky about and above me. I never feel alone or comfortable, and a hideous sense of pursuit sometimes comes chillingly on me when I am weary. What prevents me from believing the doctor is this one simple fact—that the police never found the bodies of those servants whom they say Crawford Tillinghast murdered.
 
-Return to Table of Contents
-
-
-
-
-
-Nyarlathotep
-
-
-(1920)
-
-Nyarlathotep . . . the crawling chaos . . . I am the last . . . I will tell the audient void. . . .
-
 I do not recall distinctly when it began, but it was months ago. The general tension was horrible. To a season of political and social upheaval was added a strange and brooding apprehension of hideous physical danger; a danger widespread and all-embracing, such a danger as may be imagined only in the most terrible phantasms of the night. I recall that the people went about with pale and worried faces, and whispered warnings and prophecies which no one dared consciously repeat or acknowledge to himself that he had heard. A sense of monstrous guilt was upon the land, and out of the abysses between the stars swept chill currents that made men shiver in dark and lonely places. There was a daemoniac alteration in the sequence of the seasons—the autumn heat lingered fearsomely, and everyone felt that the world and perhaps the universe had passed from the control of known gods or forces to that of gods or forces which were unknown.
 
 And it was then that Nyarlathotep came out of Egypt. Who he was, none could tell, but he was of the old native blood and looked like a Pharaoh. The fellahin knelt when they saw him, yet could not say why. He said he had risen up out of the blackness of twenty-seven centuries, and that he had heard messages from places not on this planet. Into the lands of civilisation came Nyarlathotep, swarthy, slender, and sinister, always buying strange instruments of glass and metal and combining them into instruments yet stranger. He spoke much of the sciences—of electricity and psychology—and gave exhibitions of power which sent his spectators away speechless, yet which swelled his fame to exceeding magnitude. Men advised one another to see Nyarlathotep, and shuddered. And where Nyarlathotep went, rest vanished; for the small hours were rent with the screams of nightmare. Never before had the screams of nightmare been such a public problem; now the wise men almost wished they could forbid sleep in the small hours, that the shrieks of cities might less horribly disturb the pale, pitying moon as it glimmered on green waters gliding under bridges, and old steeples crumbling against a sickly sky.
@@ -971,17 +637,6 @@ It was in the hot autumn that I went through the night with the restless crowds 
 I believe we felt something coming down from the greenish moon, for when we began to depend on its light we drifted into curious involuntary formations and seemed to know our destinations though we dared not think of them. Once we looked at the pavement and found the blocks loose and displaced by grass, with scarce a line of rusted metal to shew where the tramways had run. And again we saw a tram-car, lone, windowless, dilapidated, and almost on its side. When we gazed around the horizon, we could not find the third tower by the river, and noticed that the silhouette of the second tower was ragged at the top. Then we split up into narrow columns, each of which seemed drawn in a different direction. One disappeared in a narrow alley to the left, leaving only the echo of a shocking moan. Another filed down a weed-choked subway entrance, howling with a laughter that was mad. My own column was sucked toward the open country, and presently felt a chill which was not of the hot autumn; for as we stalked out on the dark moor, we beheld around us the hellish moon-glitter of evil snows. Trackless, inexplicable snows, swept asunder in one direction only, where lay a gulf all the blacker for its glittering walls. The column seemed very thin indeed as it plodded dreamily into the gulf. I lingered behind, for the black rift in the green-litten snow was frightful, and I thought I had heard the reverberations of a disquieting wail as my companions vanished; but my power to linger was slight. As if beckoned by those who had gone before, I half floated between the titanic snowdrifts, quivering and afraid, into the sightless vortex of the unimaginable.
 
 Screamingly sentient, dumbly delirious, only the gods that were can tell. A sickened, sensitive shadow writhing in hands that are not hands, and whirled blindly past ghastly midnights of rotting creation, corpses of dead worlds with sores that were cities, charnel winds that brush the pallid stars and make them flicker low. Beyond the worlds vague ghosts of monstrous things; half-seen columns of unsanctified temples that rest on nameless rocks beneath space and reach up to dizzy vacua above the spheres of light and darkness. And through this revolting graveyard of the universe the muffled, maddening beating of drums, and thin, monotonous whine of blasphemous flutes from inconceivable, unlighted chambers beyond Time; the detestable pounding and piping whereunto dance slowly, awkwardly, and absurdly the gigantic, tenebrous ultimate gods—the blind, voiceless, mindless gargoyles whose soul is Nyarlathotep.
-
-Return to Table of Contents
-
-
-
-
-
-The Picture in the House
-
-
-(1920)
 
 Searchers after horror haunt strange, far places. For them are the catacombs of Ptolemais, and the carven mausolea of the nightmare countries. They climb to the moonlit towers of ruined Rhine castles, and falter down black cobwebbed steps beneath the scattered stones of forgotten cities in Asia. The haunted wood and the desolate mountain are their shrines, and they linger around the sinister monoliths on uninhabited islands. But the true epicure in the terrible, to whom a new thrill of unutterable ghastliness is the chief end and justification of existence, esteems most of all the ancient, lonely farmhouses of backwoods New England; for there the dark elements of strength, solitude, grotesqueness, and ignorance combine to form the perfection of the hideous.
 
@@ -1029,17 +684,6 @@ As the man mumbled on in his shocking ecstasy the expression on his hairy, spect
 
 The open book lay flat between us, with the picture staring repulsively upward. As the old man whispered the words “more the same” a tiny spattering impact was heard, and something shewed on the yellowed paper of the upturned volume. I thought of the rain and of a leaky roof, but rain is not red. On the butcher’s shop of the Anzique cannibals a small red spattering glistened picturesquely, lending vividness to the horror of the engraving. The old man saw it, and stopped whispering even before my expression of horror made it necessary; saw it and glanced quickly toward the floor of the room he had left an hour before. I followed his glance, and beheld just above us on the loose plaster of the ancient ceiling a large irregular spot of wet crimson which seemed to spread even as I viewed it. I did not shriek or move, but merely shut my eyes. A moment later came the titanic thunderbolt of thunderbolts; blasting that accursed house of unutterable secrets and bringing the oblivion which alone saved my mind.
 
-Return to Table of Contents
-
-
-
-
-
-Ex Oblivione
-
-
-(1921)
-
 When the last days were upon me, and the ugly trifles of existence began to drive me to madness like the small drops of water that torturers let fall ceaselessly upon one spot of their victim’s body, I loved the irradiate refuge of sleep. In my dreams I found a little of the beauty I had vainly sought in life, and wandered through old gardens and enchanted woods.
 
 Once when the wind was soft and scented I heard the south calling, and sailed endlessly and languorously under strange stars.
@@ -1062,28 +706,9 @@ Last night I swallowed the drug and floated dreamily into the golden valley and 
 
 But as the gate swung wider and the sorcery of drug and dream pushed me through, I knew that all sights and glories were at an end; for in that new realm was neither land nor sea, but only the white void of unpeopled and illimitable space. So, happier than I had ever dared hoped to be, I dissolved again into that native infinity of crystal oblivion from which the daemon Life had called me for one brief and desolate hour.
 
-Return to Table of Contents
-
-
-
-
-
-The Nameless City
-
-
-(1921)
-
 When I drew nigh the nameless city I knew it was accursed. I was travelling in a parched and terrible valley under the moon, and afar I saw it protruding uncannily above the sands as parts of a corpse may protrude from an ill-made grave. Fear spoke from the age-worn stones of this hoary survivor of the deluge, this great-grandmother of the eldest pyramid; and a viewless aura repelled me and bade me retreat from antique and sinister secrets that no man should see, and no man else had ever dared to see.
 
 Remote in the desert of Araby lies the nameless city, crumbling and inarticulate, its low walls nearly hidden by the sands of uncounted ages. It must have been thus before the first stones of Memphis were laid, and while the bricks of Babylon were yet unbaked. There is no legend so old as to give it a name, or to recall that it was ever alive; but it is told of in whispers around campfires and muttered about by grandams in the tents of sheiks, so that all the tribes shun it without wholly knowing why. It was of this place that Abdul Alhazred the mad poet dreamed on the night before he sang his unexplainable couplet:
-
-“That is not dead which can eternal lie,
-
-
-
-And with strange aeons even death may die.”
-
-
 
 I should have known that the Arabs had good reason for shunning the nameless city, the city told of in strange tales but seen by no living man, yet I defied them and went into the untrodden waste with my camel. I alone have seen it, and that is why no other face bears such hideous lines of fear as mine; why no other man shivers so horribly when the night-wind rattles the windows. When I came upon it in the ghastly stillness of unending sleep it looked at me, chilly from the rays of a cold moon amidst the desert’s heat. And as I returned its look I forgot my triumph at finding it, and stopped still with my camel to wait for the dawn.
 
@@ -1107,47 +732,7 @@ Then a brighter flare of the fantastic flame shewed me that for which I had been
 
 It is only in the terrible phantasms of drugs or delirium that any other man can have had such a descent as mine. The narrow passage led infinitely down like some hideous haunted well, and the torch I held above my head could not light the unknown depths toward which I was crawling. I lost track of the hours and forgot to consult my watch, though I was frightened when I thought of the distance I must be traversing. There were changes of direction and of steepness, and once I came to a long, low, level passage where I had to wriggle feet first along the rocky floor, holding my torch at arm’s length beyond my head. The place was not high enough for kneeling. After that were more of the steep steps, and I was still scrambling down interminably when my failing torch died out. I do not think I noticed it at the time, for when I did notice it I was still holding it high above me as if it were ablaze. I was quite unbalanced with that instinct for the strange and the unknown which has made me a wanderer upon earth and a haunter of far, ancient, and forbidden places.
 
-In the darkness there flashed before my mind fragments of my cherished treasury of daemoniac lore; sentences from Alhazred the mad Arab, paragraphs from the apocryphal nightmares of Damascius, and infamous lines from the delirious Image du Monde of Gauthier de Metz. I repeated queer extracts, and muttered of Afrasiab and the daemons that floated with him down the Oxus; later chanting over and over again a phrase from one of Lord Dunsany’s tales—“the unreverberate blackness of the abyss”. Once when the descent grew amazingly steep I recited something in sing-song from Thomas Moore until I feared to recite more:
-
-“A reservoir of darkness, black
-
-
-
-As witches’ cauldrons are, when fill’d
-
-
-
-With moon-drugs in th’ eclipse distill’d.
-
-
-
-Leaning to look if foot might pass
-
-
-
-Down thro’ that chasm, I saw, beneath,
-
-
-
-As far as vision could explore,
-
-
-
-The jetty sides as smooth as glass,
-
-
-
-Looking as if just varnish’d o’er
-
-
-
-With that dark pitch the Sea of Death
-
-
-
-Throws out upon its slimy shore.”
-
-
+In the darkness there flashed before my mind fragments of my cherished treasury of daemoniac lore; sentences from Alhazred the mad Arab, paragraphs from the apocryphal nightmares of Damascius, and infamous lines from the delirious Image du Monde of Gauthier de Metz. I repeated queer extracts, and muttered of Afrasiab and the daemons that floated with him down the Oxus; later chanting over and over again a phrase from one of Lord Dunsany’s tales—“the unreverberate blackness of the abyss”. Once when the descent grew amazingly steep I recited something in sing-song from Thomas Moore until I feared to recite more.
 
 Time had quite ceased to exist when my feet again felt a level floor, and I found myself in a place slightly higher than the rooms in the two smaller temples now so incalculably far above my head. I could not quite stand, but could kneel upright, and in the dark I shuffled and crept hither and thither at random. I soon knew that I was in a narrow passage whose walls were lined with cases of wood having glass fronts. As in that Palaeozoic and abysmal place I felt of such things as polished wood and glass I shuddered at the possible implications. The cases were apparently ranged along each side of the passage at regular intervals, and were oblong and horizontal, hideously like coffins in shape and size. When I tried to move two or three for further examination, I found they were firmly fastened.
 
@@ -1179,30 +764,11 @@ Suddenly there came another burst of that acute fear which had intermittently se
 
 More and more madly poured the shrieking, moaning night-wind into that gulf of the inner earth. I dropped prone again and clutched vainly at the floor for fear of being swept bodily through the open gate into the phosphorescent abyss. Such fury I had not expected, and as I grew aware of an actual slipping of my form toward the abyss I was beset by a thousand new terrors of apprehension and imagination. The malignancy of the blast awakened incredible fancies; once more I compared myself shudderingly to the only other human image in that frightful corridor, the man who was torn to pieces by the nameless race, for in the fiendish clawing of the swirling currents there seemed to abide a vindictive rage all the stronger because it was largely impotent. I think I screamed frantically near the last—I was almost mad—but if I did so my cries were lost in the hell-born babel of the howling wind-wraiths. I tried to crawl against the murderous invisible torrent, but I could not even hold my own as I was pushed slowly and inexorably toward the unknown world. Finally reason must have wholly snapped, for I fell to babbling over and over that unexplainable couplet of the mad Arab Alhazred, who dreamed of the nameless city:
 
-“That is not dead which can eternal lie,
-
-
-
-And with strange aeons even death may die.”
-
-
-
 Only the grim brooding desert gods know what really took place—what indescribable struggles and scrambles in the dark I endured or what Abaddon guided me back to life, where I must always remember and shiver in the night-wind till oblivion—or worse—claims me. Monstrous, unnatural, colossal, was the thing—too far beyond all the ideas of man to be believed except in the silent damnable small hours when one cannot sleep.
 
 I have said that the fury of the rushing blast was infernal—cacodaemoniacal—and that its voices were hideous with the pent-up viciousness of desolate eternities. Presently those voices, while still chaotic before me, seemed to my beating brain to take articulate form behind me; and down there in the grave of unnumbered aeon-dead antiquities, leagues below the dawn-lit world of men, I heard the ghastly cursing and snarling of strange-tongued fiends. Turning, I saw outlined against the luminous aether of the abyss what could not be seen against the dusk of the corridor—a nightmare horde of rushing devils; hate-distorted, grotesquely panoplied, half-transparent; devils of a race no man might mistake—the crawling reptiles of the nameless city.
 
 And as the wind died away I was plunged into the ghoul-peopled blackness of earth’s bowels; for behind the last of the creatures the great brazen door clanged shut with a deafening peal of metallic music whose reverberations swelled out to the distant world to hail the rising sun as Memnon hails it from the banks of the Nile.
-
-Return to Table of Contents
-
-
-
-
-
-The Quest of Iranon
-
-
-(1921)
 
 Into the granite city of Teloth wandered the youth, vine-crowned, his yellow hair glistening with myrrh and his purple robe torn with briers of the mountain Sidrak that lies across the antique bridge of stone. The men of Teloth are dark and stern, and dwell in square houses, and with frowns they asked the stranger whence he had come and what were his name and fortune. So the youth answered:
 
@@ -1252,17 +818,6 @@ So came he one night to the squalid cot of an antique shepherd, bent and dirty, 
 
 And in the twilight, as the stars came out one by one and the moon cast on the marsh a radiance like that which a child sees quivering on the floor as he is rocked to sleep at evening, there walked into the lethal quicksands a very old man in tattered purple, crowned with withered vine-leaves and gazing ahead as if upon the golden domes of a fair city where dreams are understood. That night something of youth and beauty died in the elder world.
 
-Return to Table of Contents
-
-
-
-
-
-The Moon-Bog
-
-
-(1921)
-
 Somewhere, to what remote and fearsome region I know not, Denys Barry has gone. I was with him the last night he lived among men, and heard his screams when the thing came to him; but all the peasants and police in County Meath could never find him, or the others, though they searched long and far. And now I shudder when I hear the frogs piping in swamps, or see the moon in lonely places.
 
 I had known Denys Barry well in America, where he had grown rich, and had congratulated him when he bought back the old castle by the bog at sleepy Kilderry. It was from Kilderry that his father had come, and it was there that he wished to enjoy his wealth among ancestral scenes. Men of his blood had once ruled over Kilderry and built and dwelt in the castle, but those days were very remote, so that for generations the castle had been empty and decaying. After he went to Ireland Barry wrote me often, and told me how under his care the grey castle was rising tower by tower to its ancient splendour; how the ivy was climbing slowly over the restored walls as it had climbed so many centuries ago, and how the peasants blessed him for bringing back the old days with his gold from over the sea. But in time there came troubles, and the peasants ceased to bless him, and fled away instead as from a doom. And then he sent a letter and asked me to visit him, for he was lonely in the castle with no one to speak to save the new servants and labourers he had brought from the north.
@@ -1303,27 +858,6 @@ As I fled from that accursed castle along the bog’s edge I heard a new sound; 
 
 Stretching directly from the strange olden ruin on the far islet to the waning moon, my eyes seemed to trace a beam of faint quivering radiance having no reflection in the waters of the bog. And upward along that pallid path my fevered fancy pictured a thin shadow slowly writhing; a vague contorted shadow struggling as if drawn by unseen daemons. Crazed as I was, I saw in that awful shadow a monstrous resemblance—a nauseous, unbelievable caricature—a blasphemous effigy of him who had been Denys Barry.
 
-Return to Table of Contents
-
-
-
-
-
-The Outsider
-
-
-(1921)
-
-That night the Baron dreamt of many a woe;
-
-And all his warrior-guests, with shade and form
-
-Of witch, and demon, and large coffin-worm,
-
-Were long be-nightmared.
-
-—Keats.
-
 Unhappy is he to whom the memories of childhood bring only fear and sadness. Wretched is he who looks back upon lone hours in vast and dismal chambers with brown hangings and maddening rows of antique books, or upon awed watches in twilight groves of grotesque, gigantic, and vine-encumbered trees that silently wave twisted branches far aloft. Such a lot the gods gave to me—to me, the dazed, the disappointed; the barren, the broken. And yet I am strangely content, and cling desperately to those sere memories, when my mind momentarily threatens to reach beyond to the other.
 
 I know not where I was born, save that the castle was infinitely old and infinitely horrible; full of dark passages and having high ceilings where the eye could find only cobwebs and shadows. The stones in the crumbling corridors seemed always hideously damp, and there was an accursed smell everywhere, as of the piled-up corpses of dead generations. It was never light, so that I used sometimes to light candles and gaze steadily at them for relief; nor was there any sun outdoors, since the terrible trees grew high above the topmost accessible tower. There was one black tower which reached above the trees into the unknown outer sky, but that was partly ruined and could not be ascended save by a well-nigh impossible climb up the sheer wall, stone by stone.
@@ -1361,17 +895,6 @@ I did not shriek, but all the fiendish ghouls that ride the night-wind shrieked 
 But in the cosmos there is balm as well as bitterness, and that balm is nepenthe. In the supreme horror of that second I forgot what had horrified me, and the burst of black memory vanished in a chaos of echoing images. In a dream I fled from that haunted and accursed pile, and ran swiftly and silently in the moonlight. When I returned to the churchyard place of marble and went down the steps I found the stone trap-door immovable; but I was not sorry, for I had hated the antique castle and the trees. Now I ride with the mocking and friendly ghouls on the night-wind, and play by day amongst the catacombs of Nephren-Ka in the sealed and unknown valley of Hadoth by the Nile. I know that light is not for me, save that of the moon over the rock tombs of Neb, nor any gaiety save the unnamed feasts of Nitokris beneath the Great Pyramid; yet in my new wildness and freedom I almost welcome the bitterness of alienage.
 
 For although nepenthe has calmed me, I know always that I am an outsider; a stranger in this century and among those who are still men. This I have known ever since I stretched out my fingers to the abomination within that great gilded frame; stretched out my fingers and touched a cold and unyielding surface of polished glass.
-
-Return to Table of Contents
-
-
-
-
-
-The Other Gods
-
-
-(1921)
 
 Atop the tallest of earth’s peaks dwell the gods of earth, and suffer no man to tell that he hath looked upon them. Lesser peaks they once inhabited; but ever the men from the plains would scale the slopes of rock and snow, driving the gods to higher and higher mountains till now only the last remains. When they left their older peaks they took with them all signs of themselves; save once, it is said, when they left a carven image on the face of the mountain which they called Ngranek.
 
@@ -1414,17 +937,6 @@ And as Atal shut his eyes and stopped his ears and tried to jump downward agains
 Now it is told in the mouldy Pnakotic Manuscripts that Sansu found naught but wordless ice and rock when he climbed Hatheg-Kla in the youth of the world. Yet when the men of Ulthar and Nir and Hatheg crushed their fears and scaled that haunted steep by day in search of Barzai the Wise, they found graven in the naked stone of the summit a curious and Cyclopean symbol fifty cubits wide, as if the rock had been riven by some titanic chisel. And the symbol was like to one that learned men have discerned in those frightful parts of the Pnakotic Manuscripts which are too ancient to be read. This they found.
 
 Barzai the Wise they never found, nor could the holy priest Atal ever be persuaded to pray for his soul’s repose. Moreover, to this day the people of Ulthar and Nir and Hatheg fear eclipses, and pray by night when pale vapours hide the mountain-top and the moon. And above the mists on Hatheg-Kla earth’s gods sometimes dance reminiscently; for they know they are safe, and love to come from unknown Kadath in ships of cloud and play in the olden way, as they did when earth was new and men not given to the climbing of inaccessible places.
-
-Return to Table of Contents
-
-
-
-
-
-The Music of Erich Zann
-
-
-(1921)
 
 I have examined maps of the city with the greatest care, yet have never again found the Rue d’Auseil. These maps have not been modern maps alone, for I know that names change. I have, on the contrary, delved deeply into all the antiquities of the place; and have personally explored every region, of whatever name, which could possibly answer to the street I knew as the Rue d’Auseil. But despite all I have done it remains an humiliating fact that I cannot find the house, the street, or even the locality, where, during the last months of my impoverished life as a student of metaphysics at the university, I heard the music of Erich Zann.
 
@@ -1478,19 +990,6 @@ Leaping, floating, flying down those endless stairs through the dark house; raci
 
 Despite my most careful searches and investigations, I have never since been able to find the Rue d’Auseil. But I am not wholly sorry; either for this or for the loss in undreamable abysses of the closely written sheets which alone could have explained the music of Erich Zann.
 
-Return to Table of Contents
-
-
-
-
-
-Herbert West — Reanimator
-
-
-(1922)
-
-I. From the Dark
-
 Of Herbert West, who was my friend in college and in after life, I can speak only with extreme terror. This terror is not due altogether to the sinister manner of his recent disappearance, but was engendered by the whole nature of his life-work, and first gained its acute form more than seventeen years ago, when we were in the third year of our course at the Miskatonic University Medical School in Arkham. While he was with me, the wonder and diabolism of his experiments fascinated me utterly, and I was his closest companion. Now that he is gone and the spell is broken, the actual fear is greater. Memories and possibilities are ever more hideous than realities.
 
 The first horrible incident of our acquaintance was the greatest shock I ever experienced, and it is only with reluctance that I repeat it. As I have said, it happened when we were in the medical school, where West had already made himself notorious through his wild theories on the nature of death and the possibility of overcoming it artificially. His views, which were widely ridiculed by the faculty and his fellow-students, hinged on the essentially mechanistic nature of life; and concerned means for operating the organic machinery of mankind by calculated chemical action after the failure of natural processes. In his experiments with various animating solutions he had killed and treated immense numbers of rabbits, guinea-pigs, cats, dogs, and monkeys, till he had become the prime nuisance of the college. Several times he had actually obtained signs of life in animals supposedly dead; in many cases violent signs; but he soon saw that the perfection of this process, if indeed possible, would necessarily involve a lifetime of research. It likewise became clear that, since the same solution never worked alike on different organic species, he would require human subjects for further and more specialised progress. It was here that he first came into conflict with the college authorities, and was debarred from future experiments by no less a dignitary than the dean of the medical school himself—the learned and benevolent Dr. Allan Halsey, whose work in behalf of the stricken is recalled by every old resident of Arkham.
@@ -1514,8 +1013,6 @@ The awful event was very sudden, and wholly unexpected. I was pouring something 
 We did not separate, but managed to get to West’s room, where we whispered with the gas up until dawn. By then we had calmed ourselves a little with rational theories and plans for investigation, so that we could sleep through the day—classes being disregarded. But that evening two items in the paper, wholly unrelated, made it again impossible for us to sleep. The old deserted Chapman house had inexplicably burned to an amorphous heap of ashes; that we could understand because of the upset lamp. Also, an attempt had been made to disturb a new grave in the potter’s field, as if by futile and spadeless clawing at the earth. That we could not understand, for we had patted down the mould very carefully.
 
 And for seventeen years after that West would look frequently over his shoulder, and complain of fancied footsteps behind him. Now he has disappeared.
-
-II. The Plague-Daemon
 
 I shall never forget that hideous summer sixteen years ago, when like a noxious afrite from the halls of Eblis typhoid stalked leeringly through Arkham. It is by that satanic scourge that most recall the year, for truly terror brooded with bat-wings over the piles of coffins in the tombs of Christchurch Cemetery; yet for me there is a greater horror in that time—a horror known to me alone now that Herbert West has disappeared.
 
@@ -1542,12 +1039,6 @@ The next night devils danced on the roofs of Arkham, and unnatural madness howle
 On the third night frantic bands of searchers, led by the police, captured it in a house on Crane Street near the Miskatonic campus. They had organised the quest with care, keeping in touch by means of volunteer telephone stations, and when someone in the college district had reported hearing a scratching at a shuttered window, the net was quickly spread. On account of the general alarm and precautions, there were only two more victims, and the capture was effected without major casualties. The thing was finally stopped by a bullet, though not a fatal one, and was rushed to the local hospital amidst universal excitement and loathing.
 
 For it had been a man. This much was clear despite the nauseous eyes, the voiceless simianism, and the daemoniac savagery. They dressed its wound and carted it to the asylum at Sefton, where it beat its head against the walls of a padded cell for sixteen years—until the recent mishap, when it escaped under circumstances that few like to mention. What had most disgusted the searchers of Arkham was the thing they noticed when the monster’s face was cleaned—the mocking, unbelievable resemblance to a learned and self-sacrificing martyr who had been entombed but three days before—the late Dr. Allan Halsey, public benefactor and dean of the medical school of Miskatonic University.
-
-To the vanished Herbert West and to me the disgust and horror were supreme. I shudder tonight as I think of it; shudder even more than I did that morning when West muttered through his bandages,
-
-“Damn it, it wasn’t quite fresh enough!”
-
-III. Six Shots by Midnight
 
 It is uncommon to fire all six shots of a revolver with great suddenness when one would probably be sufficient, but many things in the life of Herbert West were uncommon. It is, for instance, not often that a young physician leaving college is obliged to conceal the principles which guide his selection of a home and office, yet that was the case with Herbert West. When he and I obtained our degrees at the medical school of Miskatonic University, and sought to relieve our poverty by setting up as general practitioners, we took great care not to say that we chose our house because it was fairly well isolated, and as near as possible to the potter’s field.
 
@@ -7965,32 +7456,6 @@ These points were discussed very carefully because of their probable connexion w
 The rigid body sat bolt upright at the desk by the window, and when the intruders saw the glassy, bulging eyes, and the marks of stark, convulsive fright on the twisted features, they turned away in sickened dismay. Shortly afterward the coroner’s physician made an examination, and despite the unbroken window reported electrical shock, or nervous tension induced by electrical discharge, as the cause of death. The hideous expression he ignored altogether, deeming it a not improbable result of the profound shock as experienced by a person of such abnormal imagination and unbalanced emotions. He deduced these latter qualities from the books, paintings, and manuscripts found in the apartment, and from the blindly scrawled entries in the diary on the desk. Blake had prolonged his frenzied jottings to the last, and the broken-pointed pencil was found clutched in his spasmodically contracted right hand.
 
 The entries after the failure of the lights were highly disjointed, and legible only in part. From them certain investigators have drawn conclusions differing greatly from the materialistic official verdict, but such speculations have little chance for belief among the conservative. The case of these imaginative theorists has not been helped by the action of superstitious Dr. Dexter, who threw the curious box and angled stone—an object certainly self-luminous as seen in the black windowless steeple where it was found—into the deepest channel of Narragansett Bay. Excessive imagination and neurotic unbalance on Blake’s part, aggravated by knowledge of the evil bygone cult whose startling traces he had uncovered, form the dominant interpretation given those final frenzied jottings. These are the entries—or all that can be made of them.
-
-“Lights still out—must be five minutes now. Everything depends on lightning. Yaddith grant it will keep up! . . . Some influence seems beating through it. . . . Rain and thunder and wind deafen. . . . The thing is taking hold of my mind. . . .
-
-“Trouble with memory. I see things I never knew before. Other worlds and other galaxies . . . Dark . . . The lightning seems dark and the darkness seems light. . . .
-
-“It cannot be the real hill and church that I see in the pitch-darkness. Must be retinal impression left by flashes. Heaven grant the Italians are out with their candles if the lightning stops!
-
-“What am I afraid of? Is it not an avatar of Nyarlathotep, who in antique and shadowy Khem even took the form of man? I remember Yuggoth, and more distant Shaggai, and the ultimate void of the black planets. . . .
-
-“The long, winging flight through the void . . . cannot cross the universe of light . . . re-created by the thoughts caught in the Shining Trapezohedron . . . send it through the horrible abysses of radiance. . . .
-
-“My name is Blake—Robert Harrison Blake of 620 East Knapp Street, Milwaukee, Wisconsin. . . . I am on this planet. . . .
-
-“Azathoth have mercy!—the lightning no longer flashes—horrible—I can see everything with a monstrous sense that is not sight—light is dark and dark is light . . . those people on the hill . . . guard . . . candles and charms . . . their priests. . . .
-
-“Sense of distance gone—far is near and near is far. No light—no glass—see that steeple—that tower—window—can hear—Roderick Usher—am mad or going mad—the thing is stirring and fumbling in the tower—I am it and it is I—I want to get out . . . must get out and unify the forces. . . . It knows where I am. . . .
-
-“I am Robert Blake, but I see the tower in the dark. There is a monstrous odour . . . senses transfigured . . . boarding at that tower window cracking and giving way. . . . Iä . . . ngai . . . ygg. . . .
-
-“I see it—coming here—hell-wind—titan blur—black wings—Yog-Sothoth save me—the three-lobed burning eye. . . .”
-
-
-
-Return to Table of Contents
-
-Fin
 
 
 

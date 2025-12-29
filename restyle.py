@@ -112,7 +112,7 @@ def transfer_file(
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
     """
-    from src.generation.fast_transfer import FastStyleTransfer, TransferConfig
+    from src.generation.transfer import StyleTransfer, TransferConfig
     from src.config import load_config
     from src.llm.deepseek import DeepSeekProvider
 
@@ -161,7 +161,7 @@ def transfer_file(
     print(f"\nInitializing LoRA adapter: {adapter_path}")
     print(f"Author: {author}")
 
-    transfer = FastStyleTransfer(
+    transfer = StyleTransfer(
         adapter_path=adapter_path,
         author_name=author,
         critic_provider=critic_provider,

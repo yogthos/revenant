@@ -27,7 +27,6 @@ def _load_mlx_config() -> dict:
 
 # Check MLX availability
 try:
-    import mlx.core as mx
     from mlx_lm import load, generate
     from mlx_lm.sample_utils import make_sampler
     MLX_AVAILABLE = True
