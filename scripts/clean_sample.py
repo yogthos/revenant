@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clean sample text files for ChromaDB ingestion.
+"""Clean sample text files for style transfer training.
 
 Removes:
 - Page numbers (standalone numbers)

@@ -102,13 +102,6 @@ class LLMConfig:
 
 
 @dataclass
-class ChromaDBConfig:
-    """Configuration for ChromaDB."""
-    persist_path: str = "atlas_cache/"
-    embedding_model: str = "all-mpnet-base-v2"
-
-
-@dataclass
 class CorpusConfig:
     """Configuration for corpus processing."""
     min_sentences_per_paragraph: int = 2
@@ -192,7 +185,6 @@ class Config:
     fitness_weights: FitnessWeightsConfig = field(default_factory=FitnessWeightsConfig)
     thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    chromadb: ChromaDBConfig = field(default_factory=ChromaDBConfig)
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
@@ -316,12 +308,6 @@ def load_config(config_path: str = "config.json") -> Config:
 
     if "llm" in data:
         config.llm = _parse_llm_config(data["llm"])
-
-    if "chromadb" in data:
-        config.chromadb = ChromaDBConfig(
-            persist_path=data["chromadb"].get("persist_path", "atlas_cache/"),
-            embedding_model=data["chromadb"].get("embedding_model", "all-mpnet-base-v2"),
-        )
 
     if "corpus" in data:
         config.corpus = CorpusConfig(

@@ -147,7 +147,6 @@ def setup_logging(
     # Suppress noisy third-party loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("chromadb").setLevel(logging.WARNING)
 
 
 # Convenience function for logging LLM calls
