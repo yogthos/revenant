@@ -212,37 +212,83 @@ class SemanticGraph:
         This creates a deterministic neutral description that preserves
         ALL propositions and their relationships. No LLM needed.
 
+        IMPORTANT: This generates NEUTRAL descriptions, not the original text.
+        The LoRA should receive neutral content to restyle, not source sentences.
+
         Returns:
             Neutral prose representation suitable for LoRA transformation.
         """
         if not self.nodes:
             return ""
 
-        # Build sentences in order, deduplicating by sentence text
-        # (multiple propositions can come from the same sentence)
+        # Build neutral sentences in order, deduplicating
         sentences = []
-        seen_sentences = set()
+        seen_content = set()
 
         for node in self.nodes:
-            sentence = self._proposition_to_sentence(node)
+            # Build neutral description from S-P-O structure
+            sentence = self._build_neutral_sentence(node)
             if not sentence:
                 continue
 
-            # Deduplicate by normalized sentence text
+            # Deduplicate by normalized content
             normalized = sentence.strip().lower()
-            if normalized in seen_sentences:
+            if normalized in seen_content:
                 continue
 
-            seen_sentences.add(normalized)
+            seen_content.add(normalized)
             sentences.append(sentence)
 
         return " ".join(sentences)
+
+    def _build_neutral_sentence(self, node: PropositionNode) -> str:
+        """Build a neutral sentence from proposition structure.
+
+        NEVER returns the original text - always constructs from S-P-O.
+        """
+        parts = []
+
+        # Handle negation
+        if node.is_negated:
+            parts.append("It is not the case that")
+
+        # Handle epistemic stance
+        if node.epistemic == "hypothetical":
+            parts.append("possibly")
+        elif node.epistemic == "appearance":
+            parts.append("apparently")
+
+        # Subject
+        if node.subject:
+            parts.append(node.subject)
+
+        # Predicate
+        if node.predicate:
+            parts.append(node.predicate)
+
+        # Object
+        if node.object:
+            parts.append(node.object)
+
+        if not parts:
+            return ""
+
+        sentence = " ".join(parts)
+
+        # Ensure proper ending
+        if sentence and sentence[-1] not in ".!?":
+            sentence += "."
+
+        return sentence
 
     def to_narrative_flow(self) -> str:
         """Generate a clear narrative flow representation.
 
         Creates a simple, linear narrative that shows the progression
         of ideas using transition words based on edge relationships.
+
+        IMPORTANT: Uses neutral S-P-O descriptions, NOT original source text.
+        The LoRA should receive neutral content to restyle.
 
         Returns:
             A narrative flow string for LLM consumption.
@@ -279,8 +325,10 @@ class SemanticGraph:
                 continue
             seen_nodes.add(node.id)
 
-            # Get the proposition text
-            text = node.text.strip() if node.text else node.summary()
+            # Build NEUTRAL text from S-P-O, NOT original source text
+            text = self._build_neutral_sentence(node)
+            if not text:
+                text = node.summary()
 
             # Deduplicate by text content
             text_lower = text.lower()
@@ -305,56 +353,6 @@ class SemanticGraph:
                 lines.append(f"• {text}")
 
         return "\n".join(lines)
-
-    def _proposition_to_sentence(self, node: PropositionNode) -> str:
-        """Convert a proposition node to a neutral sentence.
-
-        Args:
-            node: The proposition node to convert.
-
-        Returns:
-            A neutral sentence expressing the proposition.
-        """
-        # If we have the original text, use a cleaned version
-        if node.text and len(node.text) > 10:
-            # Use the original sentence text
-            return node.text.strip()
-
-        # Otherwise, build from subject-predicate-object
-        parts = []
-
-        # Handle negation
-        if node.is_negated:
-            parts.append("It is not the case that")
-
-        # Handle epistemic stance
-        if node.epistemic == "hypothetical":
-            parts.append("It might be that")
-        elif node.epistemic == "appearance":
-            parts.append("It appears that")
-
-        # Subject
-        if node.subject:
-            parts.append(node.subject)
-
-        # Predicate
-        if node.predicate:
-            parts.append(node.predicate)
-
-        # Object
-        if node.object:
-            parts.append(node.object)
-
-        if not parts:
-            return ""
-
-        sentence = " ".join(parts)
-
-        # Ensure proper ending
-        if sentence and sentence[-1] not in ".!?":
-            sentence += "."
-
-        return sentence
 
 
 @dataclass

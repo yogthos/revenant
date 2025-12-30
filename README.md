@@ -267,14 +267,11 @@ All settings are in `config.json`. Copy from `config.json.sample` to get started
 ```json
 {
   "generation": {
-    // Repair settings
+    // Repair settings - regenerates through LoRA when validation fails
     "max_repair_attempts": 3,
-    "repair_temperature": 0.3,
 
-    // Meaning preservation (0.0-1.0, higher = stricter)
+    // Meaning preservation - entailment score threshold
     "entailment_threshold": 0.7,
-    "proposition_threshold": 0.7,
-    "anchor_threshold": 0.8,
 
     // Length control
     "max_expansion_ratio": 1.5,
@@ -284,24 +281,7 @@ All settings are in `config.json`. Copy from `config.json.sample` to get started
     // LoRA influence (0.0=base only, 1.0=full, >1.0=amplified)
     "lora_scale": 1.0,
 
-    // Style settings
-    "style_temperature": 0.7,
-    "neutralization_temperature": 0.3,
-    "use_neutralization": true,
-
-    // Neutralization token limits
-    "neutralization_min_tokens": 300,
-    "neutralization_token_multiplier": 1.2,
-
-    // Content anchor detection
-    "analogy_min_length": 10,
-    "detect_phase_transitions": true,
-
-    // Hallucination detection
-    "hallucination_check_noun_phrases": true,
-    "critical_hallucination_words": "death,god,soul,spirit,heaven,hell,divine,eternal",
-
-    // Post-processing
+    // Post-processing - reduce word repetition
     "repetition_threshold": 3,
     "reduce_repetition": true,
 
@@ -328,12 +308,10 @@ All settings are in `config.json`. Copy from `config.json.sample` to get started
 | Option | Default | Use Case |
 |--------|---------|----------|
 | `lora_scale` | 1.0 | **Lower (0.5-0.8)**: Subtler style, more base model. **Higher (1.2-1.5)**: Stronger style influence |
-| `proposition_threshold` | 0.85 | **Higher (0.9+)**: Maximum accuracy, may need more repairs. **Lower (0.7)**: Faster, allows some loss |
-| `anchor_threshold` | 0.9 | **Higher**: Strict entity/example preservation. **Lower**: More flexibility |
+| `entailment_threshold` | 0.7 | **Higher (0.8+)**: Stricter validation. **Lower (0.5)**: More lenient |
 | `max_expansion_ratio` | 1.5 | Maximum output length relative to input (1.5 = 50% longer max) |
 | `max_repair_attempts` | 3 | More attempts = better content preservation, slower processing |
-| `style_temperature` | 0.7 | **Higher**: More creative/varied. **Lower**: More consistent/predictable |
-| `critical_hallucination_words` | ... | Comma-separated words that trigger critical hallucination alerts |
+| `repetition_threshold` | 3 | Words used N+ times in document get synonyms substituted |
 
 ---
 
@@ -590,13 +568,12 @@ Increase `lora_scale` in config.json:
 
 ### Content Being Lost
 
-The default thresholds (0.85/0.9) are tuned for accuracy. For maximum preservation:
+Increase repair attempts for better content preservation:
 ```json
 {
   "generation": {
-    "proposition_threshold": 0.95,
-    "anchor_threshold": 0.95,
-    "max_repair_attempts": 5
+    "max_repair_attempts": 5,
+    "entailment_threshold": 0.8
   }
 }
 ```

@@ -25,11 +25,11 @@
         "model": "gpt-4",
         "max_tokens": 4096,
         "temperature": 0.7
-      },      
+      },
       "mlx": {
         "model": "mlx-community/Qwen3-8B-4bit",
         "max_tokens": 512,
-        "temperature": 0.5,
+        "temperature": 0.7,
         "top_p": 0.9
       }
     },
@@ -40,67 +40,32 @@
     }
   },
   "generation": {
-    "_comment": "Repair settings",
+    "_comment": "Repair settings - regenerates through LoRA when validation fails",
     "max_repair_attempts": 3,
-    "repair_temperature": 0.3,
 
-    "_comment2": "Meaning preservation (0.0-1.0, higher = stricter)",
+    "_comment2": "Meaning preservation - entailment score threshold",
     "entailment_threshold": 0.7,
-    "proposition_threshold": 0.85,
-    "anchor_threshold": 0.9,
 
     "_comment3": "Length control",
     "max_expansion_ratio": 1.5,
     "target_expansion_ratio": 1.2,
     "truncate_over_expanded": false,
 
-    "_comment4": "LoRA influence (0.0=base only, 0.5=half, 1.0=full, >1.0=amplified)",
+    "_comment4": "LoRA influence (0.0=base only, 1.0=full, >1.0=amplified)",
     "lora_scale": 1.0,
 
-    "_comment5": "Style settings",
-    "style_temperature": 0.7,
-    "neutralization_temperature": 0.3,
-    "use_neutralization": true,
-
-    "_comment6": "Neutralization token limits (for preserving full content)",
-    "neutralization_min_tokens": 300,
-    "neutralization_token_multiplier": 1.2,
-
-    "_comment7": "Content anchor detection",
-    "analogy_min_length": 10,
-    "detect_phase_transitions": true,
-
-    "_comment8": "Hallucination detection",
-    "hallucination_check_noun_phrases": true,
-    "critical_hallucination_words": "death,god,soul,spirit,heaven,hell,divine,eternal",
-
-    "_comment9": "Post-processing",
+    "_comment5": "Post-processing - reduce word repetition",
     "repetition_threshold": 3,
     "reduce_repetition": true,
 
-    "_comment10": "Document handling",
+    "_comment6": "Document handling",
     "use_document_context": true,
     "pass_headings_unchanged": true,
     "min_paragraph_words": 10
   },
-  "validation": {
-    "_comment": "Semantic similarity threshold (0.5 = same general idea, 0.75 = strict matching)",
-    "graph_similarity_threshold": 0.5,
-
-    "_comment2": "Maximum repair attempts per error type",
-    "max_repair_attempts_per_error": 3,
-
-    "_comment3": "Entity matching weight (soft - contributes to score, not required)",
-    "entity_match_threshold": 0.5,
-
-    "_comment4": "Structural match threshold (subject-predicate-object alignment)",
-    "structural_match_threshold": 0.4,
-
-    "_comment5": "Restyling acceptance: max additional errors styled output can have vs repaired (0 = must be same or better)",
-    "restyle_error_tolerance": 1
-  },
   "style": {
-    "_comment": "Perspective options: preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person",
+    "_comment": "Perspective controls output point-of-view",
+    "_options": "preserve | first_person_singular | first_person_plural | third_person | author_voice_third_person",
     "perspective": "preserve"
   },
   "log_level": "INFO"

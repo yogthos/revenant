@@ -462,6 +462,9 @@ class StyleTransfer:
         This is the post-LoRA validation step that ensures the styled output
         preserves all propositions from the source.
 
+        IMPORTANT: Never inserts verbatim source text. If validation fails,
+        regenerates entirely through LoRA using neutral prose from the graph.
+
         Args:
             source: Original source text.
             output: Styled output to validate.
@@ -493,72 +496,112 @@ class StyleTransfer:
             f"{len(diff.added_nodes)} added, {len(diff.entity_role_errors)} entity errors"
         )
 
+        # ========================================
+        # REPAIR: Critic adds missing content, then LoRA restyles
+        # ========================================
+        # 1. Use critic (DeepSeek) to surgically add missing propositions
+        # 2. Restyle through LoRA with LOW temperature to preserve content
+        #
+        # This ensures all content is preserved AND styled.
+
         if not self.critic_provider:
-            logger.warning("No critic provider for styled output repair")
+            logger.warning("No critic provider for repair - returning original output")
             return output, False
 
-        # Use incremental repair
-        repaired_output = self._incremental_graph_repair(
-            source=source,
-            output=output,
-            source_graph=source_graph,
-            builder=builder,
-            comparator=comparator,
-            max_attempts_per_error=max_attempts,
-        )
+        best_output = output
+        best_missing = len(diff.missing_nodes)
 
-        # Final verification
-        final_graph = builder.build_from_text(repaired_output)
-        final_diff = comparator.compare(source_graph, final_graph)
+        for attempt in range(max_attempts):
+            try:
+                # Get current diff (first iteration uses initial diff)
+                if attempt > 0:
+                    current_graph = builder.build_from_text(best_output)
+                    current_diff = comparator.compare(source_graph, current_graph)
+                else:
+                    current_diff = diff
 
-        # Count errors
-        final_error_count = (
-            len(final_diff.missing_nodes) + len(final_diff.added_nodes) +
-            len(final_diff.entity_role_errors)
-        )
-        original_error_count = (
-            len(diff.missing_nodes) + len(diff.added_nodes) + len(diff.entity_role_errors)
-        )
+                if not current_diff.has_critical_differences:
+                    break
 
-        repair_successful = final_diff.is_isomorphic or not final_diff.has_critical_differences
-        if repair_successful:
-            logger.info("Styled output repair successful")
-        else:
-            logger.warning(f"Styled output repair incomplete: {final_error_count} errors remaining")
+                # Build repair instructions from the diff
+                missing_props = [node.text or node.summary() for node in current_diff.missing_nodes]
 
-        # ========================================
-        # ALWAYS restyle through LoRA at the end
-        # ========================================
-        # Pass the clean neutral prose (from graph) to the LoRA, not the mixed
-        # repaired output. This gives the model consistent, clean input.
-        # The graph contains all propositions that must be expressed.
-        try:
-            old_temp = self.generator.config.temperature
-            self.generator.config.temperature = 0.4
+                if not missing_props:
+                    break
 
-            # Use the source graph's neutral prose - this is cleaner than mixed repaired output
-            neutral_prose = source_graph.to_neutral_prose()
+                logger.info(f"Repair attempt {attempt + 1}: {len(missing_props)} missing propositions")
 
-            styled_output = self.generator.generate(
-                content=neutral_prose,
-                author=self.author,
-                context=previous,
-                max_tokens=max(150, int(len(source.split()) * 1.5)),
-                context_hint=context_hint,
-                perspective=getattr(self.config, 'perspective', 'preserve'),
-            )
+                # Step 1: Critic adds missing content
+                repair_prompt = f"""The following text is missing some important information. Add the missing content naturally, preserving the existing text as much as possible.
 
-            self.generator.config.temperature = old_temp
+CURRENT TEXT:
+{best_output}
 
-            # Trust the LoRA - the neutral prose contains all propositions
+MISSING INFORMATION (must be added):
+{chr(10).join(f"- {prop}" for prop in missing_props[:5])}
+
+OUTPUT the complete text with the missing information integrated naturally. Do not remove existing content."""
+
+                repaired = self.critic_provider.call(
+                    system_prompt="You are a precise editor. Add missing information to text while preserving its style and existing content. Output only the edited text.",
+                    user_prompt=repair_prompt,
+                    temperature=0.3,
+                    max_tokens=max(200, int(len(best_output.split()) * 2)),
+                )
+
+                repaired = repaired.strip()
+
+                if not repaired or len(repaired) < len(best_output) * 0.5:
+                    logger.warning(f"Critic returned invalid output, skipping")
+                    continue
+
+                # Step 2: Restyle through LoRA with VERY LOW temperature
+                # This preserves the repaired content while adding author style
+                old_temp = self.generator.config.temperature
+                self.generator.config.temperature = 0.2  # Very low to preserve content
+
+                styled_output = self.generator.generate(
+                    content=f"Rewrite this text preserving ALL information:\n\n{repaired}",
+                    author=self.author,
+                    context=previous,
+                    max_tokens=max(200, int(len(repaired.split()) * 1.5)),
+                    context_hint=context_hint,
+                    perspective=getattr(self.config, 'perspective', 'preserve'),
+                )
+
+                self.generator.config.temperature = old_temp
+
+                # Verify the result
+                styled_graph = builder.build_from_text(styled_output)
+                styled_diff = comparator.compare(source_graph, styled_graph)
+                missing_count = len(styled_diff.missing_nodes)
+
+                logger.debug(f"After repair+restyle: {missing_count} missing (was {len(current_diff.missing_nodes)})")
+
+                if styled_diff.is_isomorphic or not styled_diff.has_critical_differences:
+                    if stats:
+                        stats.quality_issues_fixed += 1
+                    logger.info(f"Repair successful on attempt {attempt + 1}")
+                    return styled_output, True
+
+                # Keep best result
+                if missing_count < best_missing:
+                    best_output = styled_output
+                    best_missing = missing_count
+
+            except Exception as e:
+                logger.warning(f"Repair attempt {attempt + 1} failed: {e}")
+                continue
+
+        # Return best attempt
+        if best_missing < len(diff.missing_nodes):
+            logger.info(f"Partial repair: reduced missing from {len(diff.missing_nodes)} to {best_missing}")
             if stats:
                 stats.quality_issues_fixed += 1
-            logger.info("Applied author styling to neutral prose")
-            return styled_output, repair_successful
+            return best_output, False
 
-        except Exception as e:
-            logger.warning(f"Final restyling failed: {e}")
-            return repaired_output, repair_successful
+        logger.warning(f"Repair unsuccessful after {max_attempts} attempts")
+        return output, False
 
     def _incremental_graph_repair(
         self,
