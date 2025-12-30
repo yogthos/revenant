@@ -151,27 +151,12 @@ def transfer_file(
             perspective=effective_perspective,
             # From config file
             max_repair_attempts=gen.max_repair_attempts,
-            repair_temperature=gen.repair_temperature,
             entailment_threshold=gen.entailment_threshold,
-            use_proposition_validation=True,
-            proposition_threshold=gen.proposition_threshold,
-            anchor_threshold=gen.anchor_threshold,
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
             truncate_over_expanded=gen.truncate_over_expanded,
             # LoRA influence
             lora_scale=gen.lora_scale,
-            use_neutralization=gen.use_neutralization,
-            neutralization_temperature=gen.neutralization_temperature,
-            # Neutralization token settings
-            neutralization_min_tokens=gen.neutralization_min_tokens,
-            neutralization_token_multiplier=gen.neutralization_token_multiplier,
-            # Content anchor detection
-            analogy_min_length=gen.analogy_min_length,
-            detect_phase_transitions=gen.detect_phase_transitions,
-            # Hallucination detection
-            hallucination_check_noun_phrases=gen.hallucination_check_noun_phrases,
-            critical_hallucination_words=gen.critical_hallucination_words,
             # Post-processing
             reduce_repetition=gen.reduce_repetition,
             repetition_threshold=gen.repetition_threshold,
