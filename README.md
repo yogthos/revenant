@@ -53,7 +53,7 @@ cp config.json.sample config.json
 ```bash
 # Step 1: Generate training data (instruction back-translation)
 python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
+    --input data/corpus/author.txt \
     --output data/neutralized/author.jsonl \
     --author "Author Name"
 
@@ -88,18 +88,41 @@ Create a plain text file with the author's writing:
 | **Content** | Representative prose samples |
 | **Remove** | Headers, footnotes, citations, non-prose content |
 
-Place your corpus in `styles/` directory:
+Place your corpus in `data/corpus/` directory:
 ```bash
-styles/sample_author.txt
+data/corpus/author.txt
 ```
 
 For large corpuses, curate to optimal size first:
 ```bash
 python scripts/curate_corpus.py \
-    --input styles/author_full.txt \
-    --output styles/author.txt \
+    --input data/corpus/author_full.txt \
+    --output data/corpus/author.txt \
     --target-tokens 900000
 ```
+
+#### Blending Multiple Authors
+
+To create a corpus that blends styles from multiple authors while maintaining coherence:
+
+```bash
+python scripts/blend_corpuses.py \
+    --primary data/corpus/primary_author.txt \
+    --secondary data/corpus/author2.txt data/corpus/author3.txt \
+    --output data/corpus/blended.txt \
+    --threshold 0.85
+```
+
+The script uses style embeddings (LUAR) to find paragraphs from secondary authors that are stylistically compatible with the primary author. This creates a training corpus that teaches a consistent voice while incorporating stylistic elements from multiple sources.
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--threshold` | 0.85 | Similarity threshold (0.80-0.90 typical) |
+| `--primary-weight` | 2.0 | Weight for primary author in centroid |
+| `--primary-tokens` | 500000 | Target tokens for primary corpus |
+| `--min-paragraphs` | 10 | Minimum compatible paragraphs to include author |
 
 ### Step 2: Generate Training Data
 
@@ -107,7 +130,7 @@ The neutralization step creates training pairs using instruction back-translatio
 
 ```bash
 python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
+    --input data/corpus/author.txt \
     --output data/neutralized/author.jsonl \
     --author "Author Name"
 ```
@@ -432,7 +455,7 @@ flowchart TD
 ```mermaid
 flowchart LR
     subgraph "Corpus Preparation"
-        A[Author Corpus<br/>styles/*.txt]
+        A[Author Corpus<br/>data/corpus/*.txt]
         B[Curate Script<br/>Optional]
     end
 

@@ -4,7 +4,9 @@ nltk>=3.8.0
 
 # ML/Deep Learning
 torch>=2.0.0
+transformers>=4.36.0  # For HuggingFace models (LUAR, etc.)
 sentence-transformers>=2.2.0  # For NLI entailment verification (cross-encoder/nli-deberta-v3-small)
+einops>=0.7.0  # Required for LUAR style embeddings
 
 # Data processing
 numpy>=1.24.0
@@ -17,9 +19,11 @@ chromadb>=0.4.0
 # LLM utilities
 tiktoken>=0.5.0
 requests>=2.31.0
+openai>=1.0.0  # For OpenAI-compatible APIs (DeepSeek, etc.)
 
 # Testing
 pytest>=7.0.0
+pytest-cov>=4.0.0
 
 # MLX (for Apple Silicon LoRA training)
 mlx>=0.20.0; sys_platform == "darwin" and platform_machine == "arm64"
