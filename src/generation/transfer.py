@@ -251,6 +251,44 @@ class StyleTransfer:
 
         logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
 
+    def _extract_paragraph_thesis(self, paragraph: str) -> str:
+        """Extract the main thesis/point of a paragraph.
+
+        This helps the LoRA understand what it's trying to express overall,
+        not just individual propositions.
+
+        Args:
+            paragraph: Source paragraph text.
+
+        Returns:
+            One-sentence thesis statement.
+        """
+        if not self.critic_provider:
+            # Fallback: use first sentence as thesis
+            sentences = split_into_sentences(paragraph)
+            return sentences[0] if sentences else ""
+
+        try:
+            response = self.critic_provider.call(
+                system_prompt="You are a precise summarizer. Extract the ONE main point or thesis of this paragraph in a single sentence. Be specific and concrete. Do not add interpretation.",
+                user_prompt=f"Paragraph:\n{paragraph}\n\nMain point (one sentence):",
+                temperature=0.1,
+                max_tokens=100,
+            )
+            thesis = response.strip()
+            # Clean up common prefixes
+            for prefix in ["The main point is that ", "The thesis is that ", "This paragraph argues that "]:
+                if thesis.lower().startswith(prefix.lower()):
+                    thesis = thesis[len(prefix):]
+                    thesis = thesis[0].upper() + thesis[1:] if thesis else thesis
+                    break
+            logger.debug(f"Extracted paragraph thesis: {thesis[:80]}...")
+            return thesis
+        except Exception as e:
+            logger.warning(f"Thesis extraction failed: {e}")
+            sentences = split_into_sentences(paragraph)
+            return sentences[0] if sentences else ""
+
     def _create_default_verifier(self) -> Callable[[str, str], float]:
         """Create default entailment verifier."""
         try:
@@ -461,6 +499,10 @@ class StyleTransfer:
             source_propositions = self.proposition_validator.extract_propositions(paragraph)
             logger.debug(f"Extracted {len(source_propositions)} propositions from source")
 
+        # Extract paragraph thesis - the main point the writer needs to express
+        paragraph_thesis = self._extract_paragraph_thesis(paragraph)
+        logger.debug(f"Paragraph thesis: {paragraph_thesis[:80]}...")
+
         # Neutralize paragraph before transformation (matches LoRA training format)
         if self.config.use_neutralization:
             content_for_generation = self._neutralize_paragraph(paragraph)
@@ -473,8 +515,14 @@ class StyleTransfer:
                 content_for_generation = self._verify_and_augment_neutralization(
                     content_for_generation, source_propositions
                 )
+            # Prepend thesis to guide the writer on the main point
+            if paragraph_thesis:
+                content_for_generation = f"MAIN POINT: {paragraph_thesis}\n\n{content_for_generation}"
         else:
             content_for_generation = paragraph
+            # Still add thesis hint for non-neutralized content
+            if paragraph_thesis:
+                content_for_generation = f"MAIN POINT: {paragraph_thesis}\n\n{content_for_generation}"
 
         # Generate with token limit based on input and configured expansion ratio
         target_words = int(word_count * self.config.target_expansion_ratio)
@@ -576,6 +624,15 @@ class StyleTransfer:
 
                 if stats:
                     stats.quality_issues_fixed += 1
+
+        # Final semantic coherence check - ensure overall meaning/thesis is preserved
+        if paragraph_thesis:
+            output = self._verify_semantic_coherence(
+                source=paragraph,
+                output=output,
+                thesis=paragraph_thesis,
+                stats=stats,
+            )
 
         # Track expansion and optionally truncate
         final_words = len(output.split())
@@ -791,6 +848,92 @@ class StyleTransfer:
                 instructions.append(violation)
 
         return self._call_critic(source, current_output, instructions)
+
+    def _verify_semantic_coherence(
+        self,
+        source: str,
+        output: str,
+        thesis: str,
+        stats: Optional['TransferStats'] = None,
+    ) -> str:
+        """Final check that overall meaning and thesis are preserved.
+
+        This is a holistic check after proposition-level validation to ensure
+        the output conveys the same overall message as the source.
+
+        Args:
+            source: Original source text.
+            output: Current styled output.
+            thesis: Extracted thesis statement.
+            stats: Optional stats object to update.
+
+        Returns:
+            Output text (possibly repaired if thesis was missing).
+        """
+        # Extract key concepts from thesis
+        from ..utils.nlp import get_nlp
+        nlp = get_nlp()
+
+        thesis_doc = nlp(thesis)
+        output_lower = output.lower()
+
+        # Get key content words from thesis
+        thesis_keywords = set()
+        for token in thesis_doc:
+            if token.pos_ in ("NOUN", "PROPN", "VERB", "ADJ") and not token.is_stop:
+                thesis_keywords.add(token.lemma_.lower())
+
+        # Check keyword coverage
+        found_keywords = sum(1 for kw in thesis_keywords if kw in output_lower)
+        coverage = found_keywords / len(thesis_keywords) if thesis_keywords else 1.0
+
+        # Also check named entities from thesis
+        thesis_entities = [ent.text.lower() for ent in thesis_doc.ents]
+        entities_found = sum(1 for ent in thesis_entities if ent in output_lower)
+        entity_coverage = entities_found / len(thesis_entities) if thesis_entities else 1.0
+
+        # Combined coherence score
+        coherence_score = (coverage * 0.6 + entity_coverage * 0.4)
+
+        if coherence_score >= 0.7:
+            logger.debug(f"Semantic coherence check passed: {coherence_score:.0%}")
+            return output
+
+        # Thesis is not well-preserved - need repair
+        logger.warning(
+            f"Semantic coherence low ({coherence_score:.0%}): "
+            f"thesis keywords {found_keywords}/{len(thesis_keywords)}, "
+            f"entities {entities_found}/{len(thesis_entities)}"
+        )
+
+        if stats:
+            stats.quality_issues_found += 1
+
+        # Repair to restore thesis
+        if self.critic_provider:
+            try:
+                instructions = [
+                    f"CRITICAL: The output must clearly express this main point: \"{thesis}\"",
+                    "Ensure the core argument/thesis is evident, not just supporting details",
+                ]
+
+                # Add specific missing keywords if any
+                missing_keywords = [kw for kw in thesis_keywords if kw not in output_lower]
+                if missing_keywords:
+                    instructions.append(f"Consider including key concepts: {', '.join(missing_keywords[:5])}")
+
+                repaired = self._call_critic(source, output, instructions)
+
+                if stats:
+                    stats.quality_issues_fixed += 1
+
+                logger.info("Applied semantic coherence repair")
+                return repaired
+
+            except Exception as e:
+                logger.warning(f"Semantic coherence repair failed: {e}")
+
+        return output
 
     def _find_entity_context(self, source: str, entity: str) -> Optional[str]:
         """Find the sentence containing an entity to provide context."""
