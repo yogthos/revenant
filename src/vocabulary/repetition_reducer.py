@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 
 # Common LLM-speak words to watch for
 LLM_SPEAK = {
+    # Corporate/tech jargon
     "utilize": "use",
     "utilization": "use",
     "implementation": "setup",
@@ -48,6 +49,69 @@ LLM_SPEAK = {
     "circle back": "return to",
     "deep dive": "detailed look",
     "moving forward": "next",
+    # Mechanical precision markers (AI tells)
+    "specifically": "",  # Often unnecessary
+    "particularly": "",
+    "fundamentally": "",
+    "essentially": "",
+    "inherently": "",
+    "intrinsically": "",
+    "ultimately": "in the end",
+    "subsequently": "then",
+    "consequently": "so",
+    "additionally": "also",
+    "furthermore": "also",
+    "moreover": "also",
+    "nevertheless": "but",
+    "nonetheless": "still",
+    "notwithstanding": "despite",
+    "accordingly": "so",
+    "thereby": "so",
+    "whereby": "where",
+    "wherein": "where",
+    "thereof": "of it",
+    "therein": "in it",
+    # Hedging/filler phrases
+    "it is important to note that": "",
+    "it should be noted that": "",
+    "it is worth mentioning that": "",
+    "it bears mentioning that": "",
+    "it goes without saying that": "",
+    "needless to say": "",
+    "as previously mentioned": "",
+    "as noted earlier": "",
+    "as discussed above": "",
+    "in this context": "",
+    "in this regard": "",
+    "in light of": "given",
+    "with respect to": "about",
+    "in terms of": "for",
+    "in order to": "to",
+    "due to the fact that": "because",
+    "for the purpose of": "to",
+    "in the event that": "if",
+    "at this point in time": "now",
+    "at the present time": "now",
+    "prior to": "before",
+    "subsequent to": "after",
+    # Robotic formality
+    "commence": "start",
+    "terminate": "end",
+    "endeavor": "try",
+    "ascertain": "find out",
+    "constitutes": "is",
+    "demonstrates": "shows",
+    "indicates": "shows",
+    "necessitates": "needs",
+    "encompasses": "includes",
+    "pertains to": "relates to",
+    "manifests": "shows",
+    "exhibits": "shows",
+    "exemplifies": "shows",
+    "elucidates": "explains",
+    "delineates": "describes",
+    "underscores": "highlights",
+    "illuminates": "shows",
     # Fix weird Qwen vocabulary substitutions
     "ticker": "watch",
     "vigil": "watch",
@@ -95,6 +159,8 @@ class ReductionStats:
     replacements_made: int = 0
     overused_words: List[str] = field(default_factory=list)
     replacements_detail: Dict[str, str] = field(default_factory=dict)
+    sentence_length_variance: float = 0.0  # Higher = more varied = more human
+    repeated_starters: List[str] = field(default_factory=list)  # Sentences starting same way
 
 
 class RepetitionReducer:
@@ -171,6 +237,10 @@ class RepetitionReducer:
             Tuple of (processed_text, stats).
         """
         stats = ReductionStats()
+
+        # First: Replace multi-word AI phrases (case-insensitive)
+        text = self._replace_ai_phrases(text, stats)
+
         doc = self.nlp(text)
 
         # First pass: count words
@@ -219,6 +289,9 @@ class RepetitionReducer:
 
         if stats.replacements_made > 0:
             logger.debug(f"Reduced {stats.replacements_made} repetitions: {stats.replacements_detail}")
+
+        # Analyze sentence variety for diagnostics
+        self.analyze_sentence_variety(result, stats)
 
         return result, stats
 
@@ -293,6 +366,182 @@ class RepetitionReducer:
             return replacement.capitalize()
         return replacement.lower()
 
+    def _replace_ai_phrases(self, text: str, stats: ReductionStats) -> str:
+        """Replace multi-word AI phrases with simpler alternatives.
+
+        Handles phrases like "in order to" -> "to", case-insensitively.
+        """
+        import re
+
+        # Multi-word phrases (sorted by length, longest first)
+        phrases = sorted(
+            [(k, v) for k, v in LLM_SPEAK.items() if ' ' in k],
+            key=lambda x: -len(x[0])
+        )
+
+        for phrase, replacement in phrases:
+            # Case-insensitive replacement
+            pattern = re.compile(re.escape(phrase), re.IGNORECASE)
+            matches = pattern.findall(text)
+            if matches:
+                for match in matches:
+                    # Match case of first letter
+                    if replacement:
+                        repl = self._match_case(replacement, match)
+                    else:
+                        repl = ""
+                    text = text.replace(match, repl, 1)
+                    stats.replacements_made += 1
+                    stats.replacements_detail[match] = repl if repl else "(removed)"
+
+        # Sentence-level AI pattern fixes
+        text = self._fix_sentence_patterns(text, stats)
+
+        # Replace AI-favored punctuation
+        text = self._simplify_punctuation(text, stats)
+
+        # Clean up double spaces from removals
+        text = re.sub(r'  +', ' ', text)
+        # Clean up space before punctuation
+        text = re.sub(r' ([.,;:!?])', r'\1', text)
+        # Fix sentences starting with lowercase after removal
+        text = re.sub(r'([.!?]\s+)([a-z])', lambda m: m.group(1) + m.group(2).upper(), text)
+
+        return text
+
+    def _simplify_punctuation(self, text: str, stats: ReductionStats) -> str:
+        """Replace AI-favored punctuation with simpler alternatives.
+
+        Em dashes, semicolons, and colons are overrepresented in AI text.
+        Convert to periods and commas for more natural flow.
+        """
+        import re
+
+        changes = 0
+
+        # Em dash (—) handling
+        # Parenthetical em dashes -> commas: "The system—which is complex—works"
+        em_paren = re.findall(r'—([^—]{1,50})—', text)
+        for match in em_paren:
+            text = text.replace(f'—{match}—', f', {match}, ', 1)
+            changes += 1
+
+        # Em dash before clause -> period: "This is key—it matters"
+        text, n = re.subn(r'—\s*(it|this|that|they|we|he|she|the|a|an)\b',
+                         lambda m: '. ' + m.group(1).capitalize(), text, flags=re.IGNORECASE)
+        changes += n
+
+        # Remaining em dashes -> comma
+        text, n = re.subn(r'—', ', ', text)
+        changes += n
+
+        # Semicolon handling - only between independent clauses, not in lists
+        # List pattern: "X; Y; and Z" or "X; Y; Z" - keep as commas
+        text, n = re.subn(r';\s+(and|or)\s+', r', \1 ', text, flags=re.IGNORECASE)
+        changes += n
+
+        # Semicolon followed by lowercase (likely list item) -> comma
+        text, n = re.subn(r';\s+([a-z])', r', \1', text)
+        changes += n
+
+        # Semicolon followed by capital (independent clause) -> period
+        text, n = re.subn(r';\s+([A-Z])', r'. \1', text)
+        changes += n
+
+        # Colon handling - only for explanation patterns, not lists
+        # "This is key: it affects" -> "This is key. It affects"
+        text, n = re.subn(r':\s+(it|this|that|they|we|he|she)\b',
+                         lambda m: '. ' + m.group(1).capitalize(), text, flags=re.IGNORECASE)
+        changes += n
+
+        if changes > 0:
+            stats.replacements_made += changes
+            stats.replacements_detail["punctuation simplified"] = f"({changes} changes)"
+
+        # Clean up spacing issues
+        text = re.sub(r'\s*,\s*', ', ', text)  # Normalize comma spacing
+        text = re.sub(r',\s*,', ',', text)  # Remove double commas
+        text = re.sub(r'\s+', ' ', text)  # Normalize spaces
+        text = re.sub(r'\s+\.', '.', text)  # No space before period
+
+        return text
+
+    def _fix_sentence_patterns(self, text: str, stats: ReductionStats) -> str:
+        """Fix sentence-level AI patterns using linguistic analysis.
+
+        Uses spaCy dependency parsing to detect structural patterns:
+        - Impersonal "It [be] [ADJ] that..." constructions (expletive subjects)
+        - Sentence-initial conjunctive adverbs (formulaic transitions)
+        - Heavy nominalization (abstract -tion/-ment nouns as subjects)
+        """
+        doc = self.nlp(text)
+        replacements = []  # (start, end, replacement_text)
+
+        for sent in doc.sents:
+            tokens = list(sent)
+            if len(tokens) < 3:
+                continue
+
+            sent_start = sent.start_char
+            sent_text = sent.text
+
+            # Pattern 1: Expletive "it" constructions - "It is [ADJ] that..."
+            # Linguistic pattern: pronoun "it" as subject + copula + that-clause
+            # This is an impersonal hedge common in formal/AI writing
+            first_token = tokens[0]
+            if (first_token.text.lower() == "it" and
+                first_token.dep_ in ("nsubj", "expl") and
+                first_token.head.lemma_ == "be"):
+                # Look for subordinating "that"
+                for tok in tokens[2:8]:
+                    if tok.dep_ == "mark" and tok.text.lower() == "that":
+                        # Remove everything up to and including "that"
+                        that_end = tok.idx + len(tok.text) + 1 - sent_start
+                        original = sent_text[:that_end].strip()
+                        replacements.append((sent.start_char, sent.start_char + that_end, ""))
+                        stats.replacements_made += 1
+                        stats.replacements_detail[original] = "(expletive removed)"
+                        break
+
+            # Pattern 2: Sentence-initial conjunctive adverbs
+            # Detected by: first token is ADV with "advmod" to root, and it's a formal connector
+            # These create mechanical flow: "Furthermore, X. Moreover, Y. Additionally, Z."
+            if (first_token.pos_ == "ADV" and
+                first_token.dep_ == "advmod" and
+                len(first_token.text) > 6):  # Longer adverbs tend to be formal
+                # Check if it's followed by comma (formulaic pattern)
+                if len(tokens) > 1 and tokens[1].text == ",":
+                    # Flag as formulaic transition
+                    stats.replacements_detail[f"adv: {first_token.text}"] = "(formulaic transition)"
+
+            # Pattern 3: Abstract nominalization as subject
+            # Detected by: subject ends in -tion/-ment/-ness and is abstract
+            for tok in tokens[:5]:  # Check first few tokens
+                if tok.dep_ == "nsubj" and tok.pos_ == "NOUN":
+                    word = tok.text.lower()
+                    # Check for nominalization suffixes (created from verbs)
+                    if (word.endswith(("tion", "ment", "ness", "ity", "ance", "ence")) and
+                        len(word) > 8):  # Longer = more formal
+                        stats.replacements_detail[f"nominalization: {tok.text}"] = "(flagged)"
+
+            # Pattern 4: Passive voice density check
+            # Too many passives in a row signals robotic writing
+            passive_count = sum(1 for t in tokens if t.dep_ == "auxpass")
+            if passive_count > 1:
+                stats.replacements_detail["multiple passives"] = f"({passive_count} in sentence)"
+
+        # Apply replacements in reverse order
+        result = text
+        for start, end, repl in sorted(replacements, key=lambda x: -x[0]):
+            result = result[:start] + repl + result[end:]
+
+        # Final cleanup: capitalize after removals
+        import re
+        result = re.sub(r'([.!?]\s*)([a-z])', lambda m: m.group(1) + m.group(2).upper(), result)
+        result = re.sub(r'^\s*([a-z])', lambda m: m.group(1).upper(), result)
+
+        return result
+
     def reset(self):
         """Reset word tracking between documents."""
         self.word_counts.clear()
@@ -305,3 +554,44 @@ class RepetitionReducer:
             for word, count in self.word_counts.most_common(limit)
             if count >= self.threshold
         ]
+
+    def analyze_sentence_variety(self, text: str, stats: ReductionStats) -> None:
+        """Analyze sentence variety and detect robotic patterns.
+
+        Updates stats with:
+        - sentence_length_variance: coefficient of variation (higher = more varied)
+        - repeated_starters: sentences that start the same way
+        """
+        doc = self.nlp(text)
+        sentences = list(doc.sents)
+
+        if len(sentences) < 2:
+            return
+
+        # Calculate sentence length variance
+        lengths = [len(list(sent)) for sent in sentences]
+        mean_len = sum(lengths) / len(lengths)
+        if mean_len > 0:
+            variance = sum((l - mean_len) ** 2 for l in lengths) / len(lengths)
+            std_dev = variance ** 0.5
+            stats.sentence_length_variance = std_dev / mean_len  # CV
+        else:
+            stats.sentence_length_variance = 0.0
+
+        # Detect repeated sentence starters (first 2-3 words)
+        starters = Counter()
+        for sent in sentences:
+            tokens = [t.text.lower() for t in sent if not t.is_space][:3]
+            if len(tokens) >= 2:
+                starter = ' '.join(tokens[:2])
+                starters[starter] += 1
+
+        # Report starters used 2+ times
+        stats.repeated_starters = [
+            f"'{starter}' ({count}x)"
+            for starter, count in starters.most_common()
+            if count >= 2
+        ]
+
+        if stats.repeated_starters:
+            logger.debug(f"Repeated sentence starters: {stats.repeated_starters}")

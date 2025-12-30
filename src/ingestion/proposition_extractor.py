@@ -936,7 +936,38 @@ class PropositionExtractor:
                         context="Example item"
                     ))
 
-        # 6. Technical terms (capitalized multi-word phrases not at sentence start)
+        # 6. Analogies - critical for meaning preservation
+        # Patterns: "Consider X", "think of X", "X is like Y", "two brothers racing bikes"
+        analogy_patterns = [
+            r'(?:consider|think of|imagine)\s+([^.]+)',
+            r'(?:like|as if)\s+([^.]{10,80})',
+            r'(two\s+\w+\s+\w+ing\s+[^.]+)',  # "two brothers racing bikes"
+        ]
+        for pattern in analogy_patterns:
+            for match in re.finditer(pattern, text, re.IGNORECASE):
+                analogy_text = match.group(1).strip()
+                if len(analogy_text) > 10 and analogy_text not in [a.text for a in anchors]:
+                    anchors.append(ContentAnchor(
+                        text=analogy_text,
+                        anchor_type="example",
+                        must_preserve=True,
+                        context="Analogy - critical for understanding"
+                    ))
+
+        # 7. Phase transition examples (water->steam, etc.)
+        transition_pattern = r'(\w+)\s+(?:transforms?|becomes?|turns?|changes?)\s+(?:into|to)\s+(\w+)'
+        for match in re.finditer(transition_pattern, text, re.IGNORECASE):
+            from_state = match.group(1)
+            to_state = match.group(2)
+            transition_text = f"{from_state} to {to_state}"
+            anchors.append(ContentAnchor(
+                text=transition_text,
+                anchor_type="example",
+                must_preserve=True,
+                context="Phase transition example"
+            ))
+
+        # 8. Technical terms (capitalized multi-word phrases not at sentence start)
         tech_term_pattern = r'(?<!^)(?<!\. )([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)'
         for match in re.finditer(tech_term_pattern, text):
             term = match.group(1)

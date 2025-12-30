@@ -22,6 +22,7 @@ from ..utils.nlp import (
     split_into_paragraphs,
     split_into_sentences,
     filter_headings,
+    is_heading,
 )
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
@@ -59,12 +60,31 @@ class TransferConfig:
     reduce_repetition: bool = True
     repetition_threshold: int = 3  # Words used 3+ times get replaced
 
-    # Content extraction
-    skip_headings: bool = True
+    # Content handling
+    pass_headings_unchanged: bool = True  # Don't transform headings
     min_paragraph_words: int = 10  # Skip very short paragraphs
 
     # Document context settings
     use_document_context: bool = True  # Extract and use document-level context
+
+    # Neutralization settings - convert prose to description before LoRA
+    use_neutralization: bool = True  # Neutralize paragraphs before transformation
+    neutralization_temperature: float = 0.3  # Low temp for consistent descriptions
+    neutralization_min_tokens: int = 300  # Minimum tokens for neutralization output
+    neutralization_token_multiplier: float = 1.2  # Multiplier for token calculation
+
+    # Content anchor detection settings
+    analogy_min_length: int = 10  # Minimum chars for detected analogies
+    detect_phase_transitions: bool = True  # Detect "X transforms into Y" patterns
+
+    # Hallucination detection settings
+    hallucination_check_noun_phrases: bool = True  # Check for invented noun phrases
+    critical_hallucination_words: str = "death,god,soul,spirit,heaven,hell,divine,eternal"
+
+    # Length control settings
+    max_expansion_ratio: float = 1.5  # Max output/input word ratio (1.5 = 50% longer)
+    target_expansion_ratio: float = 1.2  # Target for LoRA generation
+    truncate_over_expanded: bool = False  # If True, truncate; if False, allow longer output
 
 
 @dataclass
@@ -208,6 +228,11 @@ class StyleTransfer:
             self.proposition_validator = PropositionValidator(
                 proposition_threshold=self.config.proposition_threshold,
                 anchor_threshold=self.config.anchor_threshold,
+                check_noun_phrases=getattr(self.config, 'hallucination_check_noun_phrases', True),
+                critical_hallucination_words=getattr(
+                    self.config, 'critical_hallucination_words',
+                    "death,god,soul,spirit,heaven,hell,divine,eternal"
+                ),
             )
 
         # Set up entailment verifier if requested
@@ -272,6 +297,61 @@ class StyleTransfer:
 
         return compute_semantic_similarity(original, output)
 
+    def _neutralize_paragraph(self, paragraph: str) -> str:
+        """Convert paragraph to neutral semantic description.
+
+        This matches the training format where the LoRA learned to transform
+        descriptions into styled prose.
+
+        Args:
+            paragraph: Original paragraph text.
+
+        Returns:
+            Neutral description of the paragraph content.
+        """
+        if not self.critic_provider:
+            logger.warning("No critic provider for neutralization, using original text")
+            return paragraph
+
+        prompt = format_prompt("neutralize_for_transfer", paragraph=paragraph)
+
+        try:
+            # Calculate tokens based on input length - need enough room for full content
+            input_words = len(paragraph.split())
+            min_tokens = getattr(self.config, 'neutralization_min_tokens', 300)
+            token_multiplier = getattr(self.config, 'neutralization_token_multiplier', 1.2)
+            neutralize_tokens = max(min_tokens, int(input_words * token_multiplier))
+
+            description = self.critic_provider.call(
+                system_prompt="You are a precise content summarizer. Describe what the text says in neutral language. Include ALL names, numbers, and specific details.",
+                user_prompt=prompt,
+                temperature=self.config.neutralization_temperature,
+                max_tokens=neutralize_tokens,
+            )
+
+            description = description.strip()
+            logger.debug(f"Raw neutralized output: {description[:200]}...")
+
+            # Clean up any meta-language the model might add
+            prefixes_to_remove = [
+                "The passage ", "This text ", "The text ", "This passage ",
+                "Here, ", "In this ", "The author ",
+            ]
+            for prefix in prefixes_to_remove:
+                if description.lower().startswith(prefix.lower()):
+                    description = description[len(prefix):]
+                    # Capitalize first letter
+                    if description:
+                        description = description[0].upper() + description[1:]
+                    break
+
+            logger.debug(f"Neutralized: {len(paragraph.split())} words -> {len(description.split())} words")
+            return description
+
+        except Exception as e:
+            logger.warning(f"Neutralization failed: {e}, using original text")
+            return paragraph
+
     def transfer_paragraph(
         self,
         paragraph: str,
@@ -302,8 +382,19 @@ class StyleTransfer:
             source_propositions = self.proposition_validator.extract_propositions(paragraph)
             logger.debug(f"Extracted {len(source_propositions)} propositions from source")
 
-        # Generate with token limit based on input (allow 1.5x for style variation)
-        max_tokens = max(100, int(word_count * 1.8))
+        # Neutralize paragraph before transformation (matches LoRA training format)
+        if self.config.use_neutralization:
+            content_for_generation = self._neutralize_paragraph(paragraph)
+            logger.info(f"Neutralized to {len(content_for_generation.split())} words")
+            # Check if neutralization failed (returned original)
+            if content_for_generation.strip() == paragraph.strip():
+                logger.warning("Neutralization returned original text unchanged")
+        else:
+            content_for_generation = paragraph
+
+        # Generate with token limit based on input and configured expansion ratio
+        target_words = int(word_count * self.config.target_expansion_ratio)
+        max_tokens = max(100, int(target_words * 1.5))  # tokens > words
 
         # Get context hint for generation (if document context available)
         context_hint = None
@@ -311,12 +402,24 @@ class StyleTransfer:
             context_hint = self.document_context.to_generation_hint()
 
         output = self.generator.generate(
-            content=paragraph,
+            content=content_for_generation,
             author=self.author,
             context=previous,
             max_tokens=max_tokens,
             context_hint=context_hint,
         )
+
+        # Check if LoRA output matches input (indicates no transformation)
+        if output.strip() == paragraph.strip():
+            logger.warning("LoRA output identical to original paragraph - no transformation occurred")
+        elif output.strip() == content_for_generation.strip():
+            logger.warning("LoRA output identical to neutralized content - no style applied")
+
+        # Track expansion at LoRA stage
+        lora_words = len(output.split())
+        source_words = len(paragraph.split())
+        if lora_words > source_words * self.config.max_expansion_ratio:
+            logger.warning(f"LoRA over-expanded: {lora_words} words vs {source_words} source ({lora_words/source_words:.0%})")
 
         # Proposition-based validation and repair loop
         if self.proposition_validator and source_propositions:
@@ -389,12 +492,80 @@ class StyleTransfer:
                 if stats:
                     stats.quality_issues_fixed += 1
 
+        # Track expansion and optionally truncate
+        final_words = len(output.split())
+        max_allowed_words = int(source_words * self.config.max_expansion_ratio)
+
+        if final_words > max_allowed_words:
+            expansion_pct = final_words / source_words
+            if self.config.truncate_over_expanded:
+                logger.warning(f"Output over-expanded: {final_words} words vs {source_words} source ({expansion_pct:.0%}), truncating")
+                # Truncate to allowed length at sentence boundary
+                sentences = split_into_sentences(output)
+                truncated = []
+                current_words = 0
+                for sent in sentences:
+                    sent_words = len(sent.split())
+                    if current_words + sent_words > max_allowed_words:
+                        break
+                    truncated.append(sent)
+                    current_words += sent_words
+
+                if truncated:
+                    output = ' '.join(truncated)
+                # If no complete sentences fit, keep at least the first sentence
+                elif sentences:
+                    output = sentences[0]
+            else:
+                logger.info(f"Output expanded: {final_words} words vs {source_words} source ({expansion_pct:.0%})")
+
+        # Ensure output ends with complete sentence
+        output = self._ensure_complete_ending(output)
+
         # Verify if configured
         score = 1.0
         if self.verify_fn:
             score = self.verify_fn(paragraph, output)
 
         return output, score
+
+    def _ensure_complete_ending(self, text: str) -> str:
+        """Ensure text ends with a complete sentence.
+
+        If text ends mid-sentence, remove the incomplete part.
+        """
+        text = text.strip()
+        if not text:
+            return text
+
+        # If already ends with sentence terminator, we're good
+        if text[-1] in '.!?':
+            return text
+
+        # Find the last complete sentence
+        sentences = split_into_sentences(text)
+        if not sentences:
+            return text
+
+        # Check if last sentence is complete (ends with punctuation)
+        complete_sentences = []
+        for sent in sentences:
+            sent = sent.strip()
+            if sent and sent[-1] in '.!?':
+                complete_sentences.append(sent)
+            elif sent and len(sent) > 20:
+                # Long fragment - try to salvage by adding period
+                # Only if it looks like a complete thought
+                words = sent.split()
+                if len(words) >= 5:
+                    complete_sentences.append(sent + '.')
+                    logger.warning(f"Added period to incomplete sentence: ...{sent[-30:]}")
+
+        if complete_sentences:
+            return ' '.join(complete_sentences)
+
+        # Fallback: add period to entire text
+        return text + '.'
 
     def _call_critic(
         self,
@@ -430,18 +601,24 @@ class StyleTransfer:
                 instructions=instruction_text
             )
 
+        # Don't pass source text to critic - only the styled output
+        # This prevents the critic from copying source sentences
         user_prompt = format_prompt(
             "critic_repair_user",
-            source=source,
             current_output=current_output
         )
 
         try:
+            # Allow enough tokens for completion (current output + room for fixes)
+            # Use 1.5x to ensure sentences can be completed
+            current_words = len(current_output.split())
+            max_repair_tokens = max(200, int(current_words * 1.5))
+
             repaired = self.critic_provider.call(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 temperature=self.config.repair_temperature,
-                max_tokens=len(current_output.split()) * 2 + 100,
+                max_tokens=max_repair_tokens,
             )
             logger.debug(f"Critic repair applied: {len(instructions)} fixes")
             return repaired.strip()
@@ -467,26 +644,62 @@ class StyleTransfer:
         """
         instructions = []
 
+        # First priority: complete any incomplete sentences
+        if validation.has_incomplete_sentences:
+            instructions.append("COMPLETE the final sentence - it ends abruptly, add a proper ending")
+
+        # Add missing entities with context about what they relate to
         if validation.missing_entities:
-            entities = ", ".join(validation.missing_entities[:5])
-            instructions.append(f"ADD these missing names/terms: {entities}")
+            for entity in validation.missing_entities[:5]:
+                # Find the proposition that contains this entity for context
+                context = self._find_entity_context(source, entity)
+                if context:
+                    instructions.append(f"ADD '{entity}' - context: {context}")
+                else:
+                    instructions.append(f"MENTION '{entity}' naturally in the text")
 
         if validation.added_entities:
-            entities = ", ".join(validation.added_entities[:5])
-            instructions.append(f"REMOVE these terms (not in source): {entities}")
+            entities = ", ".join(validation.added_entities[:3])
+            instructions.append(f"REMOVE these terms (not relevant): {entities}")
 
+        # Handle hallucinated content - critical issues must be removed
+        if validation.hallucinated_content:
+            critical_hallucinations = [
+                h for h in validation.hallucinated_content if h.severity == "critical"
+            ]
+            for h in critical_hallucinations[:3]:
+                instructions.append(
+                    f"REMOVAL REQUIRED: Delete any sentence mentioning '{h.text}' - this was not in the source"
+                )
+
+        # Add missing facts with the actual fact content
         if validation.missing_facts:
-            for fact in validation.missing_facts[:2]:
-                instructions.append(f"ADD this fact: {fact}")
+            for fact in validation.missing_facts[:3]:
+                instructions.append(f"INCLUDE this fact: {fact}")
 
         if validation.stance_violations:
             for violation in validation.stance_violations[:2]:
                 instructions.append(violation)
 
-        # Always check for grammar/completeness
-        instructions.append("FIX any incomplete or ungrammatical sentences")
-
         return self._call_critic(source, current_output, instructions)
+
+    def _find_entity_context(self, source: str, entity: str) -> Optional[str]:
+        """Find the sentence containing an entity to provide context."""
+        sentences = split_into_sentences(source)
+        for sent in sentences:
+            if entity.lower() in sent.lower():
+                # Return a shortened version of the sentence as context
+                if len(sent) > 100:
+                    # Find the clause containing the entity
+                    words = sent.split()
+                    entity_words = entity.lower().split()
+                    for i, word in enumerate(words):
+                        if word.lower() in entity_words:
+                            start = max(0, i - 5)
+                            end = min(len(words), i + len(entity_words) + 5)
+                            return "..." + " ".join(words[start:end]) + "..."
+                return sent[:100] + "..." if len(sent) > 100 else sent
+        return None
 
     def _quality_critic_repair(
         self,
@@ -596,10 +809,6 @@ class StyleTransfer:
         # Split into paragraphs
         paragraphs = split_into_paragraphs(text)
 
-        # Filter headings if configured
-        if self.config.skip_headings:
-            paragraphs = filter_headings(paragraphs)
-
         if not paragraphs:
             logger.warning("No content paragraphs found")
             return text, self._transfer_stats
@@ -622,10 +831,17 @@ class StyleTransfer:
 
             para_start = time.time()
 
-            output, score = self.transfer_paragraph(para, previous, self._transfer_stats)
+            # Check if paragraph is a heading - pass through unchanged
+            para_lines = para.strip().split('\n')
+            if self.config.pass_headings_unchanged and len(para_lines) == 1 and is_heading(para_lines[0]):
+                logger.debug(f"Passing heading unchanged: {para[:50]}...")
+                output = para
+                score = 1.0
+            else:
+                output, score = self.transfer_paragraph(para, previous, self._transfer_stats)
 
-            # Apply repetition reduction
-            if self.repetition_reducer:
+            # Apply repetition reduction (only to transformed content, not headings)
+            if self.repetition_reducer and score < 1.0:
                 output, reduction_stats = self.repetition_reducer.reduce(output)
                 self._transfer_stats.words_replaced += reduction_stats.replacements_made
 

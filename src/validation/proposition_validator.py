@@ -12,7 +12,7 @@ from ..ingestion.proposition_extractor import (
     PropositionExtractor as RichPropositionExtractor,
     PropositionNode,
 )
-from ..utils.nlp import get_nlp
+from ..utils.nlp import get_nlp, find_incomplete_sentences
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 
@@ -54,9 +54,32 @@ class ValidationResult:
     added_entities: List[str] = field(default_factory=list)
     stance_violations: List[str] = field(default_factory=list)
 
+    # Length tracking
+    length_ratio: float = 1.0  # generated_words / source_words
+    is_over_expanded: bool = False  # True if output is too long
+
+    # Sentence completeness
+    incomplete_sentences: List[str] = field(default_factory=list)
+    has_incomplete_sentences: bool = False
+
     def get_repair_instructions(self) -> List[str]:
         """Generate specific repair instructions."""
         instructions = []
+
+        # Incomplete sentences are critical - fix first
+        if self.has_incomplete_sentences:
+            for incomplete in self.incomplete_sentences[:2]:
+                short_preview = incomplete[:50] + "..." if len(incomplete) > 50 else incomplete
+                instructions.append(
+                    f"COMPLETE this incomplete sentence: '{short_preview}'"
+                )
+
+        # Over-expansion is critical - address next
+        if self.is_over_expanded:
+            instructions.append(
+                f"SHORTEN output to match source length (currently {self.length_ratio:.0%} of target). "
+                "Remove any content, examples, or elaborations not in the source."
+            )
 
         # Missing content
         if self.missing_entities:
@@ -96,9 +119,13 @@ class PropositionValidator:
         self,
         proposition_threshold: float = 0.7,  # Min coverage for propositions
         anchor_threshold: float = 0.8,  # Min coverage for content anchors
+        check_noun_phrases: bool = True,  # Check for invented noun phrases
+        critical_hallucination_words: str = "death,god,soul,spirit,heaven,hell,divine,eternal",
     ):
         self.proposition_threshold = proposition_threshold
         self.anchor_threshold = anchor_threshold
+        self.check_noun_phrases = check_noun_phrases
+        self.critical_words = set(critical_hallucination_words.lower().split(","))
         self.prop_extractor = RichPropositionExtractor()
         self._nlp = None
 
@@ -201,11 +228,37 @@ class PropositionValidator:
             if h.content_type == "entity":
                 added_entities.append(h.text)
 
-        # Determine validity
+        # Calculate length ratio to detect over-expansion
+        source_words = len(source_text.split())
+        generated_words = len(generated_text.split())
+        length_ratio = generated_words / source_words if source_words > 0 else 1.0
+
+        # Flag over-expansion (more than 50% longer is suspicious)
+        # Relaxed to allow stylistic freedom - actual limit enforced in transfer.py
+        is_over_expanded = length_ratio > 1.5
+
+        if is_over_expanded:
+            logger.warning(
+                f"Output over-expanded: {generated_words} words vs {source_words} source "
+                f"({length_ratio:.0%})"
+            )
+
+        # Check for incomplete sentences
+        incomplete_sentences = find_incomplete_sentences(generated_text)
+        has_incomplete = len(incomplete_sentences) > 0
+
+        if has_incomplete:
+            logger.warning(
+                f"Found {len(incomplete_sentences)} incomplete sentence(s) in output"
+            )
+
+        # Determine validity - also fail if over-expanded or has incomplete sentences
         is_valid = (
             prop_coverage >= self.proposition_threshold and
             anchor_coverage >= self.anchor_threshold and
-            len([h for h in hallucinated if h.severity == "critical"]) == 0
+            len([h for h in hallucinated if h.severity == "critical"]) == 0 and
+            not is_over_expanded and
+            not has_incomplete
         )
 
         return ValidationResult(
@@ -219,6 +272,10 @@ class PropositionValidator:
             missing_facts=missing_facts,
             added_entities=list(set(added_entities)),
             stance_violations=list(set(stance_violations)),
+            length_ratio=length_ratio,
+            is_over_expanded=is_over_expanded,
+            incomplete_sentences=incomplete_sentences,
+            has_incomplete_sentences=has_incomplete,
         )
 
     def _check_proposition_preserved(
@@ -227,7 +284,11 @@ class PropositionValidator:
         generated_text: str,
         gen_doc,
     ) -> PropositionMatch:
-        """Check if a proposition is preserved in generated text."""
+        """Check if a proposition is preserved in generated text.
+
+        Stricter validation that prioritizes entity and anchor preservation
+        over keyword matching. Missing key entities = automatic failure.
+        """
         gen_lower = generated_text.lower()
 
         # Calculate match score based on keyword overlap
@@ -246,24 +307,35 @@ class PropositionValidator:
         else:
             keyword_score = 0.5  # Default if no keywords
 
-        # Check entity preservation
+        # Check entity preservation - CRITICAL for meaning
         entity_score = 1.0
         missing_elements = []
+        has_critical_missing = False
 
         for entity in prop.entities:
             if entity.lower() not in gen_lower:
                 entity_score -= 1.0 / max(len(prop.entities), 1)
                 missing_elements.append(f"entity: {entity}")
+                # Multi-word entities (like proper names) are critical
+                if len(entity.split()) > 1:
+                    has_critical_missing = True
 
-        # Check anchor preservation
+        # Check anchor preservation - also critical
         anchor_score = 1.0
         for anchor in prop.content_anchors:
             if anchor.must_preserve and anchor.text.lower() not in gen_lower:
                 anchor_score -= 1.0 / max(len(prop.content_anchors), 1)
                 missing_elements.append(f"{anchor.anchor_type}: {anchor.text}")
+                # Examples and statistics are critical
+                if anchor.anchor_type in ("example", "statistic", "quote"):
+                    has_critical_missing = True
 
-        # Combined score
-        match_score = (keyword_score * 0.4 + entity_score * 0.3 + anchor_score * 0.3)
+        # Combined score - weight entities and anchors more heavily
+        match_score = (keyword_score * 0.2 + entity_score * 0.4 + anchor_score * 0.4)
+
+        # If critical content is missing, fail regardless of score
+        if has_critical_missing:
+            match_score = min(match_score, 0.4)
 
         # Find matching text (the sentence that best matches)
         matched_text = None
@@ -280,9 +352,10 @@ class PropositionValidator:
                     best_sentence_score = sent_score
                     matched_text = sent.text
 
+        # Stricter threshold: require 0.6 match score
         return PropositionMatch(
             proposition=prop,
-            is_preserved=match_score >= 0.5,
+            is_preserved=match_score >= 0.6 and not has_critical_missing,
             match_score=match_score,
             matched_text=matched_text,
             missing_elements=missing_elements,
@@ -345,6 +418,31 @@ class PropositionValidator:
                             severity="warning",
                         ))
 
+        # Check for significant noun phrases not in source
+        # This catches invented concepts like "life after death"
+        if self.check_noun_phrases:
+            for chunk in gen_doc.noun_chunks:
+                chunk_text = chunk.text.lower()
+                # Skip common/generic chunks
+                if len(chunk_text.split()) < 2:
+                    continue
+                # Skip chunks that are just determiners + common nouns
+                if chunk.root.pos_ not in ("NOUN", "PROPN"):
+                    continue
+                # Check if this concept appears in source
+                if chunk_text not in source_lower:
+                    # Check if the key noun appears in source (partial match)
+                    root_lemma = chunk.root.lemma_.lower()
+                    if root_lemma not in source_lower and len(root_lemma) > 4:
+                        # Completely new concept - flag as hallucination
+                        # Higher severity for words in critical_words list (configurable)
+                        severity = "critical" if any(w in chunk_text for w in self.critical_words) else "warning"
+                        hallucinated.append(HallucinatedContent(
+                            text=chunk.text,
+                            content_type="claim",
+                            severity=severity,
+                        ))
+
         return hallucinated
 
     def _summarize_proposition(self, prop: PropositionNode) -> str:
@@ -391,9 +489,13 @@ class PropositionValidator:
 def create_proposition_validator(
     proposition_threshold: float = 0.7,
     anchor_threshold: float = 0.8,
+    check_noun_phrases: bool = True,
+    critical_hallucination_words: str = "death,god,soul,spirit,heaven,hell,divine,eternal",
 ) -> PropositionValidator:
     """Create a proposition validator with specified thresholds."""
     return PropositionValidator(
         proposition_threshold=proposition_threshold,
         anchor_threshold=anchor_threshold,
+        check_noun_phrases=check_noun_phrases,
+        critical_hallucination_words=critical_hallucination_words,
     )

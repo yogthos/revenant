@@ -131,30 +131,68 @@ def transfer_file(
     word_count = len(input_text.split())
     print(f"Input: {word_count} words")
 
-    # Configure transfer
-    config = TransferConfig(
-        temperature=temperature,
-        verify_entailment=verify,
-    )
+    # Configure transfer from app config or defaults
+    if app_config:
+        gen = app_config.generation
+        config = TransferConfig(
+            # Use CLI temperature if specified, otherwise config value
+            temperature=temperature,
+            verify_entailment=verify,
+            # From config file
+            max_repair_attempts=gen.max_repair_attempts,
+            repair_temperature=gen.repair_temperature,
+            entailment_threshold=gen.entailment_threshold,
+            use_proposition_validation=True,
+            proposition_threshold=gen.proposition_threshold,
+            anchor_threshold=gen.anchor_threshold,
+            max_expansion_ratio=gen.max_expansion_ratio,
+            target_expansion_ratio=gen.target_expansion_ratio,
+            truncate_over_expanded=gen.truncate_over_expanded,
+            use_neutralization=gen.use_neutralization,
+            neutralization_temperature=gen.neutralization_temperature,
+            # Neutralization token settings
+            neutralization_min_tokens=gen.neutralization_min_tokens,
+            neutralization_token_multiplier=gen.neutralization_token_multiplier,
+            # Content anchor detection
+            analogy_min_length=gen.analogy_min_length,
+            detect_phase_transitions=gen.detect_phase_transitions,
+            # Hallucination detection
+            hallucination_check_noun_phrases=gen.hallucination_check_noun_phrases,
+            critical_hallucination_words=gen.critical_hallucination_words,
+            # Post-processing
+            reduce_repetition=gen.reduce_repetition,
+            repetition_threshold=gen.repetition_threshold,
+            use_document_context=gen.use_document_context,
+            pass_headings_unchanged=gen.pass_headings_unchanged,
+            min_paragraph_words=gen.min_paragraph_words,
+        )
+    else:
+        config = TransferConfig(
+            temperature=temperature,
+            verify_entailment=verify,
+        )
 
     # Create critic provider for repairs
     if app_config and app_config.llm.providers.get("deepseek"):
         deepseek_config = app_config.llm.get_provider_config("deepseek")
-        critic_provider = DeepSeekProvider(
-            api_key=deepseek_config.api_key,
-            model=deepseek_config.model,
-        )
+        critic_provider = DeepSeekProvider(config=deepseek_config)
         print(f"Using DeepSeek for critic/repair")
     else:
         # Try to get API key from environment
         import os
+        from src.config import LLMProviderConfig
         api_key = os.environ.get("DEEPSEEK_API_KEY", "")
         if not api_key:
             print("Warning: No DeepSeek API key found. Repairs will be disabled.")
             print("Set DEEPSEEK_API_KEY or configure in config.json")
             critic_provider = None
         else:
-            critic_provider = DeepSeekProvider(api_key=api_key)
+            deepseek_config = LLMProviderConfig(
+                api_key=api_key,
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com",
+            )
+            critic_provider = DeepSeekProvider(config=deepseek_config)
             print(f"Using DeepSeek for critic/repair (from env)")
 
     # Create transfer pipeline
@@ -168,6 +206,13 @@ def transfer_file(
         config=config,
     )
 
+    # Set up output file for streaming
+    output_file = Path(output_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    # Track paragraphs for streaming output
+    output_paragraphs = []
+
     # Progress callback
     def on_progress(current: int, total: int, status: str):
         if verbose:
@@ -178,22 +223,29 @@ def transfer_file(
             bar = "=" * pct + "-" * (50 - pct)
             print(f"\r  [{bar}] {current}/{total}", end="", flush=True)
 
+    # Paragraph callback - write to file as each paragraph completes
+    def on_paragraph(index: int, paragraph: str):
+        output_paragraphs.append(paragraph)
+        # Write all paragraphs so far to file (overwrite for clean state)
+        with open(output_file, 'w') as f:
+            f.write("\n\n".join(output_paragraphs))
+        if verbose:
+            print(f"\n--- Paragraph {index + 1} written to {output_path} ---")
+
     # Run transfer
-    print("\nTransferring...")
+    print(f"\nTransferring... (streaming to {output_path})")
     start_time = time.time()
 
     output_text, stats = transfer.transfer_document(
         input_text,
         on_progress=on_progress,
+        on_paragraph=on_paragraph,
     )
 
     if not verbose:
         print()  # New line after progress bar
 
-    # Save output
-    output_file = Path(output_path)
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-
+    # Final save (ensures proper formatting)
     with open(output_file, 'w') as f:
         f.write(output_text)
 

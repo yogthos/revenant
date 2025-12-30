@@ -108,7 +108,9 @@ class DocumentContextExtractor:
 
         # Extract entities and keywords using spaCy (fast, reliable)
         try:
-            context.key_entities = extract_entities(text)[:15]
+            # extract_entities returns List[Tuple[str, str]] - extract just the text
+            entities = extract_entities(text)[:15]
+            context.key_entities = [ent[0] for ent in entities]
             context.key_concepts = extract_keywords(text, top_n=10)
         except Exception as e:
             logger.warning(f"Failed to extract entities/keywords: {e}")

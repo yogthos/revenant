@@ -113,12 +113,45 @@ class CorpusConfig:
 @dataclass
 class GenerationConfig:
     """Configuration for text generation."""
+    # Repair settings
     max_repair_attempts: int = 3  # Max critic repair attempts per paragraph
     repair_temperature: float = 0.3  # Low temperature for precise edits
+
+    # Meaning preservation settings
     entailment_threshold: float = 0.7  # Min score for semantic preservation
-    proposition_threshold: float = 0.7  # Min proposition coverage
-    anchor_threshold: float = 0.8  # Min content anchor coverage
+    proposition_threshold: float = 0.7  # Min proposition coverage (0.0-1.0)
+    anchor_threshold: float = 0.8  # Min content anchor coverage (0.0-1.0)
+
+    # Length control settings
+    max_expansion_ratio: float = 1.5  # Max output/input word ratio (1.5 = 50% longer)
+    target_expansion_ratio: float = 1.2  # Target for LoRA generation (1.2 = 20% longer)
+    truncate_over_expanded: bool = False  # If True, truncate; if False, allow longer
+
+    # Style settings
+    style_temperature: float = 0.7  # Temperature for style generation (higher = more creative)
+    neutralization_temperature: float = 0.3  # Temperature for neutralization (lower = more consistent)
+    use_neutralization: bool = True  # Convert prose to description before LoRA
+
+    # Neutralization token settings
+    neutralization_min_tokens: int = 300  # Minimum tokens for neutralization output
+    neutralization_token_multiplier: float = 1.2  # Multiplier: tokens = max(min, words * multiplier)
+
+    # Content anchor detection settings
+    analogy_min_length: int = 10  # Minimum chars for detected analogies
+    detect_phase_transitions: bool = True  # Detect "X transforms into Y" patterns
+
+    # Hallucination detection settings
+    hallucination_check_noun_phrases: bool = True  # Check for invented noun phrases
+    critical_hallucination_words: str = "death,god,soul,spirit,heaven,hell,divine,eternal"  # Comma-separated
+
+    # Post-processing settings
     repetition_threshold: int = 3  # Words used N+ times get replaced
+    reduce_repetition: bool = True  # Enable repetition reduction
+
+    # Document handling
+    use_document_context: bool = True  # Extract document-level context
+    pass_headings_unchanged: bool = True  # Don't transform headings
+    min_paragraph_words: int = 10  # Skip paragraphs shorter than this
 
 
 @dataclass
@@ -318,13 +351,39 @@ def load_config(config_path: str = "config.json") -> Config:
         )
 
     if "generation" in data:
+        gen = data["generation"]
         config.generation = GenerationConfig(
-            max_repair_attempts=data["generation"].get("max_repair_attempts", 3),
-            repair_temperature=data["generation"].get("repair_temperature", 0.3),
-            entailment_threshold=data["generation"].get("entailment_threshold", 0.7),
-            proposition_threshold=data["generation"].get("proposition_threshold", 0.7),
-            anchor_threshold=data["generation"].get("anchor_threshold", 0.8),
-            repetition_threshold=data["generation"].get("repetition_threshold", 3),
+            # Repair settings
+            max_repair_attempts=gen.get("max_repair_attempts", 3),
+            repair_temperature=gen.get("repair_temperature", 0.3),
+            # Meaning preservation
+            entailment_threshold=gen.get("entailment_threshold", 0.7),
+            proposition_threshold=gen.get("proposition_threshold", 0.7),
+            anchor_threshold=gen.get("anchor_threshold", 0.8),
+            # Length control
+            max_expansion_ratio=gen.get("max_expansion_ratio", 1.5),
+            target_expansion_ratio=gen.get("target_expansion_ratio", 1.2),
+            truncate_over_expanded=gen.get("truncate_over_expanded", False),
+            # Style settings
+            style_temperature=gen.get("style_temperature", 0.7),
+            neutralization_temperature=gen.get("neutralization_temperature", 0.3),
+            use_neutralization=gen.get("use_neutralization", True),
+            # Neutralization token settings
+            neutralization_min_tokens=gen.get("neutralization_min_tokens", 300),
+            neutralization_token_multiplier=gen.get("neutralization_token_multiplier", 1.2),
+            # Content anchor detection
+            analogy_min_length=gen.get("analogy_min_length", 10),
+            detect_phase_transitions=gen.get("detect_phase_transitions", True),
+            # Hallucination detection
+            hallucination_check_noun_phrases=gen.get("hallucination_check_noun_phrases", True),
+            critical_hallucination_words=gen.get("critical_hallucination_words", "death,god,soul,spirit,heaven,hell,divine,eternal"),
+            # Post-processing
+            repetition_threshold=gen.get("repetition_threshold", 3),
+            reduce_repetition=gen.get("reduce_repetition", True),
+            # Document handling
+            use_document_context=gen.get("use_document_context", True),
+            pass_headings_unchanged=gen.get("pass_headings_unchanged", True),
+            min_paragraph_words=gen.get("min_paragraph_words", 10),
         )
 
     if "style" in data:

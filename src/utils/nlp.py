@@ -71,6 +71,85 @@ def split_into_sentences(text: str) -> List[str]:
     return sentences
 
 
+def find_incomplete_sentences(text: str) -> List[str]:
+    """Find sentences that appear to be incomplete or cut off.
+
+    Detects sentences that:
+    - End with a dash (em-dash continuation)
+    - End with a conjunction or preposition
+    - Are missing a main verb
+    - End without proper punctuation
+
+    Args:
+        text: Input text to check.
+
+    Returns:
+        List of incomplete sentence fragments.
+    """
+    incomplete = []
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    # Patterns that suggest incomplete sentences
+    incomplete_endings = {
+        # Conjunctions that shouldn't end a sentence
+        "and", "or", "but", "nor", "for", "yet", "so",
+        # Prepositions
+        "to", "of", "in", "for", "with", "by", "at", "from",
+        "on", "about", "into", "through", "during", "before",
+        "after", "above", "below", "between", "under", "over",
+        # Articles/determiners
+        "the", "a", "an", "this", "that", "these", "those",
+        # Relative pronouns starting dependent clauses
+        "which", "who", "whom", "whose", "where", "when",
+    }
+
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        if not sent_text:
+            continue
+
+        is_incomplete = False
+        reason = ""
+
+        # Check for em-dash at end (continuation cut off)
+        if sent_text.endswith("—") or sent_text.endswith("-"):
+            is_incomplete = True
+            reason = "ends with dash"
+
+        # Check if last word is a function word that shouldn't end a sentence
+        tokens = [t for t in sent if not t.is_space]
+        if tokens:
+            last_token = tokens[-1]
+            last_word = last_token.text.lower().rstrip(".,;:!?")
+
+            if last_word in incomplete_endings:
+                is_incomplete = True
+                reason = f"ends with '{last_word}'"
+
+        # Check for missing main verb (very short fragments)
+        if not is_incomplete and len(tokens) < 4:
+            has_verb = any(t.pos_ == "VERB" for t in tokens)
+            if not has_verb and len(sent_text) > 10:
+                is_incomplete = True
+                reason = "no main verb"
+
+        # Check for sentences that don't end with punctuation
+        if not is_incomplete:
+            last_char = sent_text[-1] if sent_text else ""
+            if last_char not in ".!?;:\"'""''":
+                # May be cut off
+                if len(tokens) > 3:  # Not just a heading
+                    is_incomplete = True
+                    reason = "no ending punctuation"
+
+        if is_incomplete:
+            incomplete.append(sent_text)
+            logger.debug(f"Incomplete sentence ({reason}): {sent_text[:50]}...")
+
+    return incomplete
+
+
 def split_into_paragraphs(text: str) -> List[str]:
     """Split text into paragraphs.
 
@@ -509,6 +588,8 @@ def is_heading(line: str) -> bool:
     - Markdown heading markers (#, ##, etc.)
     - Short lines without punctuation
     - Numbered section markers (1., 2.1, etc.)
+    - Title-case lines without sentence punctuation
+    - Lines ending with colon (subtitles)
 
     Args:
         line: A single line of text.
@@ -525,12 +606,15 @@ def is_heading(line: str) -> bool:
     if line.startswith('#'):
         return True
 
+    words = line.split()
+    word_count = len(words)
+
     # Check for all caps (allowing numbers and punctuation)
     alpha_chars = [c for c in line if c.isalpha()]
     if alpha_chars:
         upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
-        # Line is mostly uppercase (>80%) and short
-        if upper_ratio > 0.8 and len(line.split()) <= 8:
+        # Line is mostly uppercase (>80%) and not too long
+        if upper_ratio > 0.8 and word_count <= 12:
             return True
 
     # Numbered section markers (e.g., "1.", "2.1", "Chapter 3")
@@ -539,13 +623,31 @@ def is_heading(line: str) -> bool:
     if re.match(r'^(chapter|section|part)\s+\d+', line.lower()):
         return True
 
-    # Short lines without sentence-ending punctuation are likely headings
-    if len(line.split()) <= 5 and not line.endswith(('.', '!', '?', ':')):
-        # But not if it starts with common sentence starters
-        first_word = line.split()[0].lower() if line.split() else ""
-        sentence_starters = {'the', 'a', 'an', 'this', 'that', 'it', 'he', 'she', 'they', 'we', 'i'}
-        if first_word not in sentence_starters:
-            return True
+    # Lines without sentence-ending punctuation (up to 15 words)
+    if word_count <= 15 and not line.endswith(('.', '!', '?')):
+        # Check if it looks like title case (most words capitalized)
+        if word_count >= 3:
+            # Skip small words that are typically lowercase in titles
+            small_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+            capitalized = 0
+            significant_words = 0
+            for word in words:
+                clean_word = word.strip('.,;:!?"\'()-—')
+                if clean_word and clean_word.lower() not in small_words:
+                    significant_words += 1
+                    if clean_word[0].isupper():
+                        capitalized += 1
+
+            # If most significant words are capitalized, it's likely a title
+            if significant_words > 0 and capitalized / significant_words >= 0.7:
+                return True
+
+        # Short lines (up to 8 words) without punctuation
+        if word_count <= 8:
+            # But not if it's clearly a sentence fragment with lowercase start
+            first_word = words[0] if words else ""
+            if first_word and first_word[0].isupper():
+                return True
 
     return False
 

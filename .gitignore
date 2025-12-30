@@ -36,6 +36,7 @@ wheels/
 *.swp
 *.swo
 *~
+.coverage
 
 # OS
 .DS_Store
