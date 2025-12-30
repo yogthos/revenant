@@ -638,12 +638,9 @@ def is_heading(line: str) -> bool:
     """Detect if a line is likely a heading.
 
     Headings are identified by:
-    - All uppercase (or mostly uppercase)
     - Markdown heading markers (#, ##, etc.)
-    - Short lines without punctuation
-    - Numbered section markers (1., 2.1, etc.)
-    - Title-case lines without sentence punctuation
-    - Lines ending with colon (subtitles)
+    - All uppercase (or mostly uppercase)
+    - Title case: multiple capitalized words, no sentence-ending punctuation
 
     Args:
         line: A single line of text.
@@ -663,45 +660,58 @@ def is_heading(line: str) -> bool:
     words = line.split()
     word_count = len(words)
 
+    if word_count == 0:
+        return False
+
     # Check for all caps (allowing numbers and punctuation)
     alpha_chars = [c for c in line if c.isalpha()]
     if alpha_chars:
         upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
-        # Line is mostly uppercase (>80%) and not too long
-        if upper_ratio > 0.8 and word_count <= 12:
+        # Line is mostly uppercase (>80%)
+        if upper_ratio > 0.8:
             return True
 
-    # Numbered section markers (e.g., "1.", "2.1", "Chapter 3")
-    if re.match(r'^(\d+\.)+\s*\w', line):
-        return True
-    if re.match(r'^(chapter|section|part)\s+\d+', line.lower()):
-        return True
+    # Lines ending with sentence punctuation are likely sentences, not headings
+    if line.endswith('.') or line.endswith('!'):
+        return False
 
-    # Lines without sentence-ending punctuation (up to 15 words)
-    if word_count <= 15 and not line.endswith(('.', '!', '?')):
-        # Check if it looks like title case (most words capitalized)
-        if word_count >= 3:
-            # Skip small words that are typically lowercase in titles
-            small_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-            capitalized = 0
-            significant_words = 0
-            for word in words:
-                clean_word = word.strip('.,;:!?"\'()-—')
-                if clean_word and clean_word.lower() not in small_words:
-                    significant_words += 1
-                    if clean_word[0].isupper():
-                        capitalized += 1
+    # Single capitalized word (could be a section title)
+    if word_count == 1:
+        clean = words[0].strip('.,;:!?"\'()-—?')
+        if clean and clean[0].isupper():
+            return True
 
-            # If most significant words are capitalized, it's likely a title
-            if significant_words > 0 and capitalized / significant_words >= 0.7:
-                return True
+    # Title case detection: count capitalized words after the first
+    # (first word is always capitalized in both sentences and headings)
+    if word_count >= 2:
+        # Skip common small words that stay lowercase in titles
+        small_words = {'a', 'an', 'the', 'and', 'or', 'but', 'in', 'on', 'at',
+                       'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were'}
 
-        # Short lines (up to 8 words) without punctuation
-        if word_count <= 8:
-            # But not if it's clearly a sentence fragment with lowercase start
-            first_word = words[0] if words else ""
-            if first_word and first_word[0].isupper():
-                return True
+        capitalized_count = 0
+        significant_words = 0
+
+        for word in words[1:]:  # Skip first word
+            clean_word = word.strip('.,;:!?"\'()-—?')
+            if not clean_word:
+                continue
+            # Skip small words and all-caps acronyms
+            if clean_word.lower() in small_words:
+                continue
+            if clean_word.isupper() and len(clean_word) <= 4:
+                continue  # Likely an acronym
+
+            significant_words += 1
+            if clean_word[0].isupper():
+                capitalized_count += 1
+
+        # If most significant words after the first are capitalized, it's title case
+        if significant_words >= 2 and capitalized_count / significant_words >= 0.5:
+            return True
+
+        # Short lines (<=6 words) with at least one capitalized word after first
+        if word_count <= 6 and capitalized_count >= 1:
+            return True
 
     return False
 
