@@ -5,6 +5,7 @@ in generated output. Provides specific repair instructions for missing
 or hallucinated content.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -139,6 +140,59 @@ class PropositionValidator:
         """Extract propositions from text."""
         return self.prop_extractor.extract_from_text(text)
 
+    def _compute_semantic_similarity(self, source: str, generated: str) -> float:
+        """Compute semantic similarity between source and generated text.
+
+        Uses keyword and entity overlap as a fast approximation.
+        This catches catastrophic hallucinations where output is completely
+        unrelated to source.
+
+        Args:
+            source: Source text.
+            generated: Generated text.
+
+        Returns:
+            Similarity score 0.0 to 1.0.
+        """
+        source_doc = self.nlp(source)
+        gen_doc = self.nlp(generated)
+
+        # Extract content words (nouns, verbs, adjectives) from source
+        source_content = set()
+        for token in source_doc:
+            if token.pos_ in ("NOUN", "PROPN", "VERB", "ADJ") and not token.is_stop:
+                source_content.add(token.lemma_.lower())
+
+        # Extract content words from generated
+        gen_content = set()
+        for token in gen_doc:
+            if token.pos_ in ("NOUN", "PROPN", "VERB", "ADJ") and not token.is_stop:
+                gen_content.add(token.lemma_.lower())
+
+        # Calculate Jaccard-like overlap
+        if not source_content or not gen_content:
+            return 0.0
+
+        overlap = len(source_content & gen_content)
+        # Use source as baseline - what % of source concepts appear in generated?
+        source_coverage = overlap / len(source_content)
+        # Also check what % of generated concepts are from source (to penalize hallucinations)
+        gen_grounding = overlap / len(gen_content) if gen_content else 0.0
+
+        # Combined score - both coverage and grounding matter
+        similarity = (source_coverage * 0.6 + gen_grounding * 0.4)
+
+        # Also check named entities specifically (higher weight for proper nouns)
+        source_entities = set(ent.text.lower() for ent in source_doc.ents)
+        gen_entities = set(ent.text.lower() for ent in gen_doc.ents)
+
+        if source_entities:
+            entity_coverage = len(source_entities & gen_entities) / len(source_entities)
+            # Blend entity coverage with word coverage
+            similarity = similarity * 0.7 + entity_coverage * 0.3
+
+        return similarity
+
     def validate(
         self,
         source_text: str,
@@ -155,11 +209,33 @@ class PropositionValidator:
         Returns:
             ValidationResult with detailed analysis.
         """
+        # FIRST: Global semantic similarity check to catch catastrophic hallucinations
+        semantic_sim = self._compute_semantic_similarity(source_text, generated_text)
+        if semantic_sim < 0.3:
+            logger.error(
+                f"CATASTROPHIC HALLUCINATION: Output has only {semantic_sim:.0%} "
+                "semantic similarity to source. Rejecting entirely."
+            )
+            # Return a result that forces complete regeneration
+            return ValidationResult(
+                is_valid=False,
+                proposition_coverage=0.0,
+                anchor_coverage=0.0,
+                hallucinated_content=[
+                    HallucinatedContent(
+                        text="[ENTIRE OUTPUT]",
+                        content_type="fabrication",
+                        severity="critical",
+                    )
+                ],
+                missing_facts=["The entire output appears to be fabricated content unrelated to the source."],
+            )
+
         # Extract propositions if not provided
         if source_propositions is None:
             source_propositions = self.extract_propositions(source_text)
 
-        logger.debug(f"Validating {len(source_propositions)} propositions")
+        logger.debug(f"Validating {len(source_propositions)} propositions (semantic_sim={semantic_sim:.0%})")
 
         # Parse generated text
         gen_doc = self.nlp(generated_text)
@@ -188,6 +264,15 @@ class PropositionValidator:
 
         # Check for hallucinated content
         hallucinated = self._find_hallucinations(source_text, generated_text, gen_doc)
+
+        # Check for invented claims (facts in output not supported by source)
+        invented_claims = self._find_invented_claims(source_text, generated_text, gen_doc)
+        for claim in invented_claims:
+            hallucinated.append(HallucinatedContent(
+                text=claim,
+                content_type="invented_claim",
+                severity="critical",
+            ))
 
         # Calculate coverage
         prop_coverage = len(preserved) / len(source_propositions) if source_propositions else 1.0
@@ -361,6 +446,152 @@ class PropositionValidator:
             missing_elements=missing_elements,
         )
 
+    def _find_invented_claims(
+        self,
+        source_text: str,
+        generated_text: str,
+        gen_doc,
+    ) -> List[str]:
+        """Find claims in generated text that are not supported by source.
+
+        This catches subtle hallucinations like "X is a German word" when
+        the source never says X is German.
+
+        Focuses on:
+        - Definitional claims ("X is Y", "X is a Y")
+        - Origin/etymology claims ("X comes from", "X is derived from")
+        - Categorical claims ("X is the first", "X was invented by")
+
+        Args:
+            source_text: Original source text.
+            generated_text: Generated text to check.
+            gen_doc: spaCy Doc of generated text.
+
+        Returns:
+            List of invented claim strings.
+        """
+        invented = []
+        source_lower = source_text.lower()
+
+        # Patterns that indicate factual claims
+        # These are things the model might invent
+        claim_patterns = [
+            # Etymology/origin claims
+            (r'is (?:a |an )?(\w+) (?:word|term|abbreviation|phrase|expression)', 'language_claim'),
+            (r'comes from (?:the )?(\w+)', 'origin_claim'),
+            (r'derived from (?:the )?(\w+)', 'origin_claim'),
+            (r'originates? (?:from |in )(?:the )?(\w+)', 'origin_claim'),
+            # Definitional claims
+            (r'is (?:also )?(?:known|called|named|termed) (?:as )?["\']?(\w+)', 'naming_claim'),
+            (r'refers to (\w+)', 'reference_claim'),
+            # Temporal/ordering claims
+            (r'was (?:the )?first (?:to |person to )?(\w+)', 'priority_claim'),
+            (r'(?:first |originally )(?:used|coined|introduced|developed) (?:by |in )', 'origin_claim'),
+        ]
+
+        for sent in gen_doc.sents:
+            sent_text = sent.text.strip()
+            sent_lower = sent_text.lower()
+
+            for pattern, claim_type in claim_patterns:
+                match = re.search(pattern, sent_lower)
+                if match:
+                    claimed_info = match.group(0)
+
+                    # Check if this claim appears in source
+                    # Be strict - the exact phrasing should be there
+                    if claimed_info not in source_lower:
+                        # Also check for the key word in the claim
+                        key_word = match.group(1) if match.lastindex else None
+                        if key_word and key_word not in source_lower:
+                            invented.append(f"{claim_type}: \"{claimed_info}\" (in: {sent_text[:80]}...)")
+                            logger.warning(f"Invented claim detected: {claimed_info}")
+
+        # Also check for specific problematic patterns
+        problematic_phrases = [
+            ("german abbreviation", "German abbreviation claim"),
+            ("german word", "German word claim"),
+            ("latin term", "Latin term claim"),
+            ("greek word", "Greek word claim"),
+            ("french term", "French term claim"),
+            ("originally meant", "etymology claim"),
+            ("literally means", "etymology claim"),
+            ("was first used by", "attribution claim"),
+            ("was invented by", "invention claim"),
+        ]
+
+        for phrase, claim_type in problematic_phrases:
+            if phrase in generated_text.lower() and phrase not in source_lower:
+                invented.append(f"{claim_type}: contains '{phrase}' not in source")
+                logger.warning(f"Invented claim: '{phrase}' not in source")
+
+        return invented
+
+    def _find_fabricated_sentences(self, source_doc, gen_doc) -> List[str]:
+        """Find sentences in generated text that have no basis in source.
+
+        For each generated sentence, checks if it has meaningful content overlap
+        with ANY source sentence. If not, it's likely fabricated.
+
+        Args:
+            source_doc: spaCy Doc of source text.
+            gen_doc: spaCy Doc of generated text.
+
+        Returns:
+            List of fabricated sentence texts.
+        """
+        fabricated = []
+
+        # Extract content words from each source sentence
+        source_sentence_content = []
+        for sent in source_doc.sents:
+            content_words = set()
+            for token in sent:
+                if token.pos_ in ("NOUN", "PROPN", "VERB") and not token.is_stop and len(token.text) > 2:
+                    content_words.add(token.lemma_.lower())
+            source_sentence_content.append(content_words)
+
+        # All source content words (for fallback)
+        all_source_content = set()
+        for content in source_sentence_content:
+            all_source_content.update(content)
+
+        # Check each generated sentence
+        for sent in gen_doc.sents:
+            sent_text = sent.text.strip()
+            if len(sent_text) < 20:  # Skip very short sentences
+                continue
+
+            # Extract content words from this generated sentence
+            gen_content = set()
+            for token in sent:
+                if token.pos_ in ("NOUN", "PROPN", "VERB") and not token.is_stop and len(token.text) > 2:
+                    gen_content.add(token.lemma_.lower())
+
+            if not gen_content:
+                continue
+
+            # Check overlap with each source sentence
+            best_overlap = 0.0
+            for source_content in source_sentence_content:
+                if source_content:
+                    overlap = len(gen_content & source_content) / len(gen_content)
+                    best_overlap = max(best_overlap, overlap)
+
+            # Also check against all source content (more lenient)
+            global_overlap = len(gen_content & all_source_content) / len(gen_content)
+
+            # If this sentence has < 20% overlap with best source sentence
+            # AND < 40% overlap with all source content, it's likely fabricated
+            if best_overlap < 0.2 and global_overlap < 0.4:
+                logger.warning(
+                    f"Fabricated sentence detected (overlap={best_overlap:.0%}/{global_overlap:.0%}): "
+                    f"{sent_text[:60]}..."
+                )
+                fabricated.append(sent_text)
+
+        return fabricated
+
     def _find_hallucinations(
         self,
         source_text: str,
@@ -371,6 +602,15 @@ class PropositionValidator:
         hallucinated = []
         source_lower = source_text.lower()
         source_doc = self.nlp(source_text)
+
+        # FIRST: Check for fabricated sentences (no overlap with any source sentence)
+        fabricated_sentences = self._find_fabricated_sentences(source_doc, gen_doc)
+        for sent_text in fabricated_sentences:
+            hallucinated.append(HallucinatedContent(
+                text=sent_text[:100] + "..." if len(sent_text) > 100 else sent_text,
+                content_type="fabrication",
+                severity="critical",
+            ))
 
         # Extract source entities and concepts
         source_entities = set()

@@ -71,14 +71,90 @@ def split_into_sentences(text: str) -> List[str]:
     return sentences
 
 
+def is_sentence_incomplete(text: str) -> Tuple[bool, str]:
+    """Check if a sentence is incomplete using spaCy POS analysis.
+
+    Uses linguistic analysis rather than word lists:
+    - Checks if sentence ends with a function word (DET, ADP, CCONJ, SCONJ, AUX)
+    - Checks for missing main verb
+    - Checks for proper ending punctuation
+
+    Args:
+        text: Sentence text to check.
+
+    Returns:
+        Tuple of (is_incomplete, reason).
+    """
+    if not text or not text.strip():
+        return False, ""
+
+    text = text.strip()
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    # Get non-space tokens
+    tokens = [t for t in doc if not t.is_space and not t.is_punct]
+    if not tokens:
+        return False, ""
+
+    # Check for em-dash at end (continuation cut off)
+    if text.endswith("—") or text.endswith("-"):
+        return True, "ends with dash"
+
+    # Get last meaningful token (skip trailing punctuation)
+    last_token = tokens[-1] if tokens else None
+    if not last_token:
+        return False, ""
+
+    # POS tags that indicate incomplete sentence ending
+    # DET = determiner (the, a, an)
+    # ADP = adposition/preposition (in, of, to)
+    # CCONJ = coordinating conjunction (and, or, but)
+    # SCONJ = subordinating conjunction (because, although, that)
+    # AUX = auxiliary verb (was, were, have, had, being)
+    # PART = particle (to in "to go")
+    incomplete_pos_tags = {"DET", "ADP", "CCONJ", "SCONJ", "AUX", "PART"}
+
+    if last_token.pos_ in incomplete_pos_tags:
+        return True, f"ends with {last_token.pos_} '{last_token.text}'"
+
+    # Check if it's a verb that typically requires an object
+    # (transitive verbs without objects suggest incomplete thought)
+    if last_token.pos_ == "VERB":
+        # Check if this verb typically needs a complement
+        # Look at dependency - if verb has no object children, may be incomplete
+        has_object = any(child.dep_ in ("dobj", "pobj", "attr", "ccomp", "xcomp")
+                        for child in last_token.children)
+        if not has_object and last_token.dep_ == "ROOT":
+            # Transitive verbs that commonly need objects
+            if last_token.tag_ in ("VBD", "VBN", "VBG"):  # Past/participle forms
+                return True, f"ends with verb '{last_token.text}' possibly missing object"
+
+    # Check for missing main verb (fragments)
+    if len(tokens) >= 4:
+        has_verb = any(t.pos_ in ("VERB", "AUX") for t in tokens)
+        if not has_verb:
+            return True, "no main verb"
+
+    # Check for proper ending punctuation
+    last_char = text[-1] if text else ""
+    if last_char not in ".!?;:\"'""''":
+        if len(tokens) > 3:  # Not just a heading
+            return True, "no ending punctuation"
+
+    return False, ""
+
+
 def find_incomplete_sentences(text: str) -> List[str]:
     """Find sentences that appear to be incomplete or cut off.
 
     Detects sentences that:
     - End with a dash (em-dash continuation)
-    - End with a conjunction or preposition
+    - End with a function word (determiner, preposition, conjunction)
     - Are missing a main verb
     - End without proper punctuation
+
+    Uses spaCy POS tagging rather than word lists.
 
     Args:
         text: Input text to check.
@@ -90,64 +166,42 @@ def find_incomplete_sentences(text: str) -> List[str]:
     nlp = get_nlp()
     doc = nlp(text)
 
-    # Patterns that suggest incomplete sentences
-    incomplete_endings = {
-        # Conjunctions that shouldn't end a sentence
-        "and", "or", "but", "nor", "for", "yet", "so",
-        # Prepositions
-        "to", "of", "in", "for", "with", "by", "at", "from",
-        "on", "about", "into", "through", "during", "before",
-        "after", "above", "below", "between", "under", "over",
-        # Articles/determiners
-        "the", "a", "an", "this", "that", "these", "those",
-        # Relative pronouns starting dependent clauses
-        "which", "who", "whom", "whose", "where", "when",
-    }
+    for sent in doc.sents:
+        sent_text = sent.text.strip()
+        if not sent_text:
+            continue
+
+        is_incomplete, reason = is_sentence_incomplete(sent_text)
+        if is_incomplete:
+            incomplete.append(sent_text)
+            logger.debug(f"Incomplete sentence ({reason}): {sent_text[:50]}...")
+
+    return incomplete
+
+
+def get_complete_sentences(text: str) -> List[str]:
+    """Get only complete sentences from text, filtering out incomplete ones.
+
+    Args:
+        text: Input text.
+
+    Returns:
+        List of complete sentence strings.
+    """
+    complete = []
+    nlp = get_nlp()
+    doc = nlp(text)
 
     for sent in doc.sents:
         sent_text = sent.text.strip()
         if not sent_text:
             continue
 
-        is_incomplete = False
-        reason = ""
-
-        # Check for em-dash at end (continuation cut off)
-        if sent_text.endswith("—") or sent_text.endswith("-"):
-            is_incomplete = True
-            reason = "ends with dash"
-
-        # Check if last word is a function word that shouldn't end a sentence
-        tokens = [t for t in sent if not t.is_space]
-        if tokens:
-            last_token = tokens[-1]
-            last_word = last_token.text.lower().rstrip(".,;:!?")
-
-            if last_word in incomplete_endings:
-                is_incomplete = True
-                reason = f"ends with '{last_word}'"
-
-        # Check for missing main verb (very short fragments)
-        if not is_incomplete and len(tokens) < 4:
-            has_verb = any(t.pos_ == "VERB" for t in tokens)
-            if not has_verb and len(sent_text) > 10:
-                is_incomplete = True
-                reason = "no main verb"
-
-        # Check for sentences that don't end with punctuation
+        is_incomplete, _ = is_sentence_incomplete(sent_text)
         if not is_incomplete:
-            last_char = sent_text[-1] if sent_text else ""
-            if last_char not in ".!?;:\"'""''":
-                # May be cut off
-                if len(tokens) > 3:  # Not just a heading
-                    is_incomplete = True
-                    reason = "no ending punctuation"
+            complete.append(sent_text)
 
-        if is_incomplete:
-            incomplete.append(sent_text)
-            logger.debug(f"Incomplete sentence ({reason}): {sent_text[:50]}...")
-
-    return incomplete
+    return complete
 
 
 def split_into_paragraphs(text: str) -> List[str]:

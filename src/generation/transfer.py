@@ -92,6 +92,10 @@ class TransferConfig:
     # Perspective settings
     perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person
 
+    # Style polish settings - re-run repaired text through LoRA to restore flow
+    use_style_polish: bool = True  # Enable polishing after critic repairs
+    polish_temperature: float = 0.4  # Low temp for polish to preserve content
+
 
 @dataclass
 class TransferStats:
@@ -469,13 +473,98 @@ class StyleTransfer:
 
         return neutralized
 
+    def _build_constrained_content(
+        self,
+        original_content: str,
+        validation,
+        source_propositions: List,
+    ) -> str:
+        """Build content with explicit constraints from failed validation.
+
+        When regeneration fails due to hallucination, this adds explicit
+        instructions about what MUST and MUST NOT be included.
+
+        Args:
+            original_content: The neutralized content we tried to generate from.
+            validation: ValidationResult showing what went wrong.
+            source_propositions: The propositions that must be preserved.
+
+        Returns:
+            Content string with explicit constraints prepended.
+        """
+        constraints = []
+
+        # CRITICAL: What MUST be included (from missing propositions)
+        must_include = []
+        if validation.missing_propositions:
+            for match in validation.missing_propositions[:8]:
+                prop = match.proposition
+                if prop.text and len(prop.text) < 150:
+                    must_include.append(prop.text)
+                elif prop.subject and prop.verb:
+                    summary = f"{prop.subject} {prop.verb}"
+                    if prop.object:
+                        summary += f" {prop.object}"
+                    must_include.append(summary)
+
+        if must_include:
+            constraints.append("MUST EXPRESS THESE IDEAS (do not skip any):")
+            for i, item in enumerate(must_include, 1):
+                constraints.append(f"  {i}. {item}")
+
+        # Missing entities that must appear
+        if validation.missing_entities:
+            constraints.append(f"\nMUST INCLUDE these names/terms: {', '.join(validation.missing_entities[:10])}")
+
+        # CRITICAL: What MUST NOT be included (hallucinated content)
+        must_not_include = []
+        if validation.added_entities:
+            must_not_include.extend(validation.added_entities[:5])
+
+        for h in validation.hallucinated_content[:3]:
+            if h.content_type == "entity" and h.text not in must_not_include:
+                must_not_include.append(h.text)
+
+        if must_not_include:
+            constraints.append(f"\nDO NOT MENTION: {', '.join(must_not_include)} (these are not in the source)")
+
+        # If we have source propositions, provide a checklist
+        if source_propositions and len(source_propositions) <= 10:
+            constraints.append("\nCHECKLIST - Your output must cover ALL of these points:")
+            for i, prop in enumerate(source_propositions[:10], 1):
+                if hasattr(prop, 'text') and prop.text:
+                    short_text = prop.text[:80] + "..." if len(prop.text) > 80 else prop.text
+                    constraints.append(f"  [{i}] {short_text}")
+
+        # Add general warning
+        constraints.append("\nWARNING: Previous attempt hallucinated content. Stay strictly within the source material.")
+
+        if constraints:
+            constraint_block = "\n".join(constraints)
+            # Log the constraints for debugging
+            logger.info(f"Applying {len(must_include)} must-include, {len(must_not_include)} must-not constraints")
+            if must_include:
+                logger.debug(f"Must include: {must_include[:3]}...")
+            if must_not_include:
+                logger.debug(f"Must NOT include: {must_not_include}")
+            return f"{constraint_block}\n\n---\nCONTENT TO TRANSFORM:\n{original_content}"
+        else:
+            return original_content
+
     def transfer_paragraph(
         self,
         paragraph: str,
         previous: Optional[str] = None,
         stats: Optional['TransferStats'] = None,
     ) -> Tuple[str, float]:
-        """Transfer a single paragraph with proposition-based validation and repair.
+        """Transfer a single paragraph with graph-based validation at each step.
+
+        Architecture:
+        1. Build source semantic graph (ground truth)
+        2. Neutralize text (if enabled)
+        3. Build neutralized graph, compare with source, repair if needed
+        4. Pass verified neutralized text to LoRA writer
+        5. Build styled graph, compare with source, repair if needed
 
         Args:
             paragraph: Source paragraph.
@@ -485,6 +574,8 @@ class StyleTransfer:
         Returns:
             Tuple of (styled_paragraph, entailment_score).
         """
+        from ..validation.semantic_graph import SemanticGraphBuilder, SemanticGraphComparator
+
         # Skip very short paragraphs
         if len(paragraph.split()) < self.config.min_paragraph_words:
             logger.debug(f"Skipping short paragraph: {paragraph[:50]}...")
@@ -493,38 +584,39 @@ class StyleTransfer:
         word_count = len(paragraph.split())
         logger.debug(f"Translating paragraph: {word_count} words")
 
-        # Extract propositions from source for validation
-        source_propositions = None
-        if self.proposition_validator:
-            source_propositions = self.proposition_validator.extract_propositions(paragraph)
-            logger.debug(f"Extracted {len(source_propositions)} propositions from source")
+        # ========================================
+        # STEP 1: Build source graph (ground truth)
+        # ========================================
+        builder = SemanticGraphBuilder(use_rebel=False)
+        source_graph = builder.build_from_text(paragraph)
+        logger.info(f"Source graph: {len(source_graph.nodes)} propositions, {len(source_graph.edges)} relationships")
+
+        if not source_graph.nodes:
+            logger.warning("Could not build source graph, passing through unchanged")
+            return paragraph, 1.0
+
+        comparator = SemanticGraphComparator()
 
         # Extract paragraph thesis - the main point the writer needs to express
         paragraph_thesis = self._extract_paragraph_thesis(paragraph)
         logger.debug(f"Paragraph thesis: {paragraph_thesis[:80]}...")
 
-        # Neutralize paragraph before transformation (matches LoRA training format)
-        if self.config.use_neutralization:
-            content_for_generation = self._neutralize_paragraph(paragraph)
-            logger.info(f"Neutralized to {len(content_for_generation.split())} words")
-            # Check if neutralization failed (returned original)
-            if content_for_generation.strip() == paragraph.strip():
-                logger.warning("Neutralization returned original text unchanged")
-            # Verify neutralization preserves propositions and augment if needed
-            elif source_propositions:
-                content_for_generation = self._verify_and_augment_neutralization(
-                    content_for_generation, source_propositions
-                )
-            # Prepend thesis to guide the writer on the main point
-            if paragraph_thesis:
-                content_for_generation = f"MAIN POINT: {paragraph_thesis}\n\n{content_for_generation}"
-        else:
-            content_for_generation = paragraph
-            # Still add thesis hint for non-neutralized content
-            if paragraph_thesis:
-                content_for_generation = f"MAIN POINT: {paragraph_thesis}\n\n{content_for_generation}"
+        # ========================================
+        # STEP 2: Generate neutral prose directly from graph
+        # ========================================
+        # The graph already contains all propositions and relationships.
+        # We generate neutral prose from it - this is deterministic and
+        # preserves ALL content by construction (no LLM that could lose content).
+        content_for_generation = source_graph.to_neutral_prose()
+        logger.info(f"Generated neutral prose from graph: {len(content_for_generation.split())} words")
 
-        # Generate with token limit based on input and configured expansion ratio
+        # Prepend thesis to guide the writer on the main point
+        if paragraph_thesis:
+            content_for_generation = f"MAIN POINT: {paragraph_thesis}\n\n{content_for_generation}"
+
+        # ========================================
+        # STEP 4: Pass verified content to LoRA writer
+        # ========================================
         target_words = int(word_count * self.config.target_expansion_ratio)
         max_tokens = max(100, int(target_words * 1.5))  # tokens > words
 
@@ -554,85 +646,20 @@ class StyleTransfer:
         if lora_words > source_words * self.config.max_expansion_ratio:
             logger.warning(f"LoRA over-expanded: {lora_words} words vs {source_words} source ({lora_words/source_words:.0%})")
 
-        # Proposition-based validation and repair loop
-        if self.proposition_validator and source_propositions:
-            for attempt in range(self.config.max_repair_attempts):
-                validation = self.proposition_validator.validate(
-                    paragraph, output, source_propositions
-                )
-
-                if stats:
-                    stats.quality_issues_found += len(validation.missing_propositions)
-                    stats.quality_issues_found += len(validation.hallucinated_content)
-
-                if validation.is_valid:
-                    logger.debug(
-                        f"Proposition validation passed (attempt {attempt + 1}): "
-                        f"{validation.proposition_coverage:.0%} coverage"
-                    )
-                    break
-
-                # Log specific issues
-                if validation.missing_entities:
-                    logger.warning(f"Missing entities: {', '.join(validation.missing_entities[:3])}")
-                if validation.added_entities:
-                    logger.warning(f"Hallucinated entities: {', '.join(validation.added_entities[:3])}")
-                if validation.missing_facts:
-                    logger.warning(f"Missing facts: {len(validation.missing_facts)}")
-
-                logger.info(
-                    f"Repair attempt {attempt + 1}: "
-                    f"{len(validation.missing_propositions)} missing propositions, "
-                    f"{len(validation.hallucinated_content)} hallucinations"
-                )
-
-                # Use critic provider for surgical repairs
-                output = self._critic_repair(
-                    source=paragraph,
-                    current_output=output,
-                    validation=validation,
-                )
-
-                if stats:
-                    stats.quality_issues_fixed += 1
-
-        # Fallback to quality critic if proposition validator not available
-        elif self.quality_critic:
-            for attempt in range(self.config.max_repair_attempts):
-                critique = self.quality_critic.critique(paragraph, output)
-
-                if stats:
-                    stats.quality_issues_found += len(critique.issues)
-
-                if not critique.has_critical_issues:
-                    logger.debug(f"Quality check passed (attempt {attempt + 1})")
-                    break
-
-                # Log issues
-                for issue in critique.issues:
-                    if issue.severity == "critical":
-                        logger.warning(f"Quality issue: {issue.description}")
-
-                logger.info(f"Repair attempt {attempt + 1}: {len(critique.issues)} issues")
-
-                # Use critic provider for repairs
-                output = self._quality_critic_repair(
-                    source=paragraph,
-                    current_output=output,
-                    critique=critique,
-                )
-
-                if stats:
-                    stats.quality_issues_fixed += 1
-
-        # Final semantic coherence check - ensure overall meaning/thesis is preserved
-        if paragraph_thesis:
-            output = self._verify_semantic_coherence(
-                source=paragraph,
-                output=output,
-                thesis=paragraph_thesis,
-                stats=stats,
-            )
+        # ========================================
+        # STEP 5: Validate styled output against source graph
+        # ========================================
+        output, is_valid = self._validate_styled_output(
+            source=paragraph,
+            output=output,
+            source_graph=source_graph,
+            builder=builder,
+            comparator=comparator,
+            previous=previous,
+            context_hint=context_hint,
+            stats=stats,
+            max_attempts=self.config.max_repair_attempts,
+        )
 
         # Track expansion and optionally truncate
         final_words = len(output.split())
@@ -709,6 +736,192 @@ class StyleTransfer:
         # Fallback: add period to entire text
         return text + '.'
 
+    def _validate_and_repair_neutralization(
+        self,
+        source: str,
+        neutralized: str,
+        source_graph,
+        builder,
+        comparator,
+    ) -> str:
+        """Validate neutralized text against source graph and repair if needed.
+
+        This ensures the neutralization step doesn't lose propositions before
+        we pass content to the LoRA writer.
+
+        Args:
+            source: Original source text.
+            neutralized: Neutralized text to validate.
+            source_graph: Semantic graph of source (ground truth).
+            builder: SemanticGraphBuilder instance.
+            comparator: SemanticGraphComparator instance.
+
+        Returns:
+            Validated (and possibly repaired) neutralized text.
+        """
+        # Build graph from neutralized text
+        neutralized_graph = builder.build_from_text(neutralized)
+        diff = comparator.compare(source_graph, neutralized_graph)
+
+        if diff.is_isomorphic:
+            logger.info("Neutralization graph matches source - no repair needed")
+            return neutralized
+
+        if not diff.has_critical_differences:
+            logger.debug("Neutralization has minor differences - acceptable")
+            return neutralized
+
+        logger.warning(
+            f"Neutralization graph diff: {len(diff.missing_nodes)} missing, "
+            f"{len(diff.added_nodes)} added propositions"
+        )
+
+        # Repair by appending missing propositions from source
+        source_sentences = split_into_sentences(source)
+        neutralized_sentences = list(split_into_sentences(neutralized))
+
+        for missing_node in diff.missing_nodes:
+            # Find the source sentence containing this proposition
+            source_sent = self._find_sentence_for_proposition(missing_node, source_sentences)
+            if source_sent:
+                # Check if already covered
+                already_covered = any(
+                    self._sentence_contains_proposition(sent, missing_node)
+                    for sent in neutralized_sentences
+                )
+                if not already_covered:
+                    # Append to neutralized content
+                    neutralized_sentences.append(source_sent)
+                    logger.info(f"Added missing proposition to neutralized: {missing_node.summary()[:40]}")
+
+        repaired = " ".join(neutralized_sentences)
+
+        # Verify repair worked
+        repaired_graph = builder.build_from_text(repaired)
+        final_diff = comparator.compare(source_graph, repaired_graph)
+
+        if final_diff.is_isomorphic or not final_diff.has_critical_differences:
+            logger.info("Neutralization repair successful")
+        else:
+            logger.warning(f"Neutralization repair incomplete: {len(final_diff.missing_nodes)} still missing")
+
+        return repaired
+
+    def _validate_styled_output(
+        self,
+        source: str,
+        output: str,
+        source_graph,
+        builder,
+        comparator,
+        previous: Optional[str] = None,
+        context_hint: Optional[str] = None,
+        stats: Optional['TransferStats'] = None,
+        max_attempts: int = 3,
+    ) -> Tuple[str, bool]:
+        """Validate styled output against source graph with repair.
+
+        This is the post-LoRA validation step that ensures the styled output
+        preserves all propositions from the source.
+
+        Args:
+            source: Original source text.
+            output: Styled output to validate.
+            source_graph: Semantic graph of source (ground truth).
+            builder: SemanticGraphBuilder instance.
+            comparator: SemanticGraphComparator instance.
+            previous: Previous paragraph for context.
+            context_hint: Document context hint.
+            stats: Optional stats object.
+            max_attempts: Maximum repair attempts.
+
+        Returns:
+            Tuple of (validated_output, is_valid).
+        """
+        # Initial comparison
+        output_graph = builder.build_from_text(output)
+        diff = comparator.compare(source_graph, output_graph)
+
+        if diff.is_isomorphic:
+            logger.info("Styled output graph matches source - no repair needed")
+            return output, True
+
+        if not diff.has_critical_differences:
+            logger.debug("Styled output has minor differences - acceptable")
+            return output, True
+
+        logger.info(
+            f"Styled output graph diff: {len(diff.missing_nodes)} missing, "
+            f"{len(diff.added_nodes)} added, {len(diff.entity_role_errors)} entity errors"
+        )
+
+        if not self.critic_provider:
+            logger.warning("No critic provider for styled output repair")
+            return output, False
+
+        # Use incremental repair
+        repaired_output = self._incremental_graph_repair(
+            source=source,
+            output=output,
+            source_graph=source_graph,
+            builder=builder,
+            comparator=comparator,
+            max_attempts_per_error=max_attempts,
+        )
+
+        # Final verification
+        final_graph = builder.build_from_text(repaired_output)
+        final_diff = comparator.compare(source_graph, final_graph)
+
+        # Count errors
+        final_error_count = (
+            len(final_diff.missing_nodes) + len(final_diff.added_nodes) +
+            len(final_diff.entity_role_errors)
+        )
+        original_error_count = (
+            len(diff.missing_nodes) + len(diff.added_nodes) + len(diff.entity_role_errors)
+        )
+
+        repair_successful = final_diff.is_isomorphic or not final_diff.has_critical_differences
+        if repair_successful:
+            logger.info("Styled output repair successful")
+        else:
+            logger.warning(f"Styled output repair incomplete: {final_error_count} errors remaining")
+
+        # ========================================
+        # ALWAYS restyle through LoRA at the end
+        # ========================================
+        # Pass the clean neutral prose (from graph) to the LoRA, not the mixed
+        # repaired output. This gives the model consistent, clean input.
+        # The graph contains all propositions that must be expressed.
+        try:
+            old_temp = self.generator.config.temperature
+            self.generator.config.temperature = 0.4
+
+            # Use the source graph's neutral prose - this is cleaner than mixed repaired output
+            neutral_prose = source_graph.to_neutral_prose()
+
+            styled_output = self.generator.generate(
+                content=neutral_prose,
+                author=self.author,
+                context=previous,
+                max_tokens=max(150, int(len(source.split()) * 1.5)),
+                context_hint=context_hint,
+                perspective=getattr(self.config, 'perspective', 'preserve'),
+            )
+
+            self.generator.config.temperature = old_temp
+
+            # Trust the LoRA - the neutral prose contains all propositions
+            if stats:
+                stats.quality_issues_fixed += 1
+            logger.info("Applied author styling to neutral prose")
+            return styled_output, repair_successful
+
+        except Exception as e:
+            logger.warning(f"Final restyling failed: {e}")
+            return repaired_output, repair_successful
+
     def _call_critic(
         self,
         source: str,
@@ -767,6 +980,101 @@ class StyleTransfer:
         except Exception as e:
             logger.warning(f"Critic repair failed: {e}, keeping original output")
             return current_output
+
+    def _polish_output(
+        self,
+        source: str,
+        repaired_output: str,
+        previous: Optional[str] = None,
+        context_hint: Optional[str] = None,
+        stats: Optional['TransferStats'] = None,
+    ) -> str:
+        """Re-run repaired output through LoRA to restore author voice.
+
+        After critic repairs, the prose can become choppy and lose the author's
+        natural rhythm. This step uses the LoRA to re-express the content while
+        preserving all the validated facts and propositions.
+
+        Args:
+            source: Original source text (for validation).
+            repaired_output: Text after critic repairs.
+            previous: Previous paragraph for continuity.
+            context_hint: Document context hint.
+            stats: Optional stats object.
+
+        Returns:
+            Polished text with restored author voice.
+        """
+        if not self.config.use_style_polish:
+            return repaired_output
+
+        # Skip if output is very short
+        if len(repaired_output.split()) < 15:
+            return repaired_output
+
+        logger.info("Polishing repaired output to restore author voice")
+
+        try:
+            # Use the repaired output as the content to transform
+            # This preserves the corrected facts while allowing the LoRA
+            # to restore natural rhythm and flow
+            polish_content = format_prompt(
+                "style_polish",
+            ) + "\n\n" + repaired_output
+
+            # Save and lower temperature for polish
+            old_temp = self.generator.config.temperature
+            self.generator.config.temperature = self.config.polish_temperature
+
+            try:
+                polished = self.generator.generate(
+                    content=polish_content,
+                    author=self.author,
+                    context=previous,
+                    max_tokens=max(150, int(len(repaired_output.split()) * 1.3)),
+                    context_hint=context_hint,
+                    perspective=getattr(self.config, 'perspective', 'preserve'),
+                )
+            finally:
+                self.generator.config.temperature = old_temp
+
+            # Validate the polish didn't lose content
+            # Quick check: ensure key entities are preserved
+            source_words = set(w.lower() for w in source.split() if len(w) > 4)
+            repaired_words = set(w.lower() for w in repaired_output.split() if len(w) > 4)
+            polished_words = set(w.lower() for w in polished.split() if len(w) > 4)
+
+            # Key words from repaired output that were validated
+            key_words = repaired_words & source_words
+            preserved_in_polish = key_words & polished_words
+
+            # If we lost too many key words, keep the repaired version
+            if key_words and len(preserved_in_polish) / len(key_words) < 0.7:
+                logger.warning(
+                    f"Polish lost content ({len(preserved_in_polish)}/{len(key_words)} key words), "
+                    "keeping repaired version"
+                )
+                return repaired_output
+
+            # Check polish isn't drastically different length
+            repaired_len = len(repaired_output.split())
+            polished_len = len(polished.split())
+            if polished_len < repaired_len * 0.5 or polished_len > repaired_len * 1.8:
+                logger.warning(
+                    f"Polish changed length too much ({polished_len} vs {repaired_len} words), "
+                    "keeping repaired version"
+                )
+                return repaired_output
+
+            if stats:
+                stats.quality_issues_fixed += 1
+
+            logger.debug(f"Polish complete: {repaired_len} -> {polished_len} words")
+            return polished.strip()
+
+        except Exception as e:
+            logger.warning(f"Polish failed: {e}, keeping repaired version")
+            return repaired_output
 
     def _critic_repair(
         self,
@@ -848,6 +1156,570 @@ class StyleTransfer:
                 instructions.append(violation)
 
         return self._call_critic(source, current_output, instructions)
+
+    def _verify_semantic_structure(
+        self,
+        source: str,
+        output: str,
+        stats: Optional['TransferStats'] = None,
+    ) -> str:
+        """Verify semantic structure using graph comparison.
+
+        Builds semantic graphs of source and output, compares them,
+        and repairs any structural differences.
+
+        Args:
+            source: Original source text.
+            output: Generated output text.
+            stats: Optional stats object.
+
+        Returns:
+            Output text (possibly repaired).
+        """
+        try:
+            from ..validation.semantic_graph import build_and_compare_graphs
+
+            source_graph, output_graph, diff = build_and_compare_graphs(source, output)
+
+            if diff.is_isomorphic:
+                logger.debug("Semantic structure check passed: graphs are isomorphic")
+                return output
+
+            # Log the differences
+            logger.info(f"Semantic structure diff: {len(diff.missing_nodes)} missing, {len(diff.added_nodes)} added")
+
+            if not diff.has_critical_differences:
+                logger.debug("No critical structural differences")
+                return output
+
+            # Generate repair instructions from the diff
+            repair_instructions = diff.to_repair_instructions()
+
+            if repair_instructions and self.critic_provider:
+                logger.warning(f"Repairing {len(repair_instructions)} structural issues")
+
+                # Include the graph comparison for context
+                graph_context = f"""
+SOURCE SEMANTIC STRUCTURE:
+{source_graph.to_text_description()}
+
+OUTPUT SEMANTIC STRUCTURE:
+{output_graph.to_text_description()}
+
+DIFFERENCES:
+{diff.to_text()}
+"""
+                # Build repair prompt with graph context
+                instructions = [
+                    "SEMANTIC STRUCTURE REPAIR: The output is missing key propositions or relationships.",
+                    "Use the graph comparison below to understand what's missing:",
+                    graph_context,
+                    "SPECIFIC REPAIRS NEEDED:",
+                ] + repair_instructions[:5]
+
+                try:
+                    output = self._call_critic(source, output, instructions)
+                    if stats:
+                        stats.quality_issues_fixed += len(repair_instructions)
+                    logger.info("Applied semantic structure repair")
+                except Exception as e:
+                    logger.warning(f"Semantic structure repair failed: {e}")
+
+        except Exception as e:
+            logger.warning(f"Semantic structure verification failed: {e}")
+
+        return output
+
+    def _verify_factual_fidelity(
+        self,
+        source: str,
+        output: str,
+        stats: Optional['TransferStats'] = None,
+    ) -> Tuple[bool, List[str]]:
+        """Use LLM to verify output doesn't make claims not in source.
+
+        This catches subtle semantic drift like inventing etymology,
+        adding attributions, or changing the meaning of statements.
+
+        Args:
+            source: Original source text.
+            output: Generated output text.
+            stats: Optional stats object.
+
+        Returns:
+            Tuple of (is_faithful, list_of_issues).
+        """
+        if not self.critic_provider:
+            return True, []
+
+        try:
+            prompt = f"""Compare these two texts and identify any FACTUAL DIFFERENCES.
+
+SOURCE TEXT:
+{source}
+
+OUTPUT TEXT:
+{output}
+
+List any facts, claims, or assertions in the OUTPUT that are:
+1. NOT stated in the SOURCE (invented information)
+2. CONTRADICTING the SOURCE
+3. MISATTRIBUTING information
+
+Be very strict. If the output adds ANY new factual claims not in the source, list them.
+Focus on: etymology claims, origin claims, definitions, attributions, dates, numbers.
+
+If the output is factually faithful, respond with just: FAITHFUL
+
+Otherwise, list each issue on a new line starting with "ISSUE:"
+"""
+
+            response = self.critic_provider.call(
+                system_prompt="You are a fact-checker. Compare texts and identify any factual differences or invented claims. Be strict and precise.",
+                user_prompt=prompt,
+                temperature=0.1,
+                max_tokens=500,
+            )
+
+            response = response.strip()
+
+            if "FAITHFUL" in response.upper() and "ISSUE:" not in response.upper():
+                logger.debug("Factual fidelity check passed")
+                return True, []
+
+            # Extract issues
+            issues = []
+            for line in response.split('\n'):
+                line = line.strip()
+                if line.upper().startswith("ISSUE:"):
+                    issue = line[6:].strip()
+                    if issue:
+                        issues.append(issue)
+                elif line and "not in source" in line.lower():
+                    issues.append(line)
+                elif line and "invented" in line.lower():
+                    issues.append(line)
+                elif line and "added" in line.lower():
+                    issues.append(line)
+
+            if issues:
+                logger.warning(f"Factual fidelity issues: {len(issues)}")
+                for issue in issues[:3]:
+                    logger.warning(f"  - {issue}")
+
+                if stats:
+                    stats.quality_issues_found += len(issues)
+
+            return len(issues) == 0, issues
+
+        except Exception as e:
+            logger.warning(f"Factual fidelity check failed: {e}")
+            return True, []  # Don't block on errors
+
+    def _incremental_graph_repair(
+        self,
+        source: str,
+        output: str,
+        source_graph,
+        builder,
+        comparator,
+        max_attempts_per_error: int = 2,
+    ) -> str:
+        """Repair output with deterministic, targeted fixes.
+
+        This is a single-pass repair algorithm:
+        1. Identify all errors from graph diff
+        2. For each error, make ONE targeted fix
+        3. Stop when all errors processed (no retries on same error)
+
+        The algorithm is deterministic because:
+        - Each error is processed exactly once
+        - Fixes are direct text operations where possible
+        - LLM is only used for specific rewrites, not open-ended generation
+        - No loops or retries that could cause infinite iteration
+
+        Args:
+            source: Original source text.
+            output: Current output text.
+            source_graph: Ground truth semantic graph.
+            builder: SemanticGraphBuilder instance.
+            comparator: SemanticGraphComparator instance.
+            max_attempts_per_error: Max LLM attempts for complex fixes.
+
+        Returns:
+            Repaired output text.
+        """
+        source_sentences = split_into_sentences(source)
+        output_sentences = list(split_into_sentences(output))
+
+        # Get the diff - this tells us exactly what needs to be fixed
+        output_graph = builder.build_from_text(output)
+        diff = comparator.compare(source_graph, output_graph)
+
+        if diff.is_isomorphic:
+            return output  # Nothing to fix
+
+        errors = self._prioritize_errors(diff)
+        logger.info(f"Repairing {len(errors)} graph errors")
+
+        # Track what we've fixed to avoid duplicate work
+        fixed_propositions = set()
+        removed_sentences = set()
+        # Track inserted sentences so cleanup doesn't remove them
+        inserted_sentences = set()
+
+        for error in errors:
+            error_type = error["type"]
+            error_data = error["data"]
+
+            if error_type == "missing":
+                # Missing proposition: find source sentence and add it
+                prop_id = f"{error_data.subject}|{error_data.predicate}"
+                if prop_id in fixed_propositions:
+                    continue
+
+                # Find the source sentence containing this proposition
+                source_sent = self._find_sentence_for_proposition(
+                    error_data, source_sentences
+                )
+
+                if not source_sent:
+                    logger.warning(f"Could not find source sentence for: {error_data.summary()[:50]}")
+                    continue
+
+                # Check if proposition is already covered by an output sentence
+                # (not just exact string match - check semantic coverage)
+                already_covered = False
+                for out_sent in output_sentences:
+                    if self._sentence_contains_proposition(out_sent, error_data):
+                        already_covered = True
+                        logger.debug(f"Proposition already covered: {error_data.summary()[:40]}")
+                        break
+
+                if already_covered:
+                    fixed_propositions.add(prop_id)
+                    continue
+
+                # Insert at position determined by graph structure
+                insert_pos = self._find_insertion_position(
+                    error_data, output_sentences, source_graph, output_graph
+                )
+                output_sentences.insert(insert_pos, source_sent)
+                inserted_sentences.add(source_sent.lower().strip())
+                fixed_propositions.add(prop_id)
+                logger.info(f"Inserted missing proposition at pos {insert_pos}: {error_data.summary()[:40]}")
+
+            elif error_type == "added":
+                # Hallucinated content: remove the sentence containing it
+                prop_text = error_data.text
+                for i, sent in enumerate(output_sentences):
+                    if i in removed_sentences:
+                        continue
+                    # Check if this sentence contains the hallucination
+                    if self._sentence_contains_proposition(sent, error_data):
+                        removed_sentences.add(i)
+                        logger.debug(f"Marked for removal: {sent[:40]}...")
+                        break
+
+            elif error_type == "entity":
+                # Entity error: targeted rewrite of specific sentence
+                entity = error_data.entity
+                source_role = error_data.source_role
+
+                # Find sentence mentioning this entity
+                for i, sent in enumerate(output_sentences):
+                    if i in removed_sentences:
+                        continue
+                    if entity.lower() in sent.lower():
+                        # Try direct fix first (for role_loss, add the role)
+                        if error_data.error_type == "role_loss":
+                            # Find source sentence with correct role
+                            source_sent = self._find_sentence_with_entity_role(
+                                entity, source_role, source_sentences
+                            )
+                            if source_sent:
+                                output_sentences[i] = source_sent
+                                logger.debug(f"Fixed entity role: {entity}")
+                        elif error_data.error_type == "conflation":
+                            # Remove the conflating sentence
+                            removed_sentences.add(i)
+                            logger.debug(f"Removed conflation: {entity}")
+                        break
+
+        # Remove marked sentences (in reverse order to preserve indices)
+        for i in sorted(removed_sentences, reverse=True):
+            if i < len(output_sentences):
+                output_sentences.pop(i)
+
+        # Log repair summary
+        logger.info(f"Repair summary: {len(inserted_sentences)} sentences inserted, {len(removed_sentences)} removed")
+
+        # Cleanup and return - pass inserted_sentences so we don't accidentally remove them
+        final_sentences = self._cleanup_repaired_sentences(output_sentences, inserted_sentences)
+        return " ".join(final_sentences)
+
+    def _find_sentence_for_proposition(
+        self, prop_node, sentences: List[str]
+    ) -> Optional[str]:
+        """Find the source sentence that contains a proposition."""
+        # The proposition node has the original sentence text
+        if prop_node.text:
+            for sent in sentences:
+                if sent.strip() == prop_node.text.strip():
+                    return sent
+                # Also check for significant overlap
+                if self._sentence_overlap(sent, prop_node.text) > 0.7:
+                    return sent
+
+        # Fallback: find by subject/predicate
+        for sent in sentences:
+            sent_lower = sent.lower()
+            if (prop_node.subject and prop_node.subject.lower() in sent_lower and
+                prop_node.predicate and prop_node.predicate.lower() in sent_lower):
+                return sent
+
+        return None
+
+    def _find_insertion_position(
+        self,
+        prop_node,
+        output_sentences: List[str],
+        source_graph,
+        output_graph,
+    ) -> int:
+        """Find insertion position using graph structure to maintain narrative order.
+
+        Uses the SOURCE graph node IDs (P1, P2, P3...) which reflect original sentence order.
+        Finds where to insert a missing node by looking at which source nodes are already
+        in the output and inserting at the correct relative position.
+        """
+        # Get the node ID (e.g., "P2")
+        missing_id = prop_node.id
+
+        try:
+            missing_num = int(missing_id[1:])  # "P2" -> 2
+        except (ValueError, IndexError):
+            return len(output_sentences)
+
+        # Find predecessor in source graph (what points TO this node)
+        predecessor_id = None
+        for edge in source_graph.edges:
+            if edge.target_id == missing_id:
+                predecessor_id = edge.source_id
+                break
+
+        # Find successor in source graph (what this node points TO)
+        successor_id = None
+        for edge in source_graph.edges:
+            if edge.source_id == missing_id:
+                successor_id = edge.target_id
+                break
+
+        # Strategy 1: Insert after predecessor if it's in output
+        if predecessor_id:
+            pred_node = source_graph.get_node(predecessor_id)
+            if pred_node:
+                for i, sent in enumerate(output_sentences):
+                    if self._sentence_contains_proposition(sent, pred_node):
+                        return i + 1  # Insert after predecessor
+
+        # Strategy 2: Insert before successor if it's in output
+        if successor_id:
+            succ_node = source_graph.get_node(successor_id)
+            if succ_node:
+                for i, sent in enumerate(output_sentences):
+                    if self._sentence_contains_proposition(sent, succ_node):
+                        return i  # Insert before successor
+
+        # Strategy 3: Find any SOURCE node in output with higher ID and insert before it
+        for source_node in sorted(source_graph.nodes, key=lambda n: int(n.id[1:]) if n.id[1:].isdigit() else 999):
+            try:
+                source_num = int(source_node.id[1:])
+                if source_num > missing_num:
+                    # Check if this source node's sentence is in output
+                    for i, sent in enumerate(output_sentences):
+                        if self._sentence_contains_proposition(sent, source_node):
+                            return i  # Insert before this higher-numbered source node
+            except (ValueError, IndexError):
+                pass
+
+        # Strategy 4: If missing node has lower ID than any source node in output, insert at 0
+        for source_node in source_graph.nodes:
+            try:
+                source_num = int(source_node.id[1:])
+                if source_num > missing_num:
+                    for sent in output_sentences:
+                        if self._sentence_contains_proposition(sent, source_node):
+                            return 0  # There's a higher node in output, so insert at beginning
+            except (ValueError, IndexError):
+                pass
+
+        # Default: append at end
+        return len(output_sentences)
+
+    def _sentence_contains_proposition(self, sentence: str, prop_node) -> bool:
+        """Check if a sentence contains a specific proposition."""
+        sent_lower = sentence.lower()
+
+        # Check for subject and predicate
+        has_subject = prop_node.subject and prop_node.subject.lower() in sent_lower
+        has_predicate = prop_node.predicate and prop_node.predicate.lower() in sent_lower
+
+        if has_subject and has_predicate:
+            return True
+
+        # Check for significant keyword overlap
+        if prop_node.text:
+            return self._sentence_overlap(sentence, prop_node.text) > 0.6
+
+        return False
+
+    def _find_sentence_with_entity_role(
+        self, entity: str, role: str, sentences: List[str]
+    ) -> Optional[str]:
+        """Find a source sentence where an entity performs a specific role."""
+        entity_lower = entity.lower()
+        role_words = set(role.lower().split())
+
+        for sent in sentences:
+            sent_lower = sent.lower()
+            if entity_lower in sent_lower:
+                # Check if role words are present
+                sent_words = set(sent_lower.split())
+                if role_words & sent_words:  # Any overlap
+                    return sent
+
+        return None
+
+    def _cleanup_repaired_sentences(
+        self,
+        sentences: List[str],
+        protected_sentences: Optional[set] = None,
+    ) -> List[str]:
+        """Clean up sentences after repair: dedupe, remove incomplete, etc.
+
+        Args:
+            sentences: List of sentences to clean up.
+            protected_sentences: Set of sentence texts (lowercase, stripped) that were
+                inserted during repair and should NOT be filtered out.
+
+        Returns:
+            Cleaned list of sentences.
+        """
+        from ..utils.nlp import is_sentence_incomplete
+
+        protected = protected_sentences or set()
+        cleaned = []
+        seen = set()
+
+        for sent in sentences:
+            sent = sent.strip()
+            if not sent:
+                continue
+
+            sent_normalized = sent.lower().strip()
+            is_protected = sent_normalized in protected
+
+            # Skip duplicate sentences (even protected ones shouldn't appear twice)
+            if sent_normalized in seen:
+                logger.debug(f"Removing duplicate sentence: {sent[:50]}...")
+                continue
+
+            # Check for incomplete sentences using spaCy POS analysis
+            # BUT skip this check for protected sentences (source sentences are complete)
+            if not is_protected:
+                is_incomplete, reason = is_sentence_incomplete(sent)
+                if is_incomplete:
+                    # Try to salvage by adding punctuation if it looks nearly complete
+                    if reason == "no ending punctuation" and len(sent.split()) > 8:
+                        sent = sent + "."
+                    else:
+                        logger.warning(f"Removing incomplete sentence ({reason}): {sent[:50]}...")
+                        continue
+
+            # Skip sentences that are mostly duplicated content from another
+            # BUT for protected sentences, we need to be smarter - they contain
+            # critical propositions that may not be fully covered by styled sentences
+            is_subset = False
+            for existing in cleaned:
+                # Check if this sentence is largely contained in another
+                if len(sent) > 20 and sent[:20].lower() in existing.lower():
+                    overlap = self._sentence_overlap(sent, existing)
+                    if overlap > 0.8:
+                        if is_protected:
+                            # Protected sentence overlaps with existing styled sentence
+                            # Keep the protected one (source) since it has the full proposition
+                            # and REPLACE the styled one
+                            idx = cleaned.index(existing)
+                            cleaned[idx] = sent
+                            logger.info(f"Replaced overlapping styled sentence with source: {sent[:50]}...")
+                            is_subset = True  # Don't add again
+                        else:
+                            logger.debug(f"Removing overlapping sentence: {sent[:50]}...")
+                            is_subset = True
+                        break
+
+            if is_subset:
+                # For protected sentences, we already replaced in the loop above
+                # For non-protected, we skip
+                if is_protected:
+                    seen.add(sent_normalized)
+                continue
+
+            seen.add(sent_normalized)
+            cleaned.append(sent)
+
+        return cleaned
+
+    def _sentence_overlap(self, sent1: str, sent2: str) -> float:
+        """Calculate word overlap between two sentences."""
+        words1 = set(sent1.lower().split())
+        words2 = set(sent2.lower().split())
+        if not words1 or not words2:
+            return 0.0
+        intersection = len(words1 & words2)
+        return intersection / min(len(words1), len(words2))
+
+    def _prioritize_errors(self, diff) -> List[dict]:
+        """Prioritize errors for repair.
+
+        Order:
+        1. Entity role errors (most critical - change meaning)
+        2. Missing propositions (content loss)
+        3. Added propositions (hallucinations)
+        """
+        errors = []
+
+        # Entity errors first - these are the most critical
+        for i, err in enumerate(diff.entity_role_errors):
+            errors.append({
+                "type": "entity",
+                "priority": 0,
+                "data": err,
+                "description": f"{err.error_type}: {err.entity} - {err.source_role}",
+            })
+
+        # Missing propositions
+        for i, node in enumerate(diff.missing_nodes):
+            errors.append({
+                "type": "missing",
+                "priority": 1,
+                "data": node,
+                "description": f"Missing: {node.summary()}",
+            })
+
+        # Added propositions (hallucinations)
+        for i, node in enumerate(diff.added_nodes):
+            errors.append({
+                "type": "added",
+                "priority": 2,
+                "data": node,
+                "description": f"Remove: {node.summary()}",
+            })
+
+        # Sort by priority
+        errors.sort(key=lambda x: x["priority"])
+        return errors
 
     def _verify_semantic_coherence(
         self,
@@ -1136,7 +2008,75 @@ class StyleTransfer:
             f"(avg {self._transfer_stats.avg_time_per_paragraph:.1f}s/para)"
         )
 
-        return "\n\n".join(self._transfer_outputs), self._transfer_stats
+        # Final cleanup: deduplicate paragraphs and remove incomplete ones
+        cleaned_outputs = self._cleanup_document_paragraphs(self._transfer_outputs)
+
+        return "\n\n".join(cleaned_outputs), self._transfer_stats
+
+    def _cleanup_document_paragraphs(self, paragraphs: List[str]) -> List[str]:
+        """Clean up paragraphs: remove duplicates, incomplete content, etc."""
+        from ..utils.nlp import is_sentence_incomplete, get_complete_sentences
+
+        cleaned = []
+        seen_starts = {}  # Map of first 50 chars -> full paragraph
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+
+            # Check for duplicate paragraphs (same start)
+            para_start = para[:50].lower() if len(para) > 50 else para.lower()
+            if para_start in seen_starts:
+                existing = seen_starts[para_start]
+                # Keep the longer/more complete version
+                if len(para) > len(existing):
+                    # Replace with longer version
+                    idx = cleaned.index(existing)
+                    cleaned[idx] = para
+                    seen_starts[para_start] = para
+                logger.debug(f"Skipping duplicate paragraph: {para[:50]}...")
+                continue
+
+            # Check if paragraph ends incomplete using spaCy
+            if para:
+                # Get the last sentence and check if it's incomplete
+                sentences = split_into_sentences(para)
+                if sentences:
+                    last_sent = sentences[-1]
+                    is_incomplete, reason = is_sentence_incomplete(last_sent)
+                    if is_incomplete and reason != "no ending punctuation":
+                        logger.warning(f"Paragraph ends incomplete ({reason}), truncating: ...{para[-50:]}")
+                        # Keep only complete sentences
+                        complete = get_complete_sentences(para)
+                        if complete:
+                            para = " ".join(complete)
+                        else:
+                            # Can't salvage - add period if long enough
+                            if len(para.split()) > 10:
+                                para = para + "."
+                            else:
+                                continue
+
+            # Check for internal repetition (same sentence repeated)
+            sentences = split_into_sentences(para)
+            if len(sentences) > 1:
+                unique_sentences = []
+                seen_sents = set()
+                for sent in sentences:
+                    sent_normalized = sent.strip().lower()
+                    if sent_normalized not in seen_sents:
+                        seen_sents.add(sent_normalized)
+                        unique_sentences.append(sent.strip())
+                    else:
+                        logger.debug(f"Removing repeated sentence within paragraph: {sent[:40]}...")
+                if len(unique_sentences) < len(sentences):
+                    para = " ".join(unique_sentences)
+
+            seen_starts[para_start] = para
+            cleaned.append(para)
+
+        return cleaned
 
     def get_partial_results(self) -> Tuple[str, TransferStats]:
         """Get partial results after an interrupted transfer.

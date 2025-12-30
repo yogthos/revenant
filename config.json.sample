@@ -25,14 +25,7 @@
         "model": "gpt-4",
         "max_tokens": 4096,
         "temperature": 0.7
-      },
-      "anthropic": {
-        "api_key": "${ANTHROPIC_API_KEY}",
-        "base_url": "https://api.anthropic.com",
-        "model": "claude-3-sonnet-20240229",
-        "max_tokens": 4096,
-        "temperature": 0.7
-      },
+      },      
       "mlx": {
         "model": "mlx-community/Qwen3-8B-4bit",
         "max_tokens": 512,
@@ -89,6 +82,22 @@
     "use_document_context": true,
     "pass_headings_unchanged": true,
     "min_paragraph_words": 10
+  },
+  "validation": {
+    "_comment": "Semantic similarity threshold (0.5 = same general idea, 0.75 = strict matching)",
+    "graph_similarity_threshold": 0.5,
+
+    "_comment2": "Maximum repair attempts per error type",
+    "max_repair_attempts_per_error": 3,
+
+    "_comment3": "Entity matching weight (soft - contributes to score, not required)",
+    "entity_match_threshold": 0.5,
+
+    "_comment4": "Structural match threshold (subject-predicate-object alignment)",
+    "structural_match_threshold": 0.4,
+
+    "_comment5": "Restyling acceptance: max additional errors styled output can have vs repaired (0 = must be same or better)",
+    "restyle_error_tolerance": 1
   },
   "style": {
     "_comment": "Perspective options: preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person",

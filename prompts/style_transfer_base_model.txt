@@ -1,1 +1,1 @@
-Write a {target_words} word excerpt about the content below emulating the style and voice of {author}
+Express ALL the ideas below in {target_words} words, using the voice and style of {author}. Preserve EVERY claim, name, and proposition - change only the writing style, not the content.

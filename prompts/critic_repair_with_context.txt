@@ -9,6 +9,14 @@ NON-NEGOTIABLE REQUIREMENTS (failure is not acceptable):
 3. All text must read as natural, fluent English
 4. The paragraph must align with the document's overall thesis and intent
 
+STYLE PRESERVATION (critical for quality):
+1. PRESERVE the existing sentence rhythm and flow - do NOT create choppy short sentences
+2. Integrate missing content smoothly INTO existing sentences, don't append awkwardly
+3. Match the vocabulary level and tone of the surrounding text
+4. Maintain varied sentence lengths - mix short and long
+5. Avoid stilted formal phrases (viz, herein, thus, hence) unless matching existing style
+6. When adding content, ensure it flows naturally with what comes before and after
+
 EDITING RULES:
 1. PRESERVE the existing writing style, vocabulary, and sentence structure
 2. Make ONLY the specific changes listed below
