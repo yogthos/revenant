@@ -4,6 +4,8 @@ env/
 ENV/
 .venv/
 
+.env
+
 # Python
 __pycache__/
 *.py[cod]
@@ -34,6 +36,7 @@ wheels/
 *.swp
 *.swo
 *~
+.coverage
 
 # OS
 .DS_Store
@@ -44,6 +47,11 @@ input/
 output/
 .cursor/
 atlas_cache/
+lora_adapters/
 
 # Cache files
 structure_cache.json
+
+# Logs
+logs/*.md
+!logs/.gitkeep
