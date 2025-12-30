@@ -97,6 +97,7 @@ def transfer_file(
     author: str,
     config_path: str = "config.json",
     temperature: float = 0.7,
+    perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
 ) -> None:
@@ -109,6 +110,7 @@ def transfer_file(
         author: Author name.
         config_path: Path to config file.
         temperature: Generation temperature.
+        perspective: Output perspective (None uses config default).
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
     """
@@ -132,12 +134,21 @@ def transfer_file(
     print(f"Input: {word_count} words")
 
     # Configure transfer from app config or defaults
+    # Determine perspective: CLI overrides config
+    effective_perspective = perspective
+    if effective_perspective is None and app_config:
+        effective_perspective = app_config.style.perspective
+    if effective_perspective is None:
+        effective_perspective = "preserve"
+
     if app_config:
         gen = app_config.generation
         config = TransferConfig(
             # Use CLI temperature if specified, otherwise config value
             temperature=temperature,
             verify_entailment=verify,
+            # Perspective
+            perspective=effective_perspective,
             # From config file
             max_repair_attempts=gen.max_repair_attempts,
             repair_temperature=gen.repair_temperature,
@@ -148,6 +159,8 @@ def transfer_file(
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
             truncate_over_expanded=gen.truncate_over_expanded,
+            # LoRA influence
+            lora_scale=gen.lora_scale,
             use_neutralization=gen.use_neutralization,
             neutralization_temperature=gen.neutralization_temperature,
             # Neutralization token settings
@@ -170,6 +183,7 @@ def transfer_file(
         config = TransferConfig(
             temperature=temperature,
             verify_entailment=verify,
+            perspective=effective_perspective,
         )
 
     # Create critic provider for repairs
@@ -236,34 +250,53 @@ def transfer_file(
     print(f"\nTransferring... (streaming to {output_path})")
     start_time = time.time()
 
-    output_text, stats = transfer.transfer_document(
-        input_text,
-        on_progress=on_progress,
-        on_paragraph=on_paragraph,
-    )
+    try:
+        output_text, stats = transfer.transfer_document(
+            input_text,
+            on_progress=on_progress,
+            on_paragraph=on_paragraph,
+        )
 
-    if not verbose:
-        print()  # New line after progress bar
+        if not verbose:
+            print()  # New line after progress bar
 
-    # Final save (ensures proper formatting)
-    with open(output_file, 'w') as f:
-        f.write(output_text)
+        # Final save (ensures proper formatting)
+        with open(output_file, 'w') as f:
+            f.write(output_text)
 
-    # Print stats
-    elapsed = time.time() - start_time
-    output_words = len(output_text.split())
+        # Print stats
+        elapsed = time.time() - start_time
+        output_words = len(output_text.split())
 
-    print(f"\nComplete!")
-    print(f"  Output: {output_path}")
-    print(f"  Words: {word_count} -> {output_words}")
-    print(f"  Time: {elapsed:.1f}s ({stats.avg_time_per_paragraph:.1f}s/paragraph)")
+        print(f"\nComplete!")
+        print(f"  Output: {output_path}")
+        print(f"  Words: {word_count} -> {output_words}")
+        print(f"  Time: {elapsed:.1f}s ({stats.avg_time_per_paragraph:.1f}s/paragraph)")
 
-    if stats.entailment_scores:
-        avg_score = sum(stats.entailment_scores) / len(stats.entailment_scores)
-        print(f"  Content preservation: {avg_score:.1%}")
+        if stats.entailment_scores:
+            avg_score = sum(stats.entailment_scores) / len(stats.entailment_scores)
+            print(f"  Content preservation: {avg_score:.1%}")
 
-    if stats.paragraphs_repaired > 0:
-        print(f"  Paragraphs repaired: {stats.paragraphs_repaired}")
+        if stats.paragraphs_repaired > 0:
+            print(f"  Paragraphs repaired: {stats.paragraphs_repaired}")
+
+    except KeyboardInterrupt:
+        print("\n\nInterrupted by user.")
+        # Get partial results
+        partial_text, partial_stats = transfer.get_partial_results()
+        elapsed = time.time() - start_time
+
+        if output_paragraphs:
+            # Save what we have
+            with open(output_file, 'w') as f:
+                f.write("\n\n".join(output_paragraphs))
+            print(f"  Partial output saved: {output_path}")
+            print(f"  Paragraphs completed: {len(output_paragraphs)}")
+            print(f"  Time: {elapsed:.1f}s")
+        else:
+            print("  No paragraphs completed yet.")
+
+        sys.exit(130)  # Standard exit code for Ctrl+C
 
 
 def main():
@@ -302,6 +335,15 @@ def main():
         type=float,
         default=0.7,
         help="Generation temperature (default: 0.7)",
+    )
+    parser.add_argument(
+        "--perspective",
+        choices=["preserve", "first_person_singular", "first_person_plural",
+                 "third_person", "author_voice_third_person"],
+        default=None,
+        help="Output perspective: preserve (default), first_person_singular, "
+             "first_person_plural, third_person, or author_voice_third_person "
+             "(writes AS author using third person)",
     )
     parser.add_argument(
         "--no-verify",
@@ -374,10 +416,15 @@ def main():
         author=author,
         config_path=args.config,
         temperature=args.temperature,
+        perspective=args.perspective,
         verify=not args.no_verify,
         verbose=args.verbose,
     )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\nInterrupted.")
+        sys.exit(130)

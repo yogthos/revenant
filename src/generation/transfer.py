@@ -86,6 +86,12 @@ class TransferConfig:
     target_expansion_ratio: float = 1.2  # Target for LoRA generation
     truncate_over_expanded: bool = False  # If True, truncate; if False, allow longer output
 
+    # LoRA influence settings
+    lora_scale: float = 1.0  # 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
+
+    # Perspective settings
+    perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person
+
 
 @dataclass
 class TransferStats:
@@ -196,6 +202,7 @@ class StyleTransfer:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
+            lora_scale=getattr(self.config, 'lora_scale', 1.0),
         )
         self.generator = LoRAStyleGenerator(
             adapter_path=adapter_path,
@@ -407,6 +414,7 @@ class StyleTransfer:
             context=previous,
             max_tokens=max_tokens,
             context_hint=context_hint,
+            perspective=getattr(self.config, 'perspective', 'preserve'),
         )
 
         # Check if LoRA output matches input (indicates no transformation)
@@ -771,6 +779,7 @@ class StyleTransfer:
                 system_override=repair_system,
                 max_tokens=max_tokens,
                 context_hint=context_hint,
+                perspective=getattr(self.config, 'perspective', 'preserve'),
             )
         finally:
             self.generator.config.temperature = old_temp

@@ -1,4 +1,5 @@
 You are {author}. Rewrite the following text in your distinctive voice.
+{perspective_instruction}
 
 CRITICAL RULES:
 1. COMPLETE all sentences - never truncate or leave sentences unfinished

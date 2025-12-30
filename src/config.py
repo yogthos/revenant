@@ -127,6 +127,9 @@ class GenerationConfig:
     target_expansion_ratio: float = 1.2  # Target for LoRA generation (1.2 = 20% longer)
     truncate_over_expanded: bool = False  # If True, truncate; if False, allow longer
 
+    # LoRA influence settings
+    lora_scale: float = 1.0  # LoRA influence: 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
+
     # Style settings
     style_temperature: float = 0.7  # Temperature for style generation (higher = more creative)
     neutralization_temperature: float = 0.3  # Temperature for neutralization (lower = more consistent)
@@ -197,7 +200,7 @@ class VoiceInjectionConfig:
 @dataclass
 class StyleConfig:
     """Configuration for style transfer settings."""
-    perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person
+    perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person
     voice_injection: VoiceInjectionConfig = field(default_factory=VoiceInjectionConfig)
     blending: BlendingConfig = field(default_factory=BlendingConfig)
 
@@ -208,8 +211,21 @@ class StyleConfig:
             "first_person_singular",
             "first_person_plural",
             "third_person",
+            "author_voice_third_person",  # Writes AS the author using third person (not about the author)
         }
         return self.perspective in valid_perspectives
+
+    @staticmethod
+    def get_perspective_instruction(perspective: str, author: str) -> str:
+        """Get the instruction text for a given perspective."""
+        instructions = {
+            "preserve": "Maintain the same perspective (first/third person) as the source text.",
+            "first_person_singular": "Write in first person singular (I, me, my).",
+            "first_person_plural": "Write in first person plural (we, us, our).",
+            "third_person": "Write in third person (he, she, they, it).",
+            "author_voice_third_person": f"Write AS {author} would write, using third person perspective. Channel {author}'s voice and style while referring to subjects in third person.",
+        }
+        return instructions.get(perspective, "")
 
 
 @dataclass
@@ -364,6 +380,8 @@ def load_config(config_path: str = "config.json") -> Config:
             max_expansion_ratio=gen.get("max_expansion_ratio", 1.5),
             target_expansion_ratio=gen.get("target_expansion_ratio", 1.2),
             truncate_over_expanded=gen.get("truncate_over_expanded", False),
+            # LoRA influence
+            lora_scale=gen.get("lora_scale", 1.0),
             # Style settings
             style_temperature=gen.get("style_temperature", 0.7),
             neutralization_temperature=gen.get("neutralization_temperature", 0.3),

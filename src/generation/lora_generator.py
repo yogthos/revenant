@@ -38,6 +38,7 @@ class GenerationConfig:
     top_p: float = 0.9
     repetition_penalty: float = 1.1
     min_tokens: int = 50  # Prevent too-short outputs
+    lora_scale: float = 1.0  # LoRA influence: 0.0=base only, 1.0=full LoRA, >1.0=amplified
 
 
 @dataclass
@@ -152,11 +153,16 @@ class LoRAStyleGenerator:
 
         try:
             if self.adapter_path:
-                logger.info(f"With LoRA adapter: {self.adapter_path}")
+                lora_scale = self.config.lora_scale
+                logger.info(f"With LoRA adapter: {self.adapter_path} (scale={lora_scale})")
                 self._model, self._tokenizer = load(
                     self.base_model_name,
                     adapter_path=self.adapter_path,
                 )
+                # Apply LoRA scale if not default (1.0)
+                # This scales the adapter weights to control style influence
+                if lora_scale != 1.0 and hasattr(self._model, 'model'):
+                    self._apply_lora_scale(lora_scale)
             else:
                 self._model, self._tokenizer = load(self.base_model_name)
         finally:
@@ -169,6 +175,49 @@ class LoRAStyleGenerator:
 
         logger.info("Model loaded successfully")
 
+    def _apply_lora_scale(self, scale: float) -> None:
+        """Apply scaling factor to LoRA adapter weights.
+
+        This controls how much the LoRA adapter influences the base model:
+        - scale=0.0: Base model only (no LoRA influence)
+        - scale=0.5: Half LoRA influence (more base model)
+        - scale=1.0: Full LoRA influence (default)
+        - scale>1.0: Amplified LoRA influence (stronger style)
+
+        Args:
+            scale: Scaling factor for LoRA weights.
+        """
+        import mlx.core as mx
+
+        def scale_lora_layers(module, path=""):
+            """Recursively find and scale LoRA layers."""
+            # Check if this module has LoRA weights
+            if hasattr(module, 'lora_a') and hasattr(module, 'lora_b'):
+                # Scale the LoRA output by adjusting lora_b (more efficient than scaling both)
+                if hasattr(module, 'scale'):
+                    # If module has a scale attribute, use it
+                    module.scale = scale
+                    logger.debug(f"Scaled {path}.scale = {scale}")
+                else:
+                    # Otherwise, scale lora_b directly
+                    module.lora_b = module.lora_b * scale
+                    logger.debug(f"Scaled {path}.lora_b by {scale}")
+
+            # Recurse into children
+            if hasattr(module, 'children'):
+                for name, child in module.children().items():
+                    scale_lora_layers(child, f"{path}.{name}" if path else name)
+            elif hasattr(module, '__dict__'):
+                for name, child in module.__dict__.items():
+                    if hasattr(child, 'lora_a') or hasattr(child, 'children'):
+                        scale_lora_layers(child, f"{path}.{name}" if path else name)
+
+        try:
+            scale_lora_layers(self._model)
+            logger.info(f"Applied LoRA scale: {scale}")
+        except Exception as e:
+            logger.warning(f"Could not apply LoRA scale: {e}")
+
     def generate(
         self,
         content: str,
@@ -177,6 +226,7 @@ class LoRAStyleGenerator:
         system_override: Optional[str] = None,
         max_tokens: Optional[int] = None,
         context_hint: Optional[str] = None,
+        perspective: Optional[str] = None,
     ) -> str:
         """Generate styled text from content description.
 
@@ -188,18 +238,31 @@ class LoRAStyleGenerator:
             max_tokens: Override for max tokens (defaults to config).
             context_hint: Optional brief hint about document type (e.g., "formal analytical").
                          Only used for instruct models, ignored for base models.
+            perspective: Output perspective (first_person_singular, third_person, etc.).
 
         Returns:
             Generated text in the author's style.
         """
         self._ensure_loaded()
 
+        # Build perspective instruction
+        perspective_instruction = ""
+        if perspective and perspective != "preserve":
+            from ..config import StyleConfig
+            perspective_instruction = StyleConfig.get_perspective_instruction(perspective, author)
+            if perspective_instruction:
+                perspective_instruction = f"\n{perspective_instruction}"
+
         # Build messages
         if system_override:
             system = system_override
         else:
             # Content-preserving prompt with explicit constraints
-            system = format_prompt("style_transfer_system", author=author)
+            system = format_prompt(
+                "style_transfer_system",
+                author=author,
+                perspective_instruction=perspective_instruction
+            )
 
         # Build user message - just the content
         user = content

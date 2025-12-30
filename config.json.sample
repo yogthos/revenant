@@ -61,31 +61,38 @@
     "target_expansion_ratio": 1.2,
     "truncate_over_expanded": false,
 
-    "_comment4": "Style settings",
+    "_comment4": "LoRA influence (0.0=base only, 0.5=half, 1.0=full, >1.0=amplified)",
+    "lora_scale": 1.0,
+
+    "_comment5": "Style settings",
     "style_temperature": 0.7,
     "neutralization_temperature": 0.3,
     "use_neutralization": true,
 
-    "_comment5": "Neutralization token limits (for preserving full content)",
+    "_comment6": "Neutralization token limits (for preserving full content)",
     "neutralization_min_tokens": 300,
     "neutralization_token_multiplier": 1.2,
 
-    "_comment6": "Content anchor detection",
+    "_comment7": "Content anchor detection",
     "analogy_min_length": 10,
     "detect_phase_transitions": true,
 
-    "_comment7": "Hallucination detection",
+    "_comment8": "Hallucination detection",
     "hallucination_check_noun_phrases": true,
     "critical_hallucination_words": "death,god,soul,spirit,heaven,hell,divine,eternal",
 
-    "_comment8": "Post-processing",
+    "_comment9": "Post-processing",
     "repetition_threshold": 3,
     "reduce_repetition": true,
 
-    "_comment9": "Document handling",
+    "_comment10": "Document handling",
     "use_document_context": true,
     "pass_headings_unchanged": true,
     "min_paragraph_words": 10
+  },
+  "style": {
+    "_comment": "Perspective options: preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person",
+    "perspective": "preserve"
   },
   "log_level": "INFO"
 }
