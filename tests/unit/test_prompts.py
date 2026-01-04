@@ -49,6 +49,7 @@ class TestFormatPrompt:
             author="Carl Sagan",
             content="The universe is vast.",
             style_examples="",
+            structural_guidance="",
         )
         assert "Carl Sagan" in prompt
         assert "The universe is vast." in prompt
@@ -68,6 +69,7 @@ class TestFormatPrompt:
             author="H.P. Lovecraft",
             content="A strange creature appeared.",
             style_examples="[Example 1]: The eldritch horror...\n\n",
+            structural_guidance="",
         )
         assert "H.P. Lovecraft" in prompt
         assert "A strange creature appeared." in prompt

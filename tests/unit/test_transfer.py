@@ -496,8 +496,8 @@ class TestRAGIntegration:
 
         formatted = context.format_for_prompt()
 
-        assert '[Style Example 1]: "First example passage."' in formatted
-        assert '[Style Example 2]: "Second example passage."' in formatted
+        assert '[Example 1]: "First example passage."' in formatted
+        assert '[Example 2]: "Second example passage."' in formatted
 
     def test_rag_context_has_examples(self):
         """Test has_examples method."""

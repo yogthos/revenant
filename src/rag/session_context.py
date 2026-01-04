@@ -83,15 +83,16 @@ class StyleRAGContext:
         if not self.examples:
             return ""
 
-        lines = []
+        lines = ["\nSTYLE REFERENCE (study vocabulary and rhythm, do NOT copy content):"]
         for i, example in enumerate(self.examples, 1):
             # Clean up example (trim to reasonable length)
             text = example.strip()
             if len(text) > 500:
                 text = text[:497] + "..."
 
-            lines.append(f"[Style Example {i}]: \"{text}\"")
+            lines.append(f"[Example {i}]: \"{text}\"")
 
+        lines.append("")  # Empty line before content
         return "\n".join(lines)
 
     def has_examples(self) -> bool:

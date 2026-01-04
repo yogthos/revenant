@@ -485,8 +485,8 @@ class TestStyleRAGContext:
 
         result = context.format_for_prompt()
 
-        assert '[Style Example 1]: "First example text here."' in result
-        assert '[Style Example 2]: "Second example with more content."' in result
+        assert '[Example 1]: "First example text here."' in result
+        assert '[Example 2]: "Second example with more content."' in result
 
     def test_format_for_prompt_truncates_long_examples(self):
         """Test that long examples are truncated."""

@@ -310,6 +310,34 @@ class CorpusIndexer:
             return len(results.get("ids", []))
         return self.collection.count()
 
+    def get_random_chunks(self, author: str, n: int = 50) -> List[str]:
+        """Get random chunks from an author's corpus.
+
+        Args:
+            author: Author name.
+            n: Number of chunks to retrieve.
+
+        Returns:
+            List of chunk texts.
+        """
+        import random
+
+        results = self.collection.get(
+            where={"author": author},
+            include=["documents"]
+        )
+
+        documents = results.get("documents", [])
+        if not documents:
+            logger.warning(f"No chunks found for author: {author}")
+            return []
+
+        # Random sample
+        if len(documents) <= n:
+            return documents
+
+        return random.sample(documents, n)
+
 
 # Default indexer using project data directory
 _default_indexer = None

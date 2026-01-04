@@ -47,6 +47,22 @@ from .session_context import (
     create_rag_context,
 )
 
+from .structural_analyzer import (
+    StructuralAnalyzer,
+    RhythmFingerprint,
+    StructuralStyle,
+    SentencePattern,
+    get_structural_analyzer,
+    extract_rhythm_instruction,
+)
+
+from .structural_rag import (
+    StructuralRAG,
+    StructuralGuidance,
+    get_structural_rag,
+    get_structural_guidance,
+)
+
 __all__ = [
     # Style analysis
     "StyleMetrics",
@@ -66,4 +82,16 @@ __all__ = [
     "RAGContextManager",
     "get_context_manager",
     "create_rag_context",
+    # Structural analysis
+    "StructuralAnalyzer",
+    "RhythmFingerprint",
+    "StructuralStyle",
+    "SentencePattern",
+    "get_structural_analyzer",
+    "extract_rhythm_instruction",
+    # Structural RAG
+    "StructuralRAG",
+    "StructuralGuidance",
+    "get_structural_rag",
+    "get_structural_guidance",
 ]
