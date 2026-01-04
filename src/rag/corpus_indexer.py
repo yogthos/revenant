@@ -37,9 +37,33 @@ def get_embedding_model():
     global _sentence_transformer
     if _sentence_transformer is None:
         try:
+            import sys
+            import warnings
+            import logging
+            from io import StringIO
             from sentence_transformers import SentenceTransformer
-            # Use a small, fast model for embeddings
-            _sentence_transformer = SentenceTransformer("all-MiniLM-L6-v2")
+
+            # Suppress noisy warnings and stdout during model loading
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore")
+                # Suppress sentence_transformers and transformers logging
+                st_logger = logging.getLogger("sentence_transformers")
+                tf_logger = logging.getLogger("transformers")
+                old_st_level = st_logger.level
+                old_tf_level = tf_logger.level
+                st_logger.setLevel(logging.ERROR)
+                tf_logger.setLevel(logging.ERROR)
+                # Suppress stdout/stderr (for LOAD REPORT)
+                old_stdout, old_stderr = sys.stdout, sys.stderr
+                sys.stdout = StringIO()
+                sys.stderr = StringIO()
+                try:
+                    _sentence_transformer = SentenceTransformer("all-MiniLM-L6-v2")
+                finally:
+                    sys.stdout, sys.stderr = old_stdout, old_stderr
+                    st_logger.setLevel(old_st_level)
+                    tf_logger.setLevel(old_tf_level)
+
             logger.info("Loaded sentence transformer: all-MiniLM-L6-v2")
         except ImportError:
             raise ImportError(

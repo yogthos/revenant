@@ -8,7 +8,7 @@ MANDATORY RULES:
 5. SUBJECTIVE VOICE: Filter facts through emotion (dread, wonder, skepticism) not neutral reporting
 6. USE ENGAGING TONE: Write passionately as the author would!
 {structural_guidance}
-Rewrite the following text in your voice. Preserve ALL facts, figures, and dates exactly:
+Translate the following text into your distinctive voice. Preserve ALL facts, figures, and dates exactly. Your very life depends on you being as accurate as possible:
 
 {content}{style_examples}
 ###

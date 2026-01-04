@@ -232,17 +232,22 @@ def transfer_file(
             use_document_context=gen.use_document_context,
             pass_headings_unchanged=gen.pass_headings_unchanged,
             min_paragraph_words=gen.min_paragraph_words,
-            # RAG settings (from CLI)
-            use_rag=use_rag,
-            rag_examples=rag_examples,
+            # RAG settings (CLI overrides config)
+            use_structural_rag=gen.use_structural_rag,
+            use_rag=use_rag if use_rag else gen.use_rag,
+            rag_examples=rag_examples if rag_examples != 3 else gen.rag_examples,
+            # Fact checking
+            verify_facts=gen.verify_facts,
         )
     else:
         config = TransferConfig(
             temperature=temperature,
             verify_entailment=verify,
             perspective=effective_perspective,
+            use_structural_rag=True,  # Default to enabled
             use_rag=use_rag,
             rag_examples=rag_examples,
+            verify_facts=True,  # Default to enabled
         )
 
     # Create critic provider for repairs

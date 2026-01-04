@@ -157,6 +157,14 @@ class GenerationConfig:
     pass_headings_unchanged: bool = True  # Don't transform headings
     min_paragraph_words: int = 10  # Skip paragraphs shorter than this
 
+    # RAG settings
+    use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
+    use_rag: bool = False  # Enable content RAG for style examples
+    rag_examples: int = 3  # Number of RAG examples to retrieve
+
+    # Fact checking settings
+    verify_facts: bool = True  # Enable fact extraction and repair for numbers, dates, names
+
 
 @dataclass
 class SemanticValidationConfig:
@@ -404,6 +412,12 @@ def load_config(config_path: str = "config.json") -> Config:
             use_document_context=gen.get("use_document_context", True),
             pass_headings_unchanged=gen.get("pass_headings_unchanged", True),
             min_paragraph_words=gen.get("min_paragraph_words", 10),
+            # RAG settings
+            use_structural_rag=gen.get("use_structural_rag", True),
+            use_rag=gen.get("use_rag", False),
+            rag_examples=gen.get("rag_examples", 3),
+            # Fact checking settings
+            verify_facts=gen.get("verify_facts", True),
         )
 
     if "style" in data:

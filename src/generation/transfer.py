@@ -33,6 +33,14 @@ except ImportError:
     RAG_AVAILABLE = False
     StyleRAGContext = None
 
+# Optional Structural RAG import
+try:
+    from ..rag import StructuralRAG, get_structural_rag
+    STRUCTURAL_RAG_AVAILABLE = True
+except ImportError:
+    STRUCTURAL_RAG_AVAILABLE = False
+    StructuralRAG = None
+
 logger = get_logger(__name__)
 
 
@@ -82,6 +90,12 @@ class TransferConfig:
     # RAG settings
     use_rag: bool = False  # Enable Style RAG for few-shot examples
     rag_examples: int = 3  # Number of RAG examples to retrieve
+
+    # Structural RAG settings
+    use_structural_rag: bool = True  # Enable Structural RAG for rhythm/syntax guidance
+
+    # Fact checking settings
+    verify_facts: bool = True  # Enable fact extraction and repair for numbers, dates, names
 
 
 @dataclass
@@ -191,6 +205,21 @@ class StyleTransfer:
             else:
                 logger.warning("RAG requested but not available (missing dependencies)")
                 self.config.use_rag = False
+
+        # Structural RAG for rhythm/syntax guidance
+        self.structural_rag: Optional[StructuralRAG] = None
+        if self.config.use_structural_rag:
+            if STRUCTURAL_RAG_AVAILABLE:
+                self.structural_rag = get_structural_rag(self.author)
+                loaded = self.structural_rag.load_patterns(sample_size=50)
+                if loaded > 0:
+                    logger.info(f"Structural RAG loaded {loaded} rhythm patterns for {self.author}")
+                else:
+                    logger.warning(f"No structural patterns found for {self.author}")
+                    self.structural_rag = None
+            else:
+                logger.warning("Structural RAG not available (missing dependencies)")
+                self.config.use_structural_rag = False
 
         if self.config.verify_entailment:
             logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
@@ -378,12 +407,20 @@ class StyleTransfer:
             style_examples = self.rag_context.format_for_prompt()
             logger.debug(f"Using {self.rag_context.example_count} RAG style examples")
 
+        # Get structural guidance if available
+        structural_guidance = None
+        if self.structural_rag:
+            guidance = self.structural_rag.get_guidance(paragraph)
+            structural_guidance = guidance.format_for_prompt()
+            logger.debug(f"Using structural guidance: {structural_guidance[:80]}...")
+
         output = self.generator.generate(
             content=content_for_generation,
             author=self.author,
             max_tokens=max_tokens,
             target_words=target_words,
             style_examples=style_examples,
+            structural_guidance=structural_guidance,
         )
         lora_output_words = len(output.split())
         lora_input_words = len(content_for_generation.split())
@@ -398,6 +435,21 @@ class StyleTransfer:
         source_words = len(paragraph.split())
         if lora_words > source_words * self.config.max_expansion_ratio:
             logger.warning(f"LoRA over-expanded: {lora_words} words vs {source_words} source ({lora_words/source_words:.0%})")
+
+        # ========================================
+        # STEP 3.5: Fact checking and repair
+        # ========================================
+        if self.config.verify_facts and self.critic_provider:
+            from ..validation.fact_checker import FactChecker, FactRepairer
+            checker = FactChecker()
+            result = checker.check(paragraph, output)
+
+            if result.preservation_rate < 1.0 and result.missing_facts:
+                logger.info(f"Fact preservation: {result.preservation_rate:.0%} ({len(result.missing_facts)} missing)")
+                repairer = FactRepairer(self.critic_provider)
+                output, new_result = repairer.repair(paragraph, output)
+                if new_result.preservation_rate > result.preservation_rate:
+                    logger.info(f"Facts repaired: {result.preservation_rate:.0%} -> {new_result.preservation_rate:.0%}")
 
         # ========================================
         # STEP 4: Validate styled output against source graph (if enabled)

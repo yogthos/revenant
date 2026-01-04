@@ -1,0 +1,10 @@
+SOURCE (ground truth):
+{source}
+
+OUTPUT (with issues):
+{output}
+
+ERRORS TO FIX:
+{errors}
+
+Fix only the listed errors while preserving the writing style. Output the corrected text only.

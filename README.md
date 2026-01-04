@@ -6,9 +6,10 @@ Transform text to match a target author's writing style while preserving semanti
 
 - **LoRA-Based Generation**: Fine-tuned adapters capture author style in model weights
 - **RTT Neutralization**: Round-trip translation strips style before restyling
-- **Critic/Repair Loop**: Validates content preservation and fixes issues
+- **Semantic Graph Validation**: Validates content preservation using proposition graphs
+- **Fact Checking & Repair**: Detects and repairs hallucinated numbers, dates, names
 - **Style RAG**: Retrieves author examples for few-shot prompting
-- **Hallucination Detection**: Identifies and removes invented content
+- **Structural RAG**: Provides rhythm and syntax guidance from author corpus
 - **Perspective Control**: Transform to first/third person while maintaining style
 - **Fast Transfer**: ~15-30 seconds per paragraph
 
@@ -238,12 +239,14 @@ text-style-transfer/
 │   │
 │   ├── validation/               # Content preservation
 │   │   ├── semantic_graph.py    # Semantic graph analysis
+│   │   ├── fact_checker.py      # Fact extraction and repair
 │   │   └── quality_critic.py    # Entailment checking
 │   │
 │   ├── rag/                      # Style RAG system
 │   │   ├── style_analyzer.py    # spaCy style metrics
 │   │   ├── corpus_indexer.py    # ChromaDB indexing
 │   │   ├── style_retriever.py   # Two-channel retrieval
+│   │   ├── structural_rag.py    # Rhythm/syntax guidance
 │   │   └── session_context.py   # Session context manager
 │   │
 │   ├── llm/                      # LLM providers
@@ -267,8 +270,13 @@ text-style-transfer/
 │
 ├── prompts/                      # Prompt templates
 │   ├── style_transfer.txt       # Main generation prompt
-│   ├── repair_system.txt        # Repair system prompt
-│   └── repair_input.txt         # Repair input template
+│   ├── repair_system.txt        # Semantic repair system
+│   ├── repair_input.txt         # Semantic repair input
+│   ├── fact_repair_system.txt   # Fact repair system
+│   ├── fact_repair_input.txt    # Fact repair input
+│   ├── document_context.txt     # Document analysis
+│   ├── rtt_deepseek.txt         # RTT neutralization
+│   └── quality_repair.txt       # Quality repair
 │
 ├── data/
 │   ├── corpus/                   # Author corpus files
@@ -296,8 +304,9 @@ flowchart TD
 
     subgraph "Per-Paragraph Pipeline"
         B[RTT Neutralization]
-        C[RAG Retrieval]
+        C[Structural RAG]
         D[LoRA Generation]
+        D2[Fact Check & Repair]
         E[Semantic Validation]
         F{Valid?}
         G[Critic Repair]
@@ -310,8 +319,9 @@ flowchart TD
 
     A --> B
     B --> C
-    C -->|Style Examples| D
-    D --> E
+    C -->|Rhythm Guidance| D
+    D --> D2
+    D2 --> E
     E --> F
     F -->|No| G
     G --> E
@@ -381,23 +391,27 @@ sequenceDiagram
     participant CLI as restyle.py
     participant Transfer as StyleTransfer
     participant RTT as RTT Neutralizer
-    participant RAG as Style RAG
+    participant RAG as Structural RAG
     participant LoRA as LoRA Generator
+    participant Facts as Fact Checker
     participant Validator as Validator
     participant Critic as Critic
 
-    User->>CLI: restyle.py input.txt --rag
+    User->>CLI: restyle.py input.txt
     CLI->>Transfer: transfer_document()
 
     loop For each paragraph
         Transfer->>RTT: neutralize(paragraph)
         RTT-->>Transfer: neutral text
 
-        Transfer->>RAG: retrieve(paragraph, author)
-        RAG-->>Transfer: style examples
+        Transfer->>RAG: get_guidance(paragraph)
+        RAG-->>Transfer: rhythm patterns
 
-        Transfer->>LoRA: generate(neutral, examples)
+        Transfer->>LoRA: generate(neutral, guidance)
         LoRA-->>Transfer: styled text
+
+        Transfer->>Facts: check_and_repair(source, output)
+        Facts-->>Transfer: fact-corrected text
 
         Transfer->>Validator: validate(source, output)
 
@@ -443,7 +457,9 @@ Copy `config.json.sample` to `config.json`:
     "entailment_threshold": 0.7,
     "max_repair_attempts": 3,
     "lora_scale": 2.0,
-    "reduce_repetition": true
+    "reduce_repetition": true,
+    "use_structural_rag": true,
+    "verify_facts": true
   }
 }
 ```
@@ -456,6 +472,8 @@ Copy `config.json.sample` to `config.json`:
 | `entailment_threshold` | 0.7 | Validation strictness |
 | `max_repair_attempts` | 3 | Repair loop iterations |
 | `temperature` | 0.4 | Generation randomness |
+| `use_structural_rag` | true | Enable rhythm/syntax guidance |
+| `verify_facts` | true | Enable fact checking and repair |
 
 ---
 
@@ -491,6 +509,10 @@ Increase `lora_scale` in config.json to 2.0-3.0.
 ### Content Being Lost
 
 Increase `max_repair_attempts` to 5 and `entailment_threshold` to 0.8.
+
+### Facts Being Changed (Numbers, Dates, Names)
+
+The LoRA may convert numbers to words or hallucinate facts. Ensure `verify_facts` is enabled (default). For fact-heavy text, also try lowering `lora_scale` to 1.0-1.5.
 
 ---
 
