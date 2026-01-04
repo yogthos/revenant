@@ -25,6 +25,14 @@ from ..utils.nlp import (
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 
+# Optional RAG import
+try:
+    from ..rag import StyleRAGContext, create_rag_context
+    RAG_AVAILABLE = True
+except ImportError:
+    RAG_AVAILABLE = False
+    StyleRAGContext = None
+
 logger = get_logger(__name__)
 
 
@@ -70,6 +78,10 @@ class TransferConfig:
 
     # Perspective settings
     perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person
+
+    # RAG settings
+    use_rag: bool = False  # Enable Style RAG for few-shot examples
+    rag_examples: int = 3  # Number of RAG examples to retrieve
 
 
 @dataclass
@@ -170,6 +182,15 @@ class StyleTransfer:
 
         # Document context (extracted at transfer time)
         self.document_context: Optional[DocumentContext] = None
+
+        # RAG context for style examples
+        self.rag_context: Optional[StyleRAGContext] = None
+        if self.config.use_rag:
+            if RAG_AVAILABLE:
+                logger.info(f"RAG enabled with {self.config.rag_examples} examples")
+            else:
+                logger.warning("RAG requested but not available (missing dependencies)")
+                self.config.use_rag = False
 
         if self.config.verify_entailment:
             logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
@@ -351,11 +372,18 @@ class StyleTransfer:
         # Use 2.5x target words to ensure complete sentences
         max_tokens = max(150, int(target_words * 2.5))
 
+        # Get RAG style examples if available
+        style_examples = None
+        if self.rag_context and self.rag_context.has_examples():
+            style_examples = self.rag_context.format_for_prompt()
+            logger.debug(f"Using {self.rag_context.example_count} RAG style examples")
+
         output = self.generator.generate(
             content=content_for_generation,
             author=self.author,
             max_tokens=max_tokens,
             target_words=target_words,
+            style_examples=style_examples,
         )
         lora_output_words = len(output.split())
         lora_input_words = len(content_for_generation.split())
@@ -641,6 +669,27 @@ class StyleTransfer:
                 text,
                 llm_provider=self.critic_provider,
             )
+
+        # Initialize RAG context if enabled
+        if self.config.use_rag and RAG_AVAILABLE:
+            logger.info("Loading RAG style examples...")
+            # Use first non-heading paragraph as sample for RAG retrieval
+            sample_para = None
+            for p in paragraphs:
+                if not is_heading(p.strip()):
+                    sample_para = p
+                    break
+
+            if sample_para:
+                self.rag_context = create_rag_context(
+                    author=self.author,
+                    sample_text=sample_para,
+                    num_examples=self.config.rag_examples,
+                )
+                if self.rag_context.has_examples():
+                    logger.info(f"Loaded {self.rag_context.example_count} style examples from RAG")
+                else:
+                    logger.warning(f"No RAG examples found for author '{self.author}'. Run index-corpus first.")
 
         logger.info(f"Transferring {len(paragraphs)} paragraphs")
 

@@ -45,6 +45,67 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 
+def index_corpus(corpus_path: str, author: str, clear: bool = False) -> None:
+    """Index an author's corpus for RAG retrieval.
+
+    Args:
+        corpus_path: Path to corpus text file.
+        author: Author name.
+        clear: Whether to clear existing chunks for this author.
+    """
+    try:
+        from src.rag import CorpusIndexer, get_indexer
+    except ImportError:
+        print("Error: RAG dependencies not installed.")
+        print("Install with: pip install chromadb sentence-transformers")
+        sys.exit(1)
+
+    indexer = get_indexer()
+
+    print(f"Indexing corpus: {corpus_path}")
+    print(f"Author: {author}")
+
+    if clear:
+        print("Clearing existing chunks...")
+
+    try:
+        count = indexer.index_corpus(corpus_path, author, clear_existing=clear)
+        print(f"\nIndexed {count} chunks for {author}")
+        print(f"RAG index location: data/rag_index/")
+    except FileNotFoundError:
+        print(f"Error: Corpus file not found: {corpus_path}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error indexing corpus: {e}")
+        sys.exit(1)
+
+
+def list_rag_authors() -> None:
+    """List authors indexed in RAG."""
+    try:
+        from src.rag import get_indexer
+    except ImportError:
+        print("RAG dependencies not installed.")
+        print("Install with: pip install chromadb sentence-transformers")
+        return
+
+    indexer = get_indexer()
+    authors = indexer.get_authors()
+
+    if not authors:
+        print("\nNo authors indexed yet.")
+        print("\nTo index an author's corpus:")
+        print("  python restyle.py index-corpus corpus.txt --author 'Author Name'")
+        return
+
+    print("\nIndexed authors in RAG:")
+    print("-" * 40)
+    for author in authors:
+        count = indexer.get_chunk_count(author)
+        print(f"  {author}: {count} chunks")
+    print()
+
+
 def list_adapters(adapters_dir: str = "lora_adapters") -> None:
     """List available LoRA adapters."""
     adapters_path = Path(adapters_dir)
@@ -102,6 +163,8 @@ def transfer_file(
     perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
+    use_rag: bool = False,
+    rag_examples: int = 3,
 ) -> None:
     """Transfer a file using LoRA adapter.
 
@@ -115,6 +178,8 @@ def transfer_file(
         perspective: Output perspective (None uses config default).
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
+        use_rag: Whether to use RAG for style examples.
+        rag_examples: Number of RAG examples to retrieve.
     """
     from src.generation.transfer import StyleTransfer, TransferConfig
     from src.config import load_config
@@ -167,12 +232,17 @@ def transfer_file(
             use_document_context=gen.use_document_context,
             pass_headings_unchanged=gen.pass_headings_unchanged,
             min_paragraph_words=gen.min_paragraph_words,
+            # RAG settings (from CLI)
+            use_rag=use_rag,
+            rag_examples=rag_examples,
         )
     else:
         config = TransferConfig(
             temperature=temperature,
             verify_entailment=verify,
             perspective=effective_perspective,
+            use_rag=use_rag,
+            rag_examples=rag_examples,
         )
 
     # Create critic provider for repairs
@@ -201,6 +271,8 @@ def transfer_file(
     # Create transfer pipeline
     print(f"\nInitializing LoRA adapter: {adapter_path}")
     print(f"Author: {author}")
+    if use_rag:
+        print(f"RAG enabled: {rag_examples} style examples")
 
     transfer = StyleTransfer(
         adapter_path=adapter_path,
@@ -340,6 +412,19 @@ def main():
         help="Disable entailment verification",
     )
 
+    # RAG options
+    parser.add_argument(
+        "--rag",
+        action="store_true",
+        help="Enable RAG for style examples (requires indexed corpus)",
+    )
+    parser.add_argument(
+        "--rag-examples",
+        type=int,
+        default=3,
+        help="Number of RAG style examples to retrieve (default: 3)",
+    )
+
     # Utility options
     parser.add_argument(
         "--list-adapters",
@@ -347,9 +432,26 @@ def main():
         help="List available LoRA adapters",
     )
     parser.add_argument(
+        "--list-rag",
+        action="store_true",
+        help="List authors indexed in RAG",
+    )
+    parser.add_argument(
         "--adapters-dir",
         default="lora_adapters",
         help="Directory containing adapters (default: lora_adapters)",
+    )
+
+    # Index corpus subcommand (handled as special input)
+    parser.add_argument(
+        "--index-corpus",
+        metavar="CORPUS_FILE",
+        help="Index a corpus file for RAG (requires --author)",
+    )
+    parser.add_argument(
+        "--clear-rag",
+        action="store_true",
+        help="Clear existing RAG chunks for author when indexing",
     )
 
     # Config
@@ -376,9 +478,21 @@ def main():
         list_adapters(args.adapters_dir)
         return
 
+    # List RAG authors mode
+    if args.list_rag:
+        list_rag_authors()
+        return
+
+    # Index corpus mode
+    if args.index_corpus:
+        if not args.author:
+            parser.error("--author is required for --index-corpus")
+        index_corpus(args.index_corpus, args.author, args.clear_rag)
+        return
+
     # Validate required arguments for transfer
     if not args.input:
-        parser.error("Input file is required (or use --list-adapters)")
+        parser.error("Input file is required (or use --list-adapters, --list-rag)")
 
     if not args.output:
         # Default output name
@@ -411,6 +525,8 @@ def main():
         perspective=args.perspective,
         verify=not args.no_verify,
         verbose=args.verbose,
+        use_rag=args.rag,
+        rag_examples=args.rag_examples,
     )
 
 
