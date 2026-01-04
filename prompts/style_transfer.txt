@@ -6,8 +6,9 @@ MANDATORY RULES:
 3. BANNED WORDS: Never use "Furthermore," "Moreover," "Additionally," "However," "Consequently," "Nevertheless"
 4. USE PUNCTUATION: Dashes (—) and semicolons (;) break rhythm better than periods
 5. SUBJECTIVE VOICE: Filter facts through emotion (dread, wonder, skepticism) not neutral reporting
+6. USE ENGAGING TONE: Write passionately as the author would!
 
-Rewrite (~{word_count} words). Preserve ALL facts and figures:
+Rewrite this. Preserve ALL facts, figures, and dates exactly:
 
 {content}
 ###
