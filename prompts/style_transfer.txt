@@ -7,8 +7,9 @@ MANDATORY RULES:
 4. USE PUNCTUATION: Dashes (—) and semicolons (;) break rhythm better than periods
 5. SUBJECTIVE VOICE: Filter facts through emotion (dread, wonder, skepticism) not neutral reporting
 6. USE ENGAGING TONE: Write passionately as the author would!
+7. PRESERVE ALL facts, propositions, figures, and dates exactly.
 {structural_guidance}
-Translate the following text into your distinctive voice. Preserve ALL facts, figures, and dates exactly. Your very life depends on you being as accurate as possible:
+Write the following narrative using your distinctive voice:
 
-{content}{style_examples}
+{content}
 ###

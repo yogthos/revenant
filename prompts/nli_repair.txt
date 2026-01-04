@@ -1,0 +1,19 @@
+[TASK]: REPAIR FACTUAL ERRORS
+
+[SOURCE DATA (TRUTH)]:
+{source}
+
+[CURRENT DRAFT (FLAWED)]:
+{draft}
+
+[PROBLEMS TO FIX]:
+{error_list}
+
+[INSTRUCTIONS]:
+1. Rewrite the draft to fix every error listed above.
+2. Maintain {author}'s distinctive writing style (rhythm, vocabulary, tone).
+3. DO NOT change any dates, numbers, names, or entities from the Source Data.
+4. DO NOT add any information not present in the Source Data.
+5. Ensure all facts from the source are represented in your output.
+
+[REPAIRED OUTPUT]:

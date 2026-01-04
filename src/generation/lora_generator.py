@@ -284,7 +284,6 @@ class LoRAStyleGenerator:
         author: str,
         max_tokens: Optional[int] = None,
         target_words: Optional[int] = None,
-        style_examples: Optional[str] = None,
         structural_guidance: Optional[str] = None,
     ) -> str:
         """Generate styled text from content description.
@@ -294,8 +293,6 @@ class LoRAStyleGenerator:
             author: Author name (used in prompt).
             max_tokens: Override for max tokens (defaults to config).
             target_words: Target word count for output.
-            style_examples: Formatted RAG style examples to inject into prompt.
-                           Use StyleRAGContext.format_for_prompt() to generate.
             structural_guidance: Formatted structural guidance (rhythm, punctuation hints).
                            Use get_structural_guidance() to generate.
 
@@ -321,11 +318,6 @@ class LoRAStyleGenerator:
         # Generate style tag from input to guide output structure
         style_tag = generate_style_tag(user)
 
-        # Format style examples for prompt (empty string if not provided)
-        examples_str = ""
-        if style_examples:
-            examples_str = style_examples + "\n\n"
-
         # Format structural guidance (adds newline prefix if present)
         guidance_str = ""
         if structural_guidance:
@@ -338,7 +330,6 @@ class LoRAStyleGenerator:
             content=user,
             word_count=target_words,
             style_tag=style_tag,
-            style_examples=examples_str,
             structural_guidance=guidance_str,
         )
 

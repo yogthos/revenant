@@ -159,11 +159,12 @@ class GenerationConfig:
 
     # RAG settings
     use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
-    use_rag: bool = False  # Enable content RAG for style examples
-    rag_examples: int = 3  # Number of RAG examples to retrieve
 
-    # Fact checking settings
-    verify_facts: bool = True  # Enable fact extraction and repair for numbers, dates, names
+    # NLI Auditor settings (sentence-level verification)
+    use_sentence_nli: bool = False  # Enable sentence-level NLI verification (slower but more accurate)
+    nli_model: str = "cross-encoder/nli-deberta-v3-base"  # NLI model for sentence verification
+    nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
+    nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
 
 
 @dataclass
@@ -414,10 +415,11 @@ def load_config(config_path: str = "config.json") -> Config:
             min_paragraph_words=gen.get("min_paragraph_words", 10),
             # RAG settings
             use_structural_rag=gen.get("use_structural_rag", True),
-            use_rag=gen.get("use_rag", False),
-            rag_examples=gen.get("rag_examples", 3),
-            # Fact checking settings
-            verify_facts=gen.get("verify_facts", True),
+            # NLI Auditor settings
+            use_sentence_nli=gen.get("use_sentence_nli", False),
+            nli_model=gen.get("nli_model", "cross-encoder/nli-deberta-v3-base"),
+            nli_recall_threshold=gen.get("nli_recall_threshold", 0.5),
+            nli_precision_threshold=gen.get("nli_precision_threshold", 0.5),
         )
 
     if "style" in data:

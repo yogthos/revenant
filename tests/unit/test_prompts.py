@@ -48,7 +48,6 @@ class TestFormatPrompt:
             "style_transfer",
             author="Carl Sagan",
             content="The universe is vast.",
-            style_examples="",
             structural_guidance="",
         )
         assert "Carl Sagan" in prompt
@@ -62,18 +61,17 @@ class TestFormatPrompt:
         # This is a system prompt with no variables to format
         assert "HSK" in prompt or "translator" in prompt.lower()
 
-    def test_format_with_style_examples(self):
-        """Test formatting with style examples for RAG."""
+    def test_format_with_structural_guidance(self):
+        """Test formatting with structural guidance."""
         prompt = format_prompt(
             "style_transfer",
             author="H.P. Lovecraft",
             content="A strange creature appeared.",
-            style_examples="[Example 1]: The eldritch horror...\n\n",
-            structural_guidance="",
+            structural_guidance="\n\nRHYTHM: Vary between 5 and 35 words\n",
         )
         assert "H.P. Lovecraft" in prompt
         assert "A strange creature appeared." in prompt
-        assert "eldritch horror" in prompt
+        assert "RHYTHM" in prompt
 
 
 class TestGetPromptWithFallback:

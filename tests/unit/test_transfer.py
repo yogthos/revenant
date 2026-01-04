@@ -34,7 +34,6 @@ class TestTransferConfig:
         assert config.max_repair_attempts == 3
         assert config.reduce_repetition is True
         assert config.lora_scale == 2.0
-        assert config.use_rag is False
 
     def test_custom_values(self):
         """Test that custom values are applied."""
@@ -44,15 +43,11 @@ class TestTransferConfig:
             temperature=0.8,
             verify_entailment=False,
             lora_scale=1.5,
-            use_rag=True,
-            rag_examples=5,
         )
 
         assert config.temperature == 0.8
         assert config.verify_entailment is False
         assert config.lora_scale == 1.5
-        assert config.use_rag is True
-        assert config.rag_examples == 5
 
     def test_perspective_options(self):
         """Test perspective configuration."""
@@ -181,27 +176,6 @@ class TestStyleTransfer:
         )
 
         assert transfer.author == "Test Author"
-
-    @patch('src.generation.transfer.LoRAStyleGenerator')
-    def test_init_with_rag_enabled(self, mock_generator_class, mock_critic):
-        """Test initialization with RAG enabled."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
-
-        config = TransferConfig(
-            verify_entailment=False,
-            use_rag=True,
-            rag_examples=3,
-        )
-
-        transfer = StyleTransfer(
-            adapter_path="lora_adapters/test",
-            author_name="Test Author",
-            critic_provider=mock_critic,
-            config=config,
-        )
-
-        assert transfer.config.use_rag is True
-        assert transfer.config.rag_examples == 3
 
     @patch('src.generation.transfer.LoRAStyleGenerator')
     def test_ensure_complete_ending_with_period(self, mock_generator_class, mock_critic):
@@ -438,76 +412,6 @@ class TestDocumentTransfer:
             output, stats = transfer.transfer_document(doc, on_progress=on_progress)
 
         assert len(progress_calls) > 0
-
-
-# =============================================================================
-# Tests for RAG Integration
-# =============================================================================
-
-class TestRAGIntegration:
-    """Tests for RAG integration with transfer pipeline."""
-
-    @patch('src.generation.transfer.LoRAStyleGenerator')
-    @patch('src.generation.transfer.create_rag_context')
-    def test_rag_context_loaded_when_enabled(self, mock_create_rag, mock_generator_class):
-        """Test that RAG context is loaded when enabled."""
-        from src.generation.transfer import StyleTransfer, TransferConfig
-
-        mock_generator = MagicMock()
-        mock_generator.generate.return_value = "Output."
-        mock_generator_class.return_value = mock_generator
-
-        mock_rag_context = MagicMock()
-        mock_rag_context.has_examples.return_value = True
-        mock_rag_context.example_count = 3
-        mock_create_rag.return_value = mock_rag_context
-
-        mock_critic = MagicMock()
-        mock_critic.provider_name = "mock"
-
-        config = TransferConfig(
-            verify_entailment=False,
-            use_rag=True,
-            rag_examples=3,
-            skip_neutralization=True,
-            min_paragraph_words=3,
-        )
-        transfer = StyleTransfer(
-            adapter_path=None,
-            author_name="Test",
-            critic_provider=mock_critic,
-            config=config,
-        )
-
-        doc = "Paragraph with enough words."
-
-        with patch.object(transfer, 'transfer_paragraph', return_value=("Output.", 1.0)):
-            output, stats = transfer.transfer_document(doc)
-
-        # RAG context should have been created
-        mock_create_rag.assert_called_once()
-
-    def test_style_rag_context_format(self):
-        """Test that StyleRAGContext formats examples correctly."""
-        from src.rag.session_context import StyleRAGContext
-
-        context = StyleRAGContext(author="Test")
-        context.examples = ["First example passage.", "Second example passage."]
-
-        formatted = context.format_for_prompt()
-
-        assert '[Example 1]: "First example passage."' in formatted
-        assert '[Example 2]: "Second example passage."' in formatted
-
-    def test_rag_context_has_examples(self):
-        """Test has_examples method."""
-        from src.rag.session_context import StyleRAGContext
-
-        context = StyleRAGContext(author="Test")
-        assert context.has_examples() is False
-
-        context.examples = ["Example"]
-        assert context.has_examples() is True
 
 
 # =============================================================================

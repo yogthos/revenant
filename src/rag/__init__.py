@@ -1,11 +1,11 @@
-"""Style RAG module for dynamic few-shot prompting.
+"""Structural RAG module for rhythm and syntax guidance.
 
-This module provides retrieval-augmented generation (RAG) for style transfer,
-enabling dynamic injection of author style examples into prompts.
+This module provides structural guidance for style transfer based on
+author corpus analysis, without few-shot content injection.
 
 Architecture:
-    Corpus Files → Style Analyzer → ChromaDB → Retriever → Session Context
-                   (spaCy metrics)  (vectors)  (2-channel)  (prompt injection)
+    Corpus Files → Style Analyzer → ChromaDB → Structural RAG
+                   (spaCy metrics)  (vectors)  (rhythm/syntax patterns)
 
 Usage:
     # 1. Index a corpus (one-time)
@@ -13,12 +13,10 @@ Usage:
     indexer = CorpusIndexer("data/rag_index")
     indexer.index_corpus("data/corpus/author.txt", "Author Name")
 
-    # 2. Create RAG context for a session
-    from src.rag import create_rag_context
-    context = create_rag_context("Author Name", sample_text="...")
-
-    # 3. Get formatted examples for prompt
-    style_examples = context.format_for_prompt()
+    # 2. Get structural guidance
+    from src.rag import get_structural_rag
+    rag = get_structural_rag("Author Name")
+    guidance = rag.get_guidance(input_text)
 """
 
 from .style_analyzer import (
@@ -32,19 +30,6 @@ from .corpus_indexer import (
     CorpusIndexer,
     IndexedChunk,
     get_indexer,
-)
-
-from .style_retriever import (
-    StyleRetriever,
-    RetrievedChunk,
-    get_retriever,
-)
-
-from .session_context import (
-    StyleRAGContext,
-    RAGContextManager,
-    get_context_manager,
-    create_rag_context,
 )
 
 from .structural_analyzer import (
@@ -73,15 +58,6 @@ __all__ = [
     "CorpusIndexer",
     "IndexedChunk",
     "get_indexer",
-    # Retrieval
-    "StyleRetriever",
-    "RetrievedChunk",
-    "get_retriever",
-    # Session context
-    "StyleRAGContext",
-    "RAGContextManager",
-    "get_context_manager",
-    "create_rag_context",
     # Structural analysis
     "StructuralAnalyzer",
     "RhythmFingerprint",

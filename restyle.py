@@ -163,8 +163,6 @@ def transfer_file(
     perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
-    use_rag: bool = False,
-    rag_examples: int = 3,
 ) -> None:
     """Transfer a file using LoRA adapter.
 
@@ -178,8 +176,6 @@ def transfer_file(
         perspective: Output perspective (None uses config default).
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
-        use_rag: Whether to use RAG for style examples.
-        rag_examples: Number of RAG examples to retrieve.
     """
     from src.generation.transfer import StyleTransfer, TransferConfig
     from src.config import load_config
@@ -232,12 +228,8 @@ def transfer_file(
             use_document_context=gen.use_document_context,
             pass_headings_unchanged=gen.pass_headings_unchanged,
             min_paragraph_words=gen.min_paragraph_words,
-            # RAG settings (CLI overrides config)
+            # RAG settings
             use_structural_rag=gen.use_structural_rag,
-            use_rag=use_rag if use_rag else gen.use_rag,
-            rag_examples=rag_examples if rag_examples != 3 else gen.rag_examples,
-            # Fact checking
-            verify_facts=gen.verify_facts,
         )
     else:
         config = TransferConfig(
@@ -245,9 +237,6 @@ def transfer_file(
             verify_entailment=verify,
             perspective=effective_perspective,
             use_structural_rag=True,  # Default to enabled
-            use_rag=use_rag,
-            rag_examples=rag_examples,
-            verify_facts=True,  # Default to enabled
         )
 
     # Create critic provider for repairs
@@ -276,8 +265,6 @@ def transfer_file(
     # Create transfer pipeline
     print(f"\nInitializing LoRA adapter: {adapter_path}")
     print(f"Author: {author}")
-    if use_rag:
-        print(f"RAG enabled: {rag_examples} style examples")
 
     transfer = StyleTransfer(
         adapter_path=adapter_path,
@@ -417,19 +404,6 @@ def main():
         help="Disable entailment verification",
     )
 
-    # RAG options
-    parser.add_argument(
-        "--rag",
-        action="store_true",
-        help="Enable RAG for style examples (requires indexed corpus)",
-    )
-    parser.add_argument(
-        "--rag-examples",
-        type=int,
-        default=3,
-        help="Number of RAG style examples to retrieve (default: 3)",
-    )
-
     # Utility options
     parser.add_argument(
         "--list-adapters",
@@ -530,8 +504,6 @@ def main():
         perspective=args.perspective,
         verify=not args.no_verify,
         verbose=args.verbose,
-        use_rag=args.rag,
-        rag_examples=args.rag_examples,
     )
 
 

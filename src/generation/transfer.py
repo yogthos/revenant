@@ -25,14 +25,6 @@ from ..utils.nlp import (
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 
-# Optional RAG import
-try:
-    from ..rag import StyleRAGContext, create_rag_context
-    RAG_AVAILABLE = True
-except ImportError:
-    RAG_AVAILABLE = False
-    StyleRAGContext = None
-
 # Optional Structural RAG import
 try:
     from ..rag import StructuralRAG, get_structural_rag
@@ -87,15 +79,14 @@ class TransferConfig:
     # Perspective settings
     perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person
 
-    # RAG settings
-    use_rag: bool = False  # Enable Style RAG for few-shot examples
-    rag_examples: int = 3  # Number of RAG examples to retrieve
-
     # Structural RAG settings
     use_structural_rag: bool = True  # Enable Structural RAG for rhythm/syntax guidance
 
-    # Fact checking settings
-    verify_facts: bool = True  # Enable fact extraction and repair for numbers, dates, names
+    # NLI Auditor settings (sentence-level verification)
+    use_sentence_nli: bool = False  # Enable sentence-level NLI verification
+    nli_model: str = "cross-encoder/nli-deberta-v3-base"  # NLI model for sentence verification
+    nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
+    nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
 
 
 @dataclass
@@ -108,10 +99,14 @@ class TransferStats:
     total_time_seconds: float = 0.0
     avg_time_per_paragraph: float = 0.0
     entailment_scores: List[float] = field(default_factory=list)
+    # NLI Audit stats
+    nli_recall_scores: List[float] = field(default_factory=list)
+    nli_precision_scores: List[float] = field(default_factory=list)
+    nli_repairs_made: int = 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
-        return {
+        result = {
             "paragraphs_processed": self.paragraphs_processed,
             "paragraphs_repaired": self.paragraphs_repaired,
             "words_replaced": self.words_replaced,
@@ -121,6 +116,18 @@ class TransferStats:
                 sum(self.entailment_scores) / len(self.entailment_scores), 3
             ) if self.entailment_scores else 0.0,
         }
+        # Add NLI stats if available
+        if self.nli_recall_scores:
+            result["avg_nli_recall"] = round(
+                sum(self.nli_recall_scores) / len(self.nli_recall_scores), 3
+            )
+        if self.nli_precision_scores:
+            result["avg_nli_precision"] = round(
+                sum(self.nli_precision_scores) / len(self.nli_precision_scores), 3
+            )
+        if self.nli_repairs_made > 0:
+            result["nli_repairs_made"] = self.nli_repairs_made
+        return result
 
 
 class StyleTransfer:
@@ -197,15 +204,6 @@ class StyleTransfer:
         # Document context (extracted at transfer time)
         self.document_context: Optional[DocumentContext] = None
 
-        # RAG context for style examples
-        self.rag_context: Optional[StyleRAGContext] = None
-        if self.config.use_rag:
-            if RAG_AVAILABLE:
-                logger.info(f"RAG enabled with {self.config.rag_examples} examples")
-            else:
-                logger.warning("RAG requested but not available (missing dependencies)")
-                self.config.use_rag = False
-
         # Structural RAG for rhythm/syntax guidance
         self.structural_rag: Optional[StructuralRAG] = None
         if self.config.use_structural_rag:
@@ -220,6 +218,17 @@ class StyleTransfer:
             else:
                 logger.warning("Structural RAG not available (missing dependencies)")
                 self.config.use_structural_rag = False
+
+        # NLI Auditor for sentence-level verification
+        self.nli_auditor = None
+        if self.config.use_sentence_nli:
+            from ..validation.nli_auditor import NLIAuditor
+            self.nli_auditor = NLIAuditor(
+                model_name=self.config.nli_model,
+                recall_threshold=self.config.nli_recall_threshold,
+                precision_threshold=self.config.nli_precision_threshold,
+            )
+            logger.info(f"NLI Auditor enabled with model: {self.config.nli_model}")
 
         if self.config.verify_entailment:
             logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
@@ -401,12 +410,6 @@ class StyleTransfer:
         # Use 2.5x target words to ensure complete sentences
         max_tokens = max(150, int(target_words * 2.5))
 
-        # Get RAG style examples if available
-        style_examples = None
-        if self.rag_context and self.rag_context.has_examples():
-            style_examples = self.rag_context.format_for_prompt()
-            logger.debug(f"Using {self.rag_context.example_count} RAG style examples")
-
         # Get structural guidance if available
         structural_guidance = None
         if self.structural_rag:
@@ -419,7 +422,6 @@ class StyleTransfer:
             author=self.author,
             max_tokens=max_tokens,
             target_words=target_words,
-            style_examples=style_examples,
             structural_guidance=structural_guidance,
         )
         lora_output_words = len(output.split())
@@ -430,26 +432,19 @@ class StyleTransfer:
         if output.strip() == paragraph.strip():
             logger.warning("LoRA output identical to original paragraph - no transformation occurred")
 
+        # Check for memorization (output has no semantic overlap with input)
+        output_overlap = self._check_content_overlap(content_for_generation, output)
+        if output_overlap < 0.1:
+            logger.warning(
+                f"Possible memorized output detected (only {output_overlap:.0%} content overlap). "
+                "Try lowering lora_scale in config.json or using an earlier checkpoint."
+            )
+
         # Track expansion at LoRA stage
         lora_words = len(output.split())
         source_words = len(paragraph.split())
         if lora_words > source_words * self.config.max_expansion_ratio:
             logger.warning(f"LoRA over-expanded: {lora_words} words vs {source_words} source ({lora_words/source_words:.0%})")
-
-        # ========================================
-        # STEP 3.5: Fact checking and repair
-        # ========================================
-        if self.config.verify_facts and self.critic_provider:
-            from ..validation.fact_checker import FactChecker, FactRepairer
-            checker = FactChecker()
-            result = checker.check(paragraph, output)
-
-            if result.preservation_rate < 1.0 and result.missing_facts:
-                logger.info(f"Fact preservation: {result.preservation_rate:.0%} ({len(result.missing_facts)} missing)")
-                repairer = FactRepairer(self.critic_provider)
-                output, new_result = repairer.repair(paragraph, output)
-                if new_result.preservation_rate > result.preservation_rate:
-                    logger.info(f"Facts repaired: {result.preservation_rate:.0%} -> {new_result.preservation_rate:.0%}")
 
         # ========================================
         # STEP 4: Validate styled output against source graph (if enabled)
@@ -497,12 +492,49 @@ class StyleTransfer:
         # Ensure output ends with complete sentence
         output = self._ensure_complete_ending(output)
 
+        # ========================================
+        # STEP 5: NLI Audit (if enabled)
+        # ========================================
+        if self.nli_auditor:
+            output, nli_passed = self._run_nli_audit(paragraph, output, stats)
+            if not nli_passed:
+                logger.warning("NLI audit failed after repair attempts")
+
         # Verify if configured
         score = 1.0
         if self.verify_fn:
             score = self.verify_fn(paragraph, output)
 
         return output, score
+
+    def _check_content_overlap(self, input_text: str, output_text: str) -> float:
+        """Check content word overlap between input and output.
+
+        Returns ratio of input content words found in output.
+        Low overlap suggests memorized/hallucinated output.
+        """
+        from ..utils.nlp import get_nlp
+
+        nlp = get_nlp()
+
+        def get_content_words(text: str) -> set:
+            """Extract lemmatized content words using spaCy."""
+            doc = nlp(text)
+            words = set()
+            for token in doc:
+                # Skip stopwords, punctuation, and short words
+                if not token.is_stop and not token.is_punct and len(token.lemma_) >= 4:
+                    words.add(token.lemma_.lower())
+            return words
+
+        input_words = get_content_words(input_text)
+        output_words = get_content_words(output_text)
+
+        if not input_words:
+            return 1.0  # No content words to check
+
+        overlap = len(input_words & output_words)
+        return overlap / len(input_words)
 
     def _clean_repair_output(self, text: str) -> str:
         """Clean repair output of meta-commentary and apologies.
@@ -582,6 +614,98 @@ class StyleTransfer:
         # Fallback: add period to entire text
         return text + '.'
 
+    def _run_nli_audit(
+        self,
+        source: str,
+        output: str,
+        stats: Optional['TransferStats'] = None,
+    ) -> Tuple[str, bool]:
+        """Run NLI audit and repair loop on styled output.
+
+        Performs sentence-level verification:
+        1. RECALL: Check each source sentence is entailed by output
+        2. PRECISION: Check each output sentence doesn't contradict source
+        3. If issues found, use repair loop to fix
+
+        Args:
+            source: Original source text.
+            output: Styled output to audit.
+            stats: Optional stats object to update.
+
+        Returns:
+            Tuple of (repaired_output, passed).
+        """
+        if not self.nli_auditor:
+            return output, True
+
+        from ..utils.prompts import format_prompt
+
+        audit_result = self.nli_auditor.audit(source, output)
+
+        # Update stats
+        if stats:
+            stats.nli_recall_scores.append(audit_result.recall_score)
+            stats.nli_precision_scores.append(audit_result.precision_score)
+
+        if audit_result.passed:
+            logger.debug("NLI audit passed")
+            return output, True
+
+        # Run repair loop
+        logger.info(
+            f"NLI audit failed: recall={audit_result.recall_score:.2f}, "
+            f"precision={audit_result.precision_score:.2f}, "
+            f"issues={len(audit_result.all_issues)}"
+        )
+
+        current_output = output
+        for attempt in range(self.config.max_repair_attempts):
+            # Generate repair prompt with specific errors
+            error_summary = audit_result.error_summary
+            repair_prompt = format_prompt(
+                "nli_repair",
+                source=source,
+                draft=current_output,
+                error_list=error_summary,
+                author=self.author,
+            )
+
+            # Use critic provider for repair (lower temperature for precision)
+            try:
+                repaired = self.critic_provider.generate(
+                    repair_prompt,
+                    max_tokens=self.config.max_tokens * 2,
+                    temperature=0.2,  # Low temperature for precision
+                )
+                repaired = self._clean_repair_output(repaired)
+
+                if repaired and len(repaired) > 20:
+                    # Re-audit the repair
+                    new_audit = self.nli_auditor.audit(source, repaired)
+
+                    if stats:
+                        stats.nli_repairs_made += 1
+
+                    if new_audit.passed:
+                        logger.info(f"NLI repair succeeded on attempt {attempt + 1}")
+                        return repaired, True
+
+                    # Check if repair improved things
+                    if (new_audit.recall_score > audit_result.recall_score or
+                        new_audit.precision_score > audit_result.precision_score):
+                        current_output = repaired
+                        audit_result = new_audit
+                        logger.debug(f"NLI repair improved scores on attempt {attempt + 1}")
+                    else:
+                        logger.debug(f"NLI repair did not improve on attempt {attempt + 1}")
+
+            except Exception as e:
+                logger.warning(f"NLI repair failed: {e}")
+                break
+
+        logger.warning("NLI audit repair loop exhausted, returning best effort")
+        return current_output, False
+
     def _validate_styled_output(
         self,
         source: str,
@@ -594,9 +718,9 @@ class StyleTransfer:
     ) -> Tuple[str, bool]:
         """Validate styled output against source graph and repair if needed.
 
-        Compares the output's semantic graph to the source. If there are
-        missing or added propositions, uses the LoRA's repair capability
-        (trained with "Fix the errors" examples) to correct the output.
+        Uses style-preserving repair through the LoRA generator to maintain
+        author voice while fixing factual issues. Only repairs for actual
+        entity/fact misses, not vocabulary style changes.
 
         Args:
             source: Original source text.
@@ -619,68 +743,93 @@ class StyleTransfer:
                 logger.debug("Output graph matches source perfectly")
                 return output, True
 
-            # Check if repair is needed
-            if not diff.missing_nodes and not diff.added_nodes:
+            # Check if repair is needed - only for actual entity/fact misses
+            # Skip repair for pure vocabulary style changes (which is the point of style transfer!)
+            missing_entities = self._extract_critical_entities(diff.missing_nodes)
+
+            if not missing_entities and not diff.added_nodes:
+                # No critical entities missing, vocabulary changes are fine
+                logger.debug("No critical entities missing, accepting styled output")
+                return output, True
+
+            # If only vocabulary differences (no named entities), accept the output
+            if not missing_entities and diff.missing_nodes:
+                logger.debug(f"Missing {len(diff.missing_nodes)} propositions but no critical entities - accepting styled output")
                 return output, True
 
             logger.info(
                 f"Repair attempt {attempt + 1}/{max_attempts}: "
-                f"{len(diff.missing_nodes)} missing, {len(diff.added_nodes)} added"
-            )
-
-            # Build repair instruction matching training format
-            repair_issues = []
-            if diff.missing_nodes:
-                missing_facts = [f"'{node.text}'" for node in diff.missing_nodes[:3]]
-                repair_issues.append(f"Missing facts: {', '.join(missing_facts)}")
-            if diff.added_nodes:
-                added_facts = [f"'{node.text}'" for node in diff.added_nodes[:3]]
-                repair_issues.append(f"Remove hallucinations: {', '.join(added_facts)}")
-
-            # Format repair prompt for critic/repair provider (not LoRA)
-            # The LoRA was trained for style transfer, not repair - use DeepSeek for repair
-            repair_system = format_prompt("repair_system")
-
-            errors_text = "\n".join(f"- {issue}" for issue in repair_issues)
-            repair_input = format_prompt(
-                "repair_input",
-                source=source,
-                output=output,
-                errors=errors_text,
+                f"{len(missing_entities)} critical entities missing"
             )
 
             try:
-                # Use critic provider (DeepSeek) for repair, not LoRA
-                # The LoRA is trained for style transfer from descriptions, not repair
-                if not self.critic_provider:
-                    logger.warning("No critic provider for repair, keeping original output")
+                # Use LoRA for style-preserving repair
+                # Re-generate with explicit entity constraints to maintain author voice
+                if not self.generator:
+                    logger.warning("No generator for repair, keeping original output")
                     break
 
-                repaired = self.critic_provider.call(
-                    system_prompt=repair_system,
-                    user_prompt=repair_input,
-                    temperature=0.3,
-                    max_tokens=int(len(output.split()) * 1.5),
+                # Create repair content: original source with entity hints
+                entity_hint = f"[MUST INCLUDE: {', '.join(missing_entities)}]" if missing_entities else ""
+                repair_content = f"{entity_hint}\n\n{source}" if entity_hint else source
+
+                target_words = len(output.split())
+                repaired = self.generator.generate(
+                    content=repair_content,
+                    author=self.author,
+                    target_words=target_words,
                 )
 
                 if repaired and len(repaired.split()) > 10:
-                    # Clean up repair output - remove meta-commentary
-                    repaired = self._clean_repair_output(repaired)
-                    if repaired and len(repaired.split()) > 10:
+                    # Check if repair actually includes the missing entities
+                    repaired_lower = repaired.lower()
+                    entities_found = sum(1 for e in missing_entities if e.lower() in repaired_lower)
+
+                    if entities_found >= len(missing_entities) * 0.5:  # At least half found
                         output = repaired
-                        logger.debug(f"Repair produced: {len(repaired.split())} words")
+                        logger.debug(f"LoRA repair produced: {len(repaired.split())} words with {entities_found}/{len(missing_entities)} entities")
+                    else:
+                        logger.debug(f"LoRA repair only found {entities_found}/{len(missing_entities)} entities, keeping original")
+                        break
                 else:
-                    logger.warning("Repair produced empty/short output, keeping original")
+                    logger.warning("LoRA repair produced empty/short output, keeping original")
                     break
 
             except Exception as e:
-                logger.warning(f"Repair failed: {e}")
+                logger.warning(f"LoRA repair failed: {e}")
                 break
 
-        # Final validation
+        # Final validation - accept if no critical entities missing
         output_graph = builder.build_from_text(output)
         diff = comparator.compare(source_graph, output_graph)
-        return output, len(diff.missing_nodes) == 0
+        missing_entities = self._extract_critical_entities(diff.missing_nodes)
+        return output, len(missing_entities) == 0
+
+    def _extract_critical_entities(self, missing_nodes: list) -> List[str]:
+        """Extract critical named entities from missing proposition nodes.
+
+        Only extracts actual named entities (people, places, organizations,
+        numbers, dates) - NOT general vocabulary which is expected to change
+        during style transfer.
+
+        Args:
+            missing_nodes: List of PropositionNode objects flagged as missing.
+
+        Returns:
+            List of critical entity strings that must be preserved.
+        """
+        critical_entities = set()
+
+        for node in missing_nodes:
+            # Only extract actual named entities, not general words
+            for entity in node.entities:
+                # Skip common words that aren't true named entities
+                entity_lower = entity.lower()
+                skip_words = {'the', 'a', 'an', 'this', 'that', 'it', 'they', 'we', 'our'}
+                if entity_lower not in skip_words and len(entity) > 2:
+                    critical_entities.add(entity)
+
+        return list(critical_entities)
 
     def transfer_document(
         self,
@@ -721,27 +870,6 @@ class StyleTransfer:
                 text,
                 llm_provider=self.critic_provider,
             )
-
-        # Initialize RAG context if enabled
-        if self.config.use_rag and RAG_AVAILABLE:
-            logger.info("Loading RAG style examples...")
-            # Use first non-heading paragraph as sample for RAG retrieval
-            sample_para = None
-            for p in paragraphs:
-                if not is_heading(p.strip()):
-                    sample_para = p
-                    break
-
-            if sample_para:
-                self.rag_context = create_rag_context(
-                    author=self.author,
-                    sample_text=sample_para,
-                    num_examples=self.config.rag_examples,
-                )
-                if self.rag_context.has_examples():
-                    logger.info(f"Loaded {self.rag_context.example_count} style examples from RAG")
-                else:
-                    logger.warning(f"No RAG examples found for author '{self.author}'. Run index-corpus first.")
 
         logger.info(f"Transferring {len(paragraphs)} paragraphs")
 

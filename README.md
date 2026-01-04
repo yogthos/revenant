@@ -7,8 +7,6 @@ Transform text to match a target author's writing style while preserving semanti
 - **LoRA-Based Generation**: Fine-tuned adapters capture author style in model weights
 - **RTT Neutralization**: Round-trip translation strips style before restyling
 - **Semantic Graph Validation**: Validates content preservation using proposition graphs
-- **Fact Checking & Repair**: Detects and repairs hallucinated numbers, dates, names
-- **Style RAG**: Retrieves author examples for few-shot prompting
 - **Structural RAG**: Provides rhythm and syntax guidance from author corpus
 - **Perspective Control**: Transform to first/third person while maintaining style
 - **Fast Transfer**: ~15-30 seconds per paragraph
@@ -143,47 +141,6 @@ python restyle.py test.txt -o output.txt --adapter lora_adapters/author -v
 
 ---
 
-## Building the Style RAG
-
-Style RAG retrieves stylistically similar passages from the author's corpus and injects them as few-shot examples, providing the model with exact vocabulary and sentence structures to mimic.
-
-```mermaid
-flowchart LR
-    A[Corpus] --> B[Index Corpus]
-    B --> C[ChromaDB]
-    C --> D[Retrieve Examples]
-    D --> E[Inject in Prompt]
-```
-
-### Index a Corpus
-
-```bash
-python restyle.py --index-corpus data/corpus/lovecraft.txt \
-    --author "H.P. Lovecraft"
-```
-
-This creates embeddings and style metrics for each paragraph chunk, stored in `data/rag_index/`.
-
-### List Indexed Authors
-
-```bash
-python restyle.py --list-rag
-```
-
-### Use RAG During Transfer
-
-```bash
-python restyle.py input.txt -o output.txt \
-    --adapter lora_adapters/lovecraft \
-    --author "H.P. Lovecraft" \
-    --rag \
-    --rag-examples 3
-```
-
-The `--rag` flag enables retrieval of style examples that match the input text's topic and structure.
-
----
-
 ## Running Inference
 
 ### Basic Usage
@@ -201,8 +158,6 @@ python restyle.py <input> -o <output> --adapter <path> --author <name>
 | `--temperature` | 0.4 | Generation temperature |
 | `--perspective` | preserve | Output perspective |
 | `--no-verify` | false | Skip entailment verification |
-| `--rag` | false | Enable Style RAG |
-| `--rag-examples` | 3 | Number of RAG examples |
 | `-v, --verbose` | false | Verbose output |
 
 ### Perspective Options
@@ -239,15 +194,12 @@ text-style-transfer/
 │   │
 │   ├── validation/               # Content preservation
 │   │   ├── semantic_graph.py    # Semantic graph analysis
-│   │   ├── fact_checker.py      # Fact extraction and repair
 │   │   └── quality_critic.py    # Entailment checking
 │   │
-│   ├── rag/                      # Style RAG system
+│   ├── rag/                      # Structural RAG system
 │   │   ├── style_analyzer.py    # spaCy style metrics
 │   │   ├── corpus_indexer.py    # ChromaDB indexing
-│   │   ├── style_retriever.py   # Two-channel retrieval
-│   │   ├── structural_rag.py    # Rhythm/syntax guidance
-│   │   └── session_context.py   # Session context manager
+│   │   └── structural_rag.py    # Rhythm/syntax guidance
 │   │
 │   ├── llm/                      # LLM providers
 │   │   ├── mlx_provider.py      # MLX (local)
@@ -272,8 +224,6 @@ text-style-transfer/
 │   ├── style_transfer.txt       # Main generation prompt
 │   ├── repair_system.txt        # Semantic repair system
 │   ├── repair_input.txt         # Semantic repair input
-│   ├── fact_repair_system.txt   # Fact repair system
-│   ├── fact_repair_input.txt    # Fact repair input
 │   ├── document_context.txt     # Document analysis
 │   ├── rtt_deepseek.txt         # RTT neutralization
 │   └── quality_repair.txt       # Quality repair
@@ -306,7 +256,6 @@ flowchart TD
         B[RTT Neutralization]
         C[Structural RAG]
         D[LoRA Generation]
-        D2[Fact Check & Repair]
         E[Semantic Validation]
         F{Valid?}
         G[Critic Repair]
@@ -320,8 +269,7 @@ flowchart TD
     A --> B
     B --> C
     C -->|Rhythm Guidance| D
-    D --> D2
-    D2 --> E
+    D --> E
     E --> F
     F -->|No| G
     G --> E
@@ -359,30 +307,6 @@ flowchart TD
     G --> H
 ```
 
-### Style RAG System
-
-```mermaid
-flowchart LR
-    subgraph Indexing
-        A[Corpus] --> B[Chunk]
-        B --> C[Style Metrics]
-        B --> D[Embeddings]
-        C --> E[ChromaDB]
-        D --> E
-    end
-
-    subgraph Retrieval
-        F[Input Text] --> G[Query]
-        G --> H[Semantic Search]
-        G --> I[Structural Filter]
-        H --> J[Top-K Examples]
-        I --> J
-    end
-
-    E --> H
-    E --> I
-```
-
 ### Sequence Diagram
 
 ```mermaid
@@ -393,7 +317,6 @@ sequenceDiagram
     participant RTT as RTT Neutralizer
     participant RAG as Structural RAG
     participant LoRA as LoRA Generator
-    participant Facts as Fact Checker
     participant Validator as Validator
     participant Critic as Critic
 
@@ -409,9 +332,6 @@ sequenceDiagram
 
         Transfer->>LoRA: generate(neutral, guidance)
         LoRA-->>Transfer: styled text
-
-        Transfer->>Facts: check_and_repair(source, output)
-        Facts-->>Transfer: fact-corrected text
 
         Transfer->>Validator: validate(source, output)
 
@@ -456,10 +376,9 @@ Copy `config.json.sample` to `config.json`:
     "verify_entailment": true,
     "entailment_threshold": 0.7,
     "max_repair_attempts": 3,
-    "lora_scale": 2.0,
+    "lora_scale": 1.0,
     "reduce_repetition": true,
-    "use_structural_rag": true,
-    "verify_facts": true
+    "use_structural_rag": true
   }
 }
 ```
@@ -468,12 +387,11 @@ Copy `config.json.sample` to `config.json`:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `lora_scale` | 2.0 | LoRA influence (higher = stronger style) |
+| `lora_scale` | 1.0 | LoRA influence (higher = stronger style, >1.5 risks memorization) |
 | `entailment_threshold` | 0.7 | Validation strictness |
 | `max_repair_attempts` | 3 | Repair loop iterations |
 | `temperature` | 0.4 | Generation randomness |
 | `use_structural_rag` | true | Enable rhythm/syntax guidance |
-| `verify_facts` | true | Enable fact checking and repair |
 
 ---
 
@@ -512,7 +430,7 @@ Increase `max_repair_attempts` to 5 and `entailment_threshold` to 0.8.
 
 ### Facts Being Changed (Numbers, Dates, Names)
 
-The LoRA may convert numbers to words or hallucinate facts. Ensure `verify_facts` is enabled (default). For fact-heavy text, also try lowering `lora_scale` to 1.0-1.5.
+The LoRA may convert numbers to words. Try lowering `lora_scale` to 0.5-1.0 to reduce this.
 
 ---
 
