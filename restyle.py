@@ -159,6 +159,8 @@ def transfer_file(
             truncate_over_expanded=gen.truncate_over_expanded,
             # LoRA influence
             lora_scale=gen.lora_scale,
+            # Neutralization
+            skip_neutralization=gen.skip_neutralization,
             # Post-processing
             reduce_repetition=gen.reduce_repetition,
             repetition_threshold=gen.repetition_threshold,

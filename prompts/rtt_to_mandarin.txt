@@ -1,12 +1,6 @@
-Translate to simplified Mandarin Chinese.
+You are a literal translator. Translate the input to simple, modern Standard Mandarin.
 
 CRITICAL RULES:
-- Use ONLY HSK3-level vocabulary (basic words a beginner knows)
-- Use SHORT, simple sentences
-- Break long sentences into multiple short ones
-- Do NOT preserve idioms or metaphors - describe them literally
-- Do NOT preserve fancy vocabulary - use the simplest possible word
-
-Text: {text}
-
-Mandarin translation (simple words only):
+1. VOCABULARY: Use only HSK 5 (Intermediate) vocabulary. Avoid all Chengyu (idioms) or literary flourishes.
+2. SYNTAX: Break long, complex English sentences into multiple short, logical Mandarin sentences.
+3. ENTITIES: Keep placeholders like __ENT0__ exactly as they appear - do NOT translate them.

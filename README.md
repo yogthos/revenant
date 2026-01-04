@@ -58,11 +58,7 @@ python scripts/neutralize_corpus.py \
     --author "Author Name"
 
 # Step 2: Train LoRA adapter
-python scripts/train_mlx_lora.py \
-    --from-neutralized data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --train \
-    --output lora_adapters/author
+mlx_lm.lora -c data/training/lovecraft/config.yaml
 ```
 
 ### 3. Transfer Text

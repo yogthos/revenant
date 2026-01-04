@@ -23,7 +23,7 @@ from ..utils.nlp import (
     is_heading,
 )
 from ..utils.logging import get_logger
-from ..utils.prompts import format_prompt
+from ..utils.prompts import format_prompt, load_prompt
 
 logger = get_logger(__name__)
 
@@ -64,6 +64,9 @@ class TransferConfig:
 
     # LoRA influence settings
     lora_scale: float = 1.0  # 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
+
+    # Neutralization settings
+    skip_neutralization: bool = False  # If True, skip RTT and use original text as input
 
     # Perspective settings
     perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person
@@ -138,11 +141,13 @@ class StyleTransfer:
         self.critic_provider = critic_provider
 
         # Initialize generator
+        # When verification is disabled, also skip cleaning to see raw output
         gen_config = GenerationConfig(
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             lora_scale=getattr(self.config, 'lora_scale', 1.0),
+            skip_cleaning=not self.config.verify_entailment,  # Skip cleaning when --no-verify
         )
         self.generator = LoRAStyleGenerator(
             adapter_path=adapter_path,
@@ -170,7 +175,7 @@ class StyleTransfer:
         if self.config.verify_entailment:
             logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
         else:
-            logger.info("Verification disabled - using raw LoRA output")
+            logger.info("Verification disabled - using raw LoRA output (cleaning also disabled)")
 
     def _extract_paragraph_thesis(self, paragraph: str) -> str:
         """Extract the main thesis/point of a paragraph.
@@ -190,8 +195,9 @@ class StyleTransfer:
             return sentences[0] if sentences else ""
 
         try:
+            thesis_prompt = load_prompt("thesis_extraction")
             response = self.critic_provider.call(
-                system_prompt="You are a precise summarizer. Extract the ONE main point or thesis of this paragraph in a single sentence. Be specific and concrete. Do not add interpretation.",
+                system_prompt=thesis_prompt,
                 user_prompt=f"Paragraph:\n{paragraph}\n\nMain point (one sentence):",
                 temperature=0.1,
                 max_tokens=100,
@@ -217,9 +223,8 @@ class StyleTransfer:
         Step 1 (Scrub): English → Mandarin (HSK3 vocabulary)
         Step 2 (Rinse): Mandarin → Plain English
 
-        Uses the local MLX model (Qwen2.5-3B-Instruct) for fast inference
-        without external API calls. Configuration in config.json under
-        llm.providers.mlx_rtt.
+        Uses provider from config.json under llm.provider.rtt.
+        Options: 'mlx' (local), 'deepseek' (API).
 
         Args:
             text: Input text to neutralize.
@@ -228,11 +233,12 @@ class StyleTransfer:
         Returns:
             Neutralized text, or None if failed.
         """
-        # Lazy-load the RTT neutralizer
+        # Lazy-load the RTT neutralizer using factory function
         if self._rtt_neutralizer is None:
             try:
-                from ..llm.mlx_provider import RTTNeutralizer
-                self._rtt_neutralizer = RTTNeutralizer()
+                from ..llm.mlx_provider import create_rtt_neutralizer
+                self._rtt_neutralizer = create_rtt_neutralizer()
+                logger.info(f"RTT neutralizer: {type(self._rtt_neutralizer).__name__}")
             except Exception as e:
                 logger.error(f"Failed to initialize RTT neutralizer: {e}")
                 return None
@@ -360,14 +366,30 @@ class StyleTransfer:
         # ========================================
         # Training used Round-Trip Translation via Mandarin to neutralize text
         # We must use the same process during inference for the LoRA to work
-        content_for_generation = self._rtt_neutralize(paragraph)
-        if not content_for_generation:
-            raise RuntimeError(
-                f"RTT neutralization failed for paragraph: {paragraph[:50]}... "
-                "Ensure critic_provider is configured (DEEPSEEK_API_KEY)."
-            )
-        logger.info(f"RTT INPUT: {paragraph[:150]}...")
-        logger.info(f"RTT OUTPUT: {content_for_generation[:150]}...")
+        if self.config.skip_neutralization:
+            # Skip RTT - use original text directly
+            content_for_generation = paragraph
+            logger.debug("RTT neutralization skipped (skip_neutralization=true)")
+        else:
+            content_for_generation = self._rtt_neutralize(paragraph)
+            if not content_for_generation:
+                # Fall back to original text instead of crashing
+                logger.warning(
+                    f"RTT neutralization failed for paragraph: {paragraph[:50]}... "
+                    "Falling back to original text. "
+                    "Check config.json llm.provider.rtt setting."
+                )
+                content_for_generation = paragraph
+            else:
+                rtt_input_words = len(paragraph.split())
+                rtt_output_words = len(content_for_generation.split())
+                logger.info(f"RTT INPUT ({rtt_input_words} words): {paragraph[:150]}...")
+                logger.info(f"RTT OUTPUT ({rtt_output_words} words): {content_for_generation[:150]}...")
+                # Write full text to debug file for comparison
+                with open("debug_transfer.log", "a") as f:
+                    f.write(f"\n{'='*60}\nPARAGRAPH {word_count} words\n{'='*60}\n")
+                    f.write(f"\n--- ORIGINAL ---\n{paragraph}\n")
+                    f.write(f"\n--- RTT OUTPUT ---\n{content_for_generation}\n")
 
         # ========================================
         # STEP 3: Pass to LoRA for style transformation
@@ -384,7 +406,12 @@ class StyleTransfer:
             max_tokens=max_tokens,
             target_words=target_words,
         )
-        logger.info(f"LORA OUTPUT: {output[:150]}...")
+        lora_output_words = len(output.split())
+        lora_input_words = len(content_for_generation.split())
+        logger.info(f"LORA OUTPUT ({lora_output_words} words, target={target_words}): {output[:150]}...")
+        # Append LoRA output to debug file
+        with open("debug_transfer.log", "a") as f:
+            f.write(f"\n--- LORA OUTPUT ---\n{output}\n")
 
         # Check if LoRA output matches input (indicates no transformation)
         if output.strip() == paragraph.strip():

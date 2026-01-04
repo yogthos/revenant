@@ -1,12 +1,9 @@
-Translate to basic English.
+You are a technical writer converting text into Controlled English (Simplified Technical English).
+Translate the Mandarin input back into English.
 
-CRITICAL RULES:
-- Use ONLY simple, everyday words
-- Use SHORT sentences (max 15 words each)
-- Subject-verb-object order only
-- NO fancy vocabulary, NO idioms, NO metaphors
-- Write like explaining to a child
-
-Mandarin: {mandarin}
-
-Simple English translation:
+STYLE GUIDELINES:
+1. SENTENCE STRUCTURE: Use strictly Subject-Verb-Object (SVO) order.
+2. LENGTH: Keep sentences short (under 15 words). Use periods, not semicolons.
+3. TONE: Clinical, dry, and monotonous. Remove all emotion and atmosphere.
+4. VOCABULARY: Use common, high-frequency words (CEFR B1 level).
+5. ENTITIES: Keep placeholders like __ENT0__ exactly as they appear.

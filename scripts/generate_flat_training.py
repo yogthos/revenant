@@ -126,16 +126,22 @@ def call_deepseek(prompt: str, system: str = "", max_retries: int = 3) -> str:
 # Step 1: Corpus Curation
 # =============================================================================
 
+import threading
+
 _nlp = None
+_nlp_lock = threading.Lock()
 
 def get_nlp():
-    """Get or load spaCy model (singleton pattern)."""
+    """Get or load spaCy model (thread-safe singleton)."""
     global _nlp
     if _nlp is None:
-        import spacy
-        logger.info("Loading spaCy model...")
-        _nlp = spacy.load("en_core_web_sm")
-        logger.info("spaCy model loaded")
+        with _nlp_lock:
+            # Double-check after acquiring lock
+            if _nlp is None:
+                import spacy
+                logger.info("Loading spaCy model...")
+                _nlp = spacy.load("en_core_web_sm")
+                logger.info("spaCy model loaded")
     return _nlp
 
 
@@ -230,40 +236,50 @@ def extract_paragraphs(text: str, config: CurationConfig) -> List[str]:
 
 
 # =============================================================================
-# Step 2: Topic Variation (1-to-N Expansion)
+# Step 2: Topic Variation - The "Triad" Strategy
 # =============================================================================
-# For each original paragraph, generate variations on different topics while
-# preserving the author's style. This prevents "content overfitting" - the model
-# learns to transform structure/style rather than memorizing specific content.
+# For each original paragraph, generate exactly 2 variations for a 1:3 ratio:
 #
-# Categories:
-# - Concrete: Physical objects (mechanical, tangible verbs)
-# - Abstract: Philosophical concepts (intellectual verbs)
-# - Action: Physical activities (motion, process verbs)
+# Entry 1 (Anchor): Original author text
+#   - Purpose: Teaches vocabulary and how author describes their actual subjects
+#   - Input: Neutral summary of original content
+#   - Output: Real author text
+#
+# Entry 2 (Snowflake): Topic swap to mundane subject
+#   - Purpose: Teaches that sentence STRUCTURE applies to everything
+#   - Method: Rewrite about everyday topic (making toast, filing taxes) keeping structure
+#   - Input: Neutral summary of mundane topic
+#   - Output: "Author-style Toast Making" (Synthetic)
+#
+# Entry 3 (Robustness): Input perturbation (NEFTune simulation)
+#   - Purpose: Prevents overfitting to specific input words
+#   - Method: Take Entry 1 or 2, heavily corrupt the INPUT only
+#   - Input: "The enginer fixd machine qickly." (Messy)
+#   - Output: Clean author/synthetic text
+#
+# This gives 3 entries per paragraph (1:3 ratio) - optimal for training volume
+# without drowning out the real author signal (33% real vs 67% synthetic)
 
-# Topic pools for variation generation
-CONCRETE_TOPICS = [
-    "an old clocktower", "a lighthouse on a cliff", "a rusted locomotive",
-    "an ancient library", "a abandoned factory", "a Victorian greenhouse",
-    "a cathedral's pipe organ", "a deep-sea submarine", "a medieval castle",
-    "a decaying mansion", "a stone bridge", "a forgotten well",
-    "an antique telescope", "a printing press", "a grandfather clock",
-]
-
-ABSTRACT_TOPICS = [
-    "the nature of time", "the concept of justice", "the illusion of free will",
-    "the meaning of consciousness", "the paradox of infinity", "the weight of memory",
-    "the architecture of dreams", "the entropy of civilization", "the geometry of thought",
-    "the mathematics of beauty", "the philosophy of darkness", "the essence of fear",
-    "the structure of chaos", "the fabric of reality", "the limits of knowledge",
-]
-
-ACTION_TOPICS = [
-    "descending into a cave", "navigating a storm at sea", "climbing a mountain",
-    "exploring ancient ruins", "crossing a frozen lake", "wandering through fog",
-    "escaping a collapsing building", "pursuing something through shadows",
-    "excavating a forgotten tomb", "assembling a complex machine", "decoding an ancient text",
-    "tracking something through a forest", "mapping an uncharted territory",
+# Topic pools for variation generation - MUNDANE topics to isolate style from content
+# Using everyday activities forces the model to learn structure, not subject matter
+MUNDANE_TOPICS = [
+    # Domestic activities
+    "making toast for breakfast", "doing the weekly laundry", "organizing a closet",
+    "washing dishes after dinner", "vacuuming the living room", "folding clean towels",
+    "watering houseplants", "making the bed", "cleaning the bathroom mirror",
+    "sorting through old mail", "replacing a lightbulb", "taking out the trash",
+    # Office/bureaucratic
+    "filing tax returns", "attending a staff meeting", "writing a work email",
+    "waiting in line at the DMV", "filling out insurance forms", "updating a spreadsheet",
+    "scheduling a dentist appointment", "renewing a driver's license", "balancing a checkbook",
+    # Routine errands
+    "grocery shopping on Saturday", "pumping gas at the station", "returning library books",
+    "picking up dry cleaning", "waiting for a bus", "walking to the mailbox",
+    "parallel parking downtown", "choosing produce at the market", "standing in the checkout line",
+    # Simple activities
+    "brewing morning coffee", "tying shoelaces", "checking the weather forecast",
+    "setting an alarm clock", "microwaving leftovers", "charging a phone overnight",
+    "brushing teeth before bed", "packing a lunch", "feeding the cat",
 ]
 
 
@@ -300,38 +316,42 @@ def create_topic_variation(
     paragraph: str,
     author: str,
     topic: str,
-    category: str,
     max_attempts: int = 2
 ) -> Optional[str]:
-    """Create a topic variation that maintains the author's style.
+    """Create a topic variation (Snowflake) that maintains the author's style.
+
+    The Snowflake variation teaches that sentence STRUCTURE applies to any topic.
+    By using mundane everyday topics, the model can't rely on subject matter
+    similarity - it must learn the structural patterns.
 
     The variation should:
-    1. Be about the new topic (completely different subject matter)
-    2. Maintain the author's sentence structure, rhythm, and vocabulary
-    3. Be FACTUALLY ACCURATE about the new topic (no false statements)
+    1. Be about the mundane topic (completely different subject matter)
+    2. Maintain the EXACT sentence structure and rhythm
+    3. Use the author's characteristic vocabulary patterns
     """
     system = f"""You are a literary style transfer assistant specializing in {author}'s writing style.
 
-Your task: Rewrite the given passage to be about a completely different topic while preserving:
-- The EXACT sentence structure and rhythm
-- The author's characteristic vocabulary and word choices
-- The same emotional tone and atmosphere
-- The same level of descriptive complexity
+Your task: Rewrite the given passage to be about a mundane everyday topic while preserving:
+- The EXACT sentence structure (same number of sentences, same clause patterns)
+- The author's characteristic rhythm and cadence
+- Similar vocabulary complexity and word choices
+- The same punctuation patterns (semicolons, dashes, parentheticals)
 
-CRITICAL RULE: All statements about the new topic MUST be factually accurate. If the rhythm
-demands an adjective that would be false, choose a different true adjective. Factual accuracy
-is more important than perfect rhythm preservation."""
+The goal is to prove that {author}'s STYLE can make even mundane activities sound distinctive."""
 
-    prompt = f"""Rewrite this passage by {author} to be about "{topic}" ({category} topic).
+    prompt = f"""Rewrite this passage by {author} to be about "{topic}".
 
 Original passage:
 {paragraph}
 
 Requirements:
-1. The new passage must be ENTIRELY about "{topic}" - no traces of the original subject
-2. Preserve the sentence structure, rhythm, and {author}'s distinctive style
-3. ALL facts about "{topic}" must be TRUE - verify your statements are accurate
-4. Match approximately the same word count ({len(paragraph.split())} words)
+1. The new passage must be ENTIRELY about "{topic}" - a mundane everyday activity
+2. Preserve the EXACT sentence structure: {len(paragraph.split('.'))} sentences, same clause patterns
+3. Use {author}'s distinctive vocabulary and phrasing style
+4. Match the word count closely (~{len(paragraph.split())} words)
+5. Keep the same punctuation patterns and rhythm
+
+The result should sound unmistakably like {author} writing about {topic}.
 
 Output only the rewritten passage, nothing else."""
 
@@ -353,6 +373,80 @@ Output only the rewritten passage, nothing else."""
             logger.debug(f"Variation attempt {attempt+1} failed: {e}")
 
     return None
+
+
+def create_heavy_perturbation(text: str, perturbation_rate: float = 0.15) -> str:
+    """Apply heavy perturbations for Robustness entries (Entry 3 of Triad).
+
+    This is stronger than the light perturbation applied to all examples.
+    Simulates NEFTune by heavily corrupting the input while keeping output clean.
+
+    Applies ~15% random changes:
+    - Synonym swap: Replace word with synonym
+    - Word drop: Remove articles and filler words
+    - Typo: Swap adjacent characters
+    - Case errors: Random case changes
+
+    Args:
+        text: Input text to perturb
+        perturbation_rate: Probability of perturbing each word (default 15%)
+
+    Returns:
+        Heavily perturbed text
+    """
+    words = text.split()
+    result = []
+    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite', 'some', 'this', 'that'}
+
+    for word in words:
+        if random.random() > perturbation_rate:
+            result.append(word)
+            continue
+
+        # Choose perturbation type
+        choice = random.random()
+
+        if choice < 0.30:
+            # Synonym swap (30% of perturbations)
+            word_lower = word.lower().rstrip('.,!?;:')
+            if word_lower in SYNONYMS:
+                synonym = random.choice(SYNONYMS[word_lower])
+                # Preserve case
+                if word[0].isupper():
+                    synonym = synonym.capitalize()
+                result.append(synonym + word[len(word_lower):])
+            else:
+                result.append(word)
+
+        elif choice < 0.50:
+            # Word drop (20% of perturbations)
+            if word.lower() in droppable:
+                pass  # Drop the word
+            else:
+                result.append(word)
+
+        elif choice < 0.75:
+            # Typo - swap two adjacent chars (25% of perturbations)
+            if len(word) > 3:
+                i = random.randint(1, len(word) - 2)
+                word = word[:i] + word[i+1] + word[i] + word[i+2:]
+            result.append(word)
+
+        elif choice < 0.90:
+            # Double letter typo (15% of perturbations)
+            if len(word) > 2:
+                i = random.randint(0, len(word) - 1)
+                word = word[:i] + word[i] + word[i:]
+            result.append(word)
+
+        else:
+            # Case error (10% of perturbations)
+            if random.random() < 0.5:
+                result.append(word.lower())
+            else:
+                result.append(word.upper() if len(word) <= 4 else word)
+
+    return ' '.join(result)
 
 
 def save_intermediate(items: List[Tuple[str, str]], path: Path, stage: str = "items") -> None:
@@ -392,80 +486,80 @@ def expand_corpus_with_variations(
     author: str,
     workers: int = 4,
     skip_variation: bool = False,
-    variations_per_paragraph: int = 3
 ) -> List[Tuple[str, str]]:
-    """Expand corpus with topic variations using 1-to-N expansion.
+    """Expand corpus using the Triad strategy (1:3 ratio).
 
-    For each original paragraph, generates variations on different topics
-    (concrete, abstract, action) while preserving the author's style.
+    For each original paragraph, creates exactly 2 variations:
+    - Entry 1 (Anchor): Original author text
+    - Entry 2 (Snowflake): Topic swap to mundane activity
+    - Entry 3 (Robustness): Marked for heavy input perturbation later
 
-    This prevents content overfitting - the model learns style transformation
-    rather than memorizing specific content.
+    The Robustness entry reuses the original text but will have heavy
+    perturbation applied to its INPUT during training data generation.
+    This is more efficient than generating another LLM variation.
 
     Args:
         paragraphs: Original author paragraphs
         author: Author name for style preservation
         workers: Number of parallel workers
-        skip_variation: If True, skip variation generation
-        variations_per_paragraph: Number of variations per original (max 3)
+        skip_variation: If True, skip variation generation (originals only)
 
     Returns:
-        List of (text, variation_type) tuples
+        List of (text, variation_type) tuples where variation_type is:
+        - 'original': Real author text (Entry 1 - Anchor)
+        - 'snowflake': Mundane topic swap (Entry 2 - Snowflake)
+        - 'robustness': Same as original, marked for heavy perturbation (Entry 3)
     """
-    # Always include originals
+    # Entry 1: Anchor (original author text)
     result = [(para, "original") for para in paragraphs]
 
     if skip_variation:
         logger.info("Skipping topic variation (--skip-variation flag)")
         return result
 
-    # Determine which categories to use
-    categories = [
-        ("concrete", CONCRETE_TOPICS),
-        ("abstract", ABSTRACT_TOPICS),
-        ("action", ACTION_TOPICS),
-    ][:variations_per_paragraph]
+    # Entry 3: Robustness (same text, will get heavy input perturbation)
+    # Add these now - they use original text but will be processed differently
+    robustness_entries = [(para, "robustness") for para in paragraphs]
 
-    total_variations = len(paragraphs) * len(categories)
-    logger.info(f"Creating {len(categories)} topic variations per paragraph...")
-    logger.info(f"Total variations to generate: {total_variations}")
+    logger.info(f"Triad Strategy: 1 original + 1 snowflake + 1 robustness per paragraph")
+    logger.info(f"Creating {len(paragraphs)} snowflake (topic swap) variations...")
+    logger.info(f"Robustness entries: {len(paragraphs)} (will use heavy input perturbation)")
 
+    # Entry 2: Snowflake (mundane topic swap)
     # Prepare all variation tasks
     tasks = []
     for idx, para in enumerate(paragraphs):
-        for cat_name, topic_pool in categories:
-            # Select a random topic from the pool
-            topic = random.choice(topic_pool)
-            tasks.append((idx, para, topic, cat_name))
+        topic = random.choice(MUNDANE_TOPICS)
+        tasks.append((idx, para, topic))
 
-    variation_count = 0
+    snowflake_count = 0
     failed_count = 0
     start_time = time.time()
 
     def process_variation(task):
-        idx, para, topic, category = task
-        varied = create_topic_variation(para, author, topic, category)
-        return idx, varied, category
+        idx, para, topic = task
+        varied = create_topic_variation(para, author, topic)
+        return idx, varied
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(process_variation, task): task for task in tasks}
 
         for future in as_completed(futures):
             try:
-                idx, varied, category = future.result()
+                idx, varied = future.result()
                 if varied:
-                    result.append((varied, category))
-                    variation_count += 1
+                    result.append((varied, "snowflake"))
+                    snowflake_count += 1
                 else:
                     failed_count += 1
 
-                total_processed = variation_count + failed_count
+                total_processed = snowflake_count + failed_count
                 if total_processed % 20 == 0:
                     elapsed = time.time() - start_time
                     rate = total_processed / elapsed if elapsed > 0 else 0
-                    success_rate = variation_count / total_processed * 100 if total_processed > 0 else 0
+                    success_rate = snowflake_count / total_processed * 100 if total_processed > 0 else 0
                     logger.info(
-                        f"Variations: {variation_count}/{total_variations} | "
+                        f"Snowflake: {snowflake_count}/{len(paragraphs)} | "
                         f"Failed: {failed_count} | "
                         f"Success: {success_rate:.0f}% | "
                         f"Rate: {rate:.1f}/s"
@@ -474,17 +568,25 @@ def expand_corpus_with_variations(
                 failed_count += 1
                 logger.debug(f"Variation task failed: {e}")
 
+    # Add robustness entries
+    result.extend(robustness_entries)
+
     elapsed = time.time() - start_time
     logger.info(
-        f"Variation complete: {variation_count} created, {failed_count} failed "
-        f"in {elapsed:.1f}s ({variation_count/elapsed:.1f}/s)"
+        f"Snowflake complete: {snowflake_count} created, {failed_count} failed "
+        f"in {elapsed:.1f}s"
     )
 
-    # Log category breakdown
+    # Log Triad breakdown
     category_counts = {}
     for _, vtype in result:
         category_counts[vtype] = category_counts.get(vtype, 0) + 1
-    logger.info(f"Category breakdown: {category_counts}")
+    logger.info(f"Triad breakdown: {category_counts}")
+
+    # Calculate actual ratio
+    total = len(result)
+    original_pct = category_counts.get('original', 0) / total * 100
+    logger.info(f"Real author signal: {original_pct:.1f}% (target: ~33%)")
 
     return result
 
@@ -531,8 +633,10 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
     all_chunks = []
 
     for vtype, texts in by_type.items():
-        # For VARIATIONS: Keep paragraphs separate (each is about a different topic)
-        # Combining them would create "Frankenstein" narratives
+        # Triad Strategy handling:
+        # - 'original': Overlapping chunks (continuous narrative, style in transitions)
+        # - 'snowflake': Keep separate (each is about different mundane topic)
+        # - 'robustness': Keep separate (will get heavy input perturbation later)
         if vtype != "original":
             chunks_for_type = []
             for para_text in texts:
@@ -638,72 +742,329 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
 #    - Produces "natural but plain" text (not robotic graph output)
 #    - Perfect for teaching model to "elevate" prose
 #
-# Uses local MLX model (Qwen2.5-3B-Instruct) for fast inference without API calls.
-# Configuration in config.json under llm.providers.mlx_rtt.
+# Uses DeepSeek API by default for fast bulk processing.
+# Configuration in config.json under llm.provider.rtt and llm.providers.deepseek_rtt.
+# Set llm.provider.rtt to "mlx" for local processing (slower but free).
 
 # Global RTT neutralizer (shared across threads)
 _rtt_neutralizer = None
+_rtt_lock = None  # Lock for thread-safe access
 
 
-def get_rtt_neutralizer():
-    """Get or create shared RTT neutralizer (singleton pattern)."""
-    global _rtt_neutralizer
+def get_rtt_neutralizer(provider: str = None, batch_size: int = None):
+    """Get or create shared RTT neutralizer (singleton pattern).
+
+    Args:
+        provider: 'mlx' or 'deepseek'. If None, reads from config.json.
+        batch_size: Batch size for DeepSeek (ignored for MLX).
+    """
+    global _rtt_neutralizer, _rtt_lock
     if _rtt_neutralizer is None:
-        from src.llm.mlx_provider import RTTNeutralizer
-        logger.info("Initializing RTT neutralizer (local MLX model)...")
-        _rtt_neutralizer = RTTNeutralizer()
-        logger.info("RTT neutralizer ready")
-    return _rtt_neutralizer
+        import threading
+        from src.llm.mlx_provider import create_rtt_neutralizer
+        _rtt_neutralizer = create_rtt_neutralizer(provider=provider, batch_size=batch_size)
+        _rtt_lock = threading.Lock()
+        logger.info(f"RTT neutralizer ready: {type(_rtt_neutralizer).__name__}")
+    return _rtt_neutralizer, _rtt_lock
 
 
-def neutralize_text(styled_text: str, max_retries: int = 2) -> Optional[str]:
+def neutralize_text(styled_text: str, max_retries: int = 2, monotone: bool = True) -> Optional[str]:
     """Round-Trip Translation neutralization via Mandarin pivot.
 
     Step 1 (Scrub): English → Mandarin (HSK3 vocabulary)
     Step 2 (Rinse): Mandarin → Plain English
+    Step 3 (Flatten): Break into short SVO sentences (if monotone=True)
 
-    Uses local MLX model (Qwen2.5-3B-Instruct) for fast inference.
+    Uses provider from config.json (default: DeepSeek API for speed).
+    Thread-safe via lock.
 
     Args:
         styled_text: The styled text to neutralize
         max_retries: Number of retry attempts
+        monotone: If True, flatten to uniform short sentences (default True for training)
 
     Returns:
         Neutral English with all facts preserved, or None if failed
     """
     try:
-        neutralizer = get_rtt_neutralizer()
-        return neutralizer.neutralize(styled_text, max_retries=max_retries)
+        neutralizer, lock = get_rtt_neutralizer()
+        with lock:
+            return neutralizer.neutralize(styled_text, max_retries=max_retries, monotone=monotone)
     except Exception as e:
         logger.error(f"RTT neutralization failed: {e}")
         return None
 
 
-# =============================================================================
-# Step 5: Training Data Generation
-# =============================================================================
+def neutralize_batch(texts: list, monotone: bool = True, on_progress=None) -> list:
+    """Neutralize multiple texts in batched API calls.
 
-def format_training_example(neutral_text: str, styled_text: str, author: str, word_count: int) -> dict:
+    DeepSeek: Uses parallel batch processing (no lock needed, thread-safe).
+    MLX: Falls back to individual calls with locking (single-threaded).
+
+    Args:
+        texts: List of styled texts to neutralize.
+        monotone: If True, flatten to uniform short sentences.
+        on_progress: Optional callback (processed, total).
+
+    Returns:
+        List of neutralized texts (None for failures).
+    """
+    from src.llm.mlx_provider import DeepSeekRTTNeutralizer
+
+    neutralizer, lock = get_rtt_neutralizer()
+
+    # DeepSeek is thread-safe with internal parallelization - no lock needed
+    if isinstance(neutralizer, DeepSeekRTTNeutralizer):
+        return neutralizer.neutralize_batch(texts, monotone=monotone, on_progress=on_progress)
+
+    # MLX requires locking (single-threaded)
+    if hasattr(neutralizer, 'neutralize_batch'):
+        with lock:
+            return neutralizer.neutralize_batch(texts, monotone=monotone, on_progress=on_progress)
+    else:
+        # Fall back to individual processing with locking
+        results = []
+        for i, text in enumerate(texts):
+            with lock:
+                result = neutralizer.neutralize(text, monotone=monotone)
+            results.append(result)
+            if on_progress:
+                on_progress(i + 1, len(texts))
+        return results
+
+
+# =============================================================================
+# Step 5: Structural Analysis and Control Tokens
+# =============================================================================
+# Style tags tell the model WHAT structural pattern to produce.
+# This turns "vibe" into concrete instructions.
+
+def analyze_structure(text: str, nlp=None) -> dict:
+    """Analyze structural features of text for style tagging.
+
+    Returns dict with:
+        - sentence_lengths: list of word counts per sentence
+        - avg_length: average sentence length
+        - length_variance: how varied the lengths are
+        - has_complex_syntax: semicolons, em-dashes, nested clauses
+        - connectives: conjunctions used (and, but, yet, for, etc.)
+    """
+    if nlp is None:
+        nlp = get_nlp()
+
+    sentences = split_into_sentences(text, nlp)
+    if not sentences:
+        return {"tag": "[STYLE: Simple]"}
+
+    lengths = [len(s.split()) for s in sentences]
+    avg_length = sum(lengths) / len(lengths)
+
+    # Calculate variance
+    if len(lengths) > 1:
+        variance = sum((x - avg_length) ** 2 for x in lengths) / len(lengths)
+        std_dev = variance ** 0.5
+    else:
+        std_dev = 0
+
+    # Detect complex syntax markers
+    complex_markers = [';', '—', '--', ':', '(', ')']
+    has_complex = any(m in text for m in complex_markers)
+
+    # Detect connectives
+    connective_words = ['however', 'although', 'yet', 'moreover', 'furthermore',
+                        'nevertheless', 'whilst', 'whereas']
+    has_literary_connectives = any(w in text.lower() for w in connective_words)
+
+    return {
+        "avg_length": avg_length,
+        "std_dev": std_dev,
+        "has_complex": has_complex,
+        "has_literary_connectives": has_literary_connectives,
+        "sentence_count": len(sentences),
+    }
+
+
+def generate_style_tag(styled_text: str, nlp=None) -> str:
+    """Generate a structural style tag based on text analysis.
+
+    Tags describe the structural features the model should produce:
+    - Length pattern: Short & Punchy, Varied Lengths, Long & Flowing
+    - Complexity: Simple Syntax, Complex Syntax, Baroque Syntax
+
+    Example: [STYLE: Varied Lengths | Complex Syntax]
+    """
+    analysis = analyze_structure(styled_text, nlp)
+
+    # Determine length pattern
+    avg = analysis.get("avg_length", 15)
+    std = analysis.get("std_dev", 0)
+
+    if avg < 12:
+        length_tag = "Short & Punchy"
+    elif avg > 25:
+        length_tag = "Long & Flowing"
+    elif std > 8:
+        length_tag = "Varied Lengths"
+    else:
+        length_tag = "Medium Length"
+
+    # Determine complexity
+    if analysis.get("has_complex") and analysis.get("has_literary_connectives"):
+        complexity_tag = "Baroque Syntax"
+    elif analysis.get("has_complex"):
+        complexity_tag = "Complex Syntax"
+    else:
+        complexity_tag = "Simple Syntax"
+
+    return f"[STYLE: {length_tag} | {complexity_tag}]"
+
+
+# =============================================================================
+# Step 6: Prompt Jitter and Input Perturbation (NEFTune Simulation)
+# =============================================================================
+# NEFTune adds noise to embeddings. We simulate this by:
+# 1. Randomizing the instruction prefix (Prompt Jitter)
+# 2. Adding typos/synonyms to neutral input (Input Perturbation)
+# This forces the model to learn robust patterns, not memorize strings.
+
+# Prompt templates for jitter - randomly select one per example
+PROMPT_TEMPLATES = [
+    "Rewrite in {author}'s style (~{word_count} words):",
+    "Transform this text into {author}'s voice (~{word_count} words):",
+    "Convert to {author}'s style (~{word_count} words):",
+    "Apply {author}'s style (~{word_count} words):",
+    "Rewrite the following in {author}'s voice (~{word_count} words):",
+    "Style transfer to {author} (~{word_count} words):",
+]
+
+# Simple synonym map for input perturbation
+SYNONYMS = {
+    "big": ["large", "huge", "great"],
+    "small": ["little", "tiny", "minor"],
+    "old": ["ancient", "aged", "elderly"],
+    "new": ["fresh", "recent", "modern"],
+    "good": ["fine", "nice", "great"],
+    "bad": ["poor", "awful", "terrible"],
+    "house": ["building", "home", "dwelling"],
+    "said": ["stated", "spoke", "remarked"],
+    "walked": ["went", "moved", "traveled"],
+    "looked": ["appeared", "seemed", "gazed"],
+    "very": ["quite", "rather", "extremely"],
+    "really": ["truly", "actually", "indeed"],
+}
+
+
+def perturb_text(text: str, perturbation_rate: float = 0.08) -> str:
+    """Apply random perturbations to text (Poor Man's NEFTune).
+
+    Applies 5-10% random changes:
+    - Synonym swap: Replace word with synonym
+    - Word drop: Remove non-essential words (the, a, an)
+    - Typo: Swap adjacent characters
+
+    Args:
+        text: Input text to perturb
+        perturbation_rate: Probability of perturbing each word (default 8%)
+
+    Returns:
+        Perturbed text
+    """
+    words = text.split()
+    result = []
+    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite'}
+
+    for word in words:
+        if random.random() > perturbation_rate:
+            result.append(word)
+            continue
+
+        # Choose perturbation type
+        choice = random.random()
+
+        if choice < 0.4:
+            # Synonym swap (40% of perturbations)
+            word_lower = word.lower().rstrip('.,!?;:')
+            if word_lower in SYNONYMS:
+                synonym = random.choice(SYNONYMS[word_lower])
+                # Preserve case
+                if word[0].isupper():
+                    synonym = synonym.capitalize()
+                result.append(synonym + word[len(word_lower):])
+            else:
+                result.append(word)
+
+        elif choice < 0.7:
+            # Word drop (30% of perturbations)
+            if word.lower() in droppable:
+                pass  # Drop the word
+            else:
+                result.append(word)
+
+        else:
+            # Typo - swap two adjacent chars (30% of perturbations)
+            if len(word) > 3:
+                i = random.randint(1, len(word) - 2)
+                word = word[:i] + word[i+1] + word[i] + word[i+2:]
+            result.append(word)
+
+    return ' '.join(result)
+
+
+def format_training_example(
+    neutral_text: str,
+    styled_text: str,
+    author: str,
+    word_count: int,
+    style_tag: str = None,
+    variation_type: str = "original",
+    use_jitter: bool = True,
+) -> dict:
     """Format a training example for BASE model (not instruct).
 
     Base models need raw text completion format, not chat roles.
     The model learns: given neutral text + instruction → produce styled text.
 
+    Applies NEFTune simulation based on variation_type:
+    - Prompt Jitter: Random instruction prefix (all types)
+    - Light Perturbation: 8% rate for 'original' and 'snowflake'
+    - Heavy Perturbation: 15% rate for 'robustness' (Entry 3 of Triad)
+
     Format:
         Rewrite in {author}'s style (~N words):
-        [neutral text]
+        [STYLE: Varied Lengths | Complex Syntax]
+        [neutral text with perturbations]
         ###
         [styled text]
     """
-    # Simple prompt format for base model
-    prompt = f"Rewrite in {author}'s style (~{word_count} words):\n{neutral_text}\n###\n"
+    # Select random prompt template (Prompt Jitter)
+    if use_jitter:
+        template = random.choice(PROMPT_TEMPLATES)
+    else:
+        template = PROMPT_TEMPLATES[0]
+
+    instruction = template.format(author=author, word_count=word_count)
+
+    # Apply perturbation based on variation type
+    # Robustness entries get HEAVY perturbation (Entry 3 of Triad)
+    # Other entries get light perturbation
+    if variation_type == "robustness":
+        perturbed_input = create_heavy_perturbation(neutral_text)
+    else:
+        perturbed_input = perturb_text(neutral_text)
+
+    # Build prompt with optional style tag
+    if style_tag:
+        prompt = f"{instruction}\n{style_tag}\n{perturbed_input}\n###\n"
+    else:
+        prompt = f"{instruction}\n{perturbed_input}\n###\n"
 
     # For mlx_lm.lora with base models: {"text": "prompt + completion"}
     # With mask_prompt=true, only the completion (after prompt) is trained
     return {
         "text": prompt + styled_text,
         "prompt": prompt,  # For mask_prompt to know where to split
-        "word_count": word_count
+        "word_count": word_count,
+        "style_tag": style_tag,
     }
 
 
@@ -711,90 +1072,170 @@ def generate_training_data(
     chunks: List[Tuple[str, str]],
     author: str,
     output_path: Path,
-    workers: int = 4,
+    workers: int = 1,
+    monotone: bool = False,
+    resume: bool = False,
 ) -> int:
-    """Generate training data using RTT neutralization, writing sequentially.
+    """Generate training data using RTT neutralization, writing progressively.
 
-    Processes chunks in parallel but writes results immediately as they complete.
-    This ensures progress is saved even if the process is interrupted.
+    Processes chunks sequentially (MLX requires single-threaded access) and
+    writes each result immediately. Progress is saved on interrupt.
 
     Args:
         chunks: List of (styled_text, variation_type) tuples
         author: Author name for system prompt
         output_path: Output JSONL file path
-        workers: Number of parallel workers for neutralization
+        workers: Unused (kept for API compatibility)
+        monotone: If True, apply extra flattening step (slower, +50% time)
+        resume: If True, skip already-processed items and append to file
 
     Returns:
         Number of examples written
     """
-    import threading
-
     total = len(chunks)
-    logger.info(f"Generating training data for {total} chunks with {workers} workers...")
-    logger.info(f"Writing sequentially to {output_path} (progress saved on interrupt)...")
+    mode = "monotone" if monotone else "standard"
+
+    # Check for existing progress if resuming
+    processed_indices = set()
+    if resume and output_path.exists():
+        with open(output_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if 'source_idx' in entry:
+                        processed_indices.add(entry['source_idx'])
+                except:
+                    pass
+        logger.info(f"Resuming: found {len(processed_indices)} already processed items")
+
+    remaining = total - len(processed_indices)
+    logger.info(f"Generating training data for {remaining}/{total} chunks ({mode} RTT)...")
+    logger.info(f"Writing progressively to {output_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    success_count = 0
+    success_count = len(processed_indices)
     failed_count = 0
     type_counts = {}
     start_time = time.time()
-    write_lock = threading.Lock()
 
-    def process_and_write(item, f):
-        nonlocal success_count, failed_count
-        idx, (styled_text, vtype) = item
+    # Get batch size from neutralizer
+    neutralizer, _ = get_rtt_neutralizer()
+    batch_size = getattr(neutralizer, 'batch_size', 1)
+    use_batching = batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
 
-        # RTT neutralization (2 API calls)
-        neutral = neutralize_text(styled_text)
+    if use_batching:
+        logger.info(f"Using batched RTT with batch_size={batch_size}")
+    else:
+        logger.info("Using sequential RTT (batch_size=1)")
 
-        if neutral:
-            word_count = len(styled_text.split())
-            example = format_training_example(
-                neutral_text=neutral,
-                styled_text=styled_text,
-                author=author,
-                word_count=word_count
-            )
-            example["variation_type"] = vtype
-            example["source_idx"] = idx
+    # Filter out already processed chunks
+    pending_chunks = [(idx, styled_text, vtype) for idx, (styled_text, vtype) in enumerate(chunks)
+                      if idx not in processed_indices]
 
-            # Write immediately with lock
-            with write_lock:
-                f.write(json.dumps(example) + '\n')
-                f.flush()  # Ensure written to disk
-                success_count += 1
-                type_counts[vtype] = type_counts.get(vtype, 0) + 1
-        else:
-            with write_lock:
-                failed_count += 1
+    # Append if resuming, otherwise overwrite
+    file_mode = 'a' if resume and processed_indices else 'w'
+    with open(output_path, file_mode, encoding='utf-8') as f:
+        if use_batching:
+            # Process in batches
+            for batch_start in range(0, len(pending_chunks), batch_size):
+                batch_end = min(batch_start + batch_size, len(pending_chunks))
+                batch = pending_chunks[batch_start:batch_end]
 
-        return neutral is not None
+                # Extract texts for batch neutralization
+                batch_texts = [styled_text for _, styled_text, _ in batch]
 
-    with open(output_path, 'w', encoding='utf-8') as f:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {executor.submit(process_and_write, (i, chunk), f): i
-                       for i, chunk in enumerate(chunks)}
+                # Progress update
+                elapsed = time.time() - start_time
+                processed = len(processed_indices) + batch_start
+                if processed > 0:
+                    rate = processed / elapsed
+                    eta = (total - processed) / rate if rate > 0 else 0
+                    logger.info(
+                        f"[{processed}/{total}] ({processed*100//total}%) | "
+                        f"✓{success_count} ✗{failed_count} | "
+                        f"{rate:.2f}/s | ETA: {eta/60:.1f}m | batch {batch_start//batch_size + 1}"
+                    )
 
-            for future in as_completed(futures):
+                # Batch neutralization
                 try:
-                    future.result()
-
-                    total_processed = success_count + failed_count
-                    if total_processed % 50 == 0:
-                        elapsed = time.time() - start_time
-                        rate = total_processed / elapsed if elapsed > 0 else 0
-                        pct = total_processed / total * 100
-                        eta = (total - total_processed) / rate if rate > 0 else 0
-                        logger.info(
-                            f"Progress: {total_processed}/{total} ({pct:.0f}%) | "
-                            f"Success: {success_count} | Failed: {failed_count} | "
-                            f"Rate: {rate:.1f}/s | ETA: {eta/60:.1f}m"
-                        )
+                    neutrals = neutralize_batch(batch_texts, monotone=monotone)
                 except Exception as e:
-                    with write_lock:
+                    logger.warning(f"Batch RTT error: {e}")
+                    neutrals = [None] * len(batch)
+
+                # Process results
+                for (idx, styled_text, vtype), neutral in zip(batch, neutrals):
+                    if neutral:
+                        word_count = len(styled_text.split())
+                        style_tag = generate_style_tag(styled_text)
+
+                        example = format_training_example(
+                            neutral_text=neutral,
+                            styled_text=styled_text,
+                            author=author,
+                            word_count=word_count,
+                            style_tag=style_tag,
+                            variation_type=vtype,  # Controls perturbation level
+                        )
+                        example["variation_type"] = vtype
+                        example["source_idx"] = idx
+
+                        f.write(json.dumps(example) + '\n')
+                        success_count += 1
+                        type_counts[vtype] = type_counts.get(vtype, 0) + 1
+                    else:
                         failed_count += 1
-                    logger.debug(f"Task failed: {e}")
+                        logger.warning(f"  [{idx}] ✗ Failed to neutralize ({len(styled_text.split())}w)")
+
+                f.flush()  # Flush after each batch
+        else:
+            # Sequential processing (original behavior)
+            for batch_idx, (idx, styled_text, vtype) in enumerate(pending_chunks):
+                # Progress header every 10 items
+                if batch_idx % 10 == 0:
+                    elapsed = time.time() - start_time
+                    processed = len(processed_indices) + batch_idx
+                    if processed > 0:
+                        rate = processed / elapsed
+                        eta = (total - processed) / rate if rate > 0 else 0
+                        logger.info(
+                            f"[{processed}/{total}] ({processed*100//total}%) | "
+                            f"✓{success_count} ✗{failed_count} | "
+                            f"{rate:.2f}/s | ETA: {eta/60:.1f}m"
+                        )
+                    else:
+                        logger.info(f"[{processed}/{total}] Starting...")
+
+                # RTT neutralization
+                try:
+                    neutral = neutralize_text(styled_text, monotone=monotone)
+                except Exception as e:
+                    logger.warning(f"  [{idx}] RTT error: {e}")
+                    neutral = None
+
+                if neutral:
+                    word_count = len(styled_text.split())
+                    style_tag = generate_style_tag(styled_text)
+
+                    example = format_training_example(
+                        neutral_text=neutral,
+                        styled_text=styled_text,
+                        author=author,
+                        word_count=word_count,
+                        style_tag=style_tag,
+                        variation_type=vtype,  # Controls perturbation level
+                    )
+                    example["variation_type"] = vtype
+                    example["source_idx"] = idx
+
+                    f.write(json.dumps(example) + '\n')
+                    f.flush()
+                    success_count += 1
+                    type_counts[vtype] = type_counts.get(vtype, 0) + 1
+                else:
+                    failed_count += 1
+                    logger.warning(f"  [{idx}] ✗ Failed to neutralize ({len(styled_text.split())}w)")
 
     elapsed = time.time() - start_time
     logger.info(
@@ -816,10 +1257,14 @@ def main():
     parser.add_argument("--corpus", required=False, help="Path to author corpus file")
     parser.add_argument("--author", required=True, help="Author name")
     parser.add_argument("--output", required=True, help="Output directory for training data")
-    parser.add_argument("--workers", type=int, default=4, help="Workers for fact variation")
-    parser.add_argument("--skip-variation", action="store_true", help="Skip topic variation step")
-    parser.add_argument("--variations", type=int, default=3, choices=[1, 2, 3],
-                        help="Number of topic variations per paragraph (1-3, default: 3)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Workers for parallel processing (MLX neutralization is serialized, so 1 is optimal)")
+    parser.add_argument("--skip-variation", action="store_true",
+                        help="Skip topic variation step (originals only, no Triad)")
+    parser.add_argument("--phase", type=int, choices=[1, 2, 3], default=None,
+                        help="Run specific phase: 1=Anchors (RTT), 2=Noise (script), 3=Snowflakes (LLM)")
+    parser.add_argument("--no-monotone", action="store_true",
+                        help="Disable monotone flattening (faster but less effective for burstiness)")
     parser.add_argument("--max-paragraphs", type=int, default=None, help="Max paragraphs to process")
     parser.add_argument("--min-para-words", type=int, default=100, help="Min words per paragraph (curation)")
     parser.add_argument("--max-para-words", type=int, default=650, help="Max words per paragraph (curation)")
@@ -828,12 +1273,15 @@ def main():
     parser.add_argument("--overlap-sentences", type=int, default=2, help="Sentence overlap between chunks")
     parser.add_argument("--resume-from", type=str, default=None, help="Resume from intermediate JSON (skips Steps 1-2)")
     parser.add_argument("--resume-from-chunks", type=str, default=None, help="Resume from chunks JSON (skips Steps 1-3)")
+    parser.add_argument("--resume", action="store_true", help="Resume from last processed item (checks all.jsonl)")
     parser.add_argument("--save-intermediate", type=str, default=None, help="Save intermediate paragraphs")
+    parser.add_argument("--from-selected", type=str, default=None,
+                        help="Load from selected paragraphs JSON (from select_diverse_paragraphs.py)")
 
     args = parser.parse_args()
 
-    if not args.resume_from and not args.resume_from_chunks and not args.corpus:
-        parser.error("--corpus is required unless using --resume-from or --resume-from-chunks")
+    if not args.resume_from and not args.resume_from_chunks and not args.corpus and not args.from_selected:
+        parser.error("--corpus or --from-selected is required unless using --resume-from or --resume-from-chunks")
 
     overall_start = time.time()
     output_dir = Path(args.output)
@@ -879,6 +1327,63 @@ def main():
         chunks_path = output_dir / "chunks.json"
         save_intermediate(chunks, chunks_path, stage="chunks")
 
+    elif args.from_selected:
+        # Load from pre-selected paragraphs JSON (from select_diverse_paragraphs.py)
+        logger.info("=" * 60)
+        logger.info("LOADING FROM SELECTED PARAGRAPHS (skipping Step 1)")
+        logger.info("=" * 60)
+
+        with open(args.from_selected, 'r', encoding='utf-8') as f:
+            selected_data = json.load(f)
+
+        paragraphs = [p["text"] for p in selected_data["paragraphs"]]
+        metadata = selected_data.get("metadata", {})
+        logger.info(f"Loaded {len(paragraphs)} pre-selected paragraphs")
+        logger.info(f"  Source: {metadata.get('source', 'unknown')}")
+        logger.info(f"  Tokens: {metadata.get('actual_tokens', 'unknown'):,}")
+        logger.info(f"  Mean quality: {metadata.get('mean_quality', 'unknown'):.3f}")
+
+        if args.max_paragraphs:
+            paragraphs = paragraphs[:args.max_paragraphs]
+
+        # Step 2: Triad Strategy (1 original + 1 snowflake + 1 robustness)
+        logger.info("=" * 60)
+        logger.info("STEP 2: Triad Strategy (1:3 expansion)")
+        logger.info("=" * 60)
+
+        expanded = expand_corpus_with_variations(
+            paragraphs,
+            author=args.author,
+            workers=args.workers,
+            skip_variation=args.skip_variation,
+        )
+
+        for _, vtype in expanded:
+            variation_counts[vtype] = variation_counts.get(vtype, 0) + 1
+        logger.info(f"Corpus: {len(expanded)} total | Breakdown: {variation_counts}")
+
+        if args.save_intermediate:
+            save_intermediate(expanded, Path(args.save_intermediate), stage="paragraphs")
+        else:
+            intermediate_path = output_dir / "paragraphs.json"
+            save_intermediate(expanded, intermediate_path, stage="paragraphs")
+
+        # Step 3: Overlapping chunks
+        logger.info("=" * 60)
+        logger.info("STEP 3: Creating overlapping chunks")
+        logger.info("=" * 60)
+
+        overlap_config = OverlapConfig(
+            min_words=args.min_chunk_words,
+            max_words=args.max_chunk_words,
+            overlap_sentences=args.overlap_sentences
+        )
+        chunks = create_overlapping_chunks(expanded, overlap_config)
+        logger.info(f"Created {len(chunks)} overlapping chunks")
+
+        chunks_path = output_dir / "chunks.json"
+        save_intermediate(chunks, chunks_path, stage="chunks")
+
     else:
         # Full pipeline from corpus
         logger.info(f"Loading corpus: {args.corpus}")
@@ -898,9 +1403,9 @@ def main():
 
         logger.info(f"Extracted {len(paragraphs)} quality paragraphs")
 
-        # Step 2: Topic variation (1-to-N expansion)
+        # Step 2: Triad Strategy (1 original + 1 snowflake + 1 robustness)
         logger.info("=" * 60)
-        logger.info("STEP 2: Creating topic variations (1-to-N expansion)")
+        logger.info("STEP 2: Triad Strategy (1:3 expansion)")
         logger.info("=" * 60)
 
         expanded = expand_corpus_with_variations(
@@ -908,7 +1413,6 @@ def main():
             author=args.author,
             workers=args.workers,
             skip_variation=args.skip_variation,
-            variations_per_paragraph=args.variations
         )
 
         for _, vtype in expanded:
@@ -943,7 +1447,11 @@ def main():
     logger.info("=" * 60)
 
     all_output_path = output_dir / "all.jsonl"
-    num_examples = generate_training_data(chunks, args.author, all_output_path, workers=args.workers)
+    num_examples = generate_training_data(
+        chunks, args.author, all_output_path,
+        workers=args.workers, monotone=not args.no_monotone,
+        resume=args.resume
+    )
 
     # Create train/valid/test split for mlx_lm.lora
     logger.info("=" * 60)
@@ -976,8 +1484,8 @@ def main():
         split_path = output_dir / f"{split_name}.jsonl"
         with open(split_path, 'w', encoding='utf-8') as f:
             for ex in examples:
-                # Only keep messages, strip metadata
-                f.write(json.dumps({"messages": ex["messages"]}) + '\n')
+                # Keep text field for base model format, strip other metadata
+                f.write(json.dumps({"text": ex["text"]}) + '\n')
         logger.info(f"{split_name}: {len(examples)} examples -> {split_path}")
 
     # Summary

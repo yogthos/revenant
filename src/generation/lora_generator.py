@@ -10,6 +10,7 @@ Performance target: ~5-10 seconds per paragraph generation.
 """
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -18,6 +19,64 @@ from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 
 logger = get_logger(__name__)
+
+
+def generate_style_tag(text: str) -> str:
+    """Generate a structural style tag based on text analysis.
+
+    Tags describe the structural features the model should produce:
+    - Length pattern: Short & Punchy, Varied Lengths, Long & Flowing
+    - Complexity: Simple Syntax, Complex Syntax, Baroque Syntax
+
+    Example: [STYLE: Varied Lengths | Complex Syntax]
+    """
+    # Split into sentences
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    sentences = [s.strip() for s in sentences if s.strip()]
+
+    if not sentences:
+        return "[STYLE: Medium Length | Simple Syntax]"
+
+    # Calculate sentence lengths
+    lengths = [len(s.split()) for s in sentences]
+    avg_length = sum(lengths) / len(lengths)
+
+    # Calculate variance
+    if len(lengths) > 1:
+        variance = sum((x - avg_length) ** 2 for x in lengths) / len(lengths)
+        std_dev = variance ** 0.5
+    else:
+        std_dev = 0
+
+    # Detect complex syntax markers
+    complex_markers = [';', '—', '--', ':', '(', ')']
+    has_complex = any(m in text for m in complex_markers)
+
+    # Detect literary connectives
+    connective_words = ['however', 'although', 'yet', 'moreover', 'furthermore',
+                        'nevertheless', 'whilst', 'whereas']
+    has_literary_connectives = any(w in text.lower() for w in connective_words)
+
+    # Determine length pattern
+    if avg_length < 12:
+        length_tag = "Short & Punchy"
+    elif avg_length > 25:
+        length_tag = "Long & Flowing"
+    elif std_dev > 8:
+        length_tag = "Varied Lengths"
+    else:
+        length_tag = "Medium Length"
+
+    # Determine complexity
+    if has_complex and has_literary_connectives:
+        complexity_tag = "Baroque Syntax"
+    elif has_complex:
+        complexity_tag = "Complex Syntax"
+    else:
+        complexity_tag = "Simple Syntax"
+
+    return f"[STYLE: {length_tag} | {complexity_tag}]"
+
 
 # Check MLX availability at module level
 try:
@@ -39,6 +98,7 @@ class GenerationConfig:
     repetition_penalty: float = 1.4  # Strong penalty to prevent repetition loops
     min_tokens: int = 50  # Prevent too-short outputs
     lora_scale: float = 2.0  # LoRA influence: match training scale (alpha/rank = 128/64 = 2.0)
+    skip_cleaning: bool = False  # If True, return raw output without _clean_response
 
 
 @dataclass
@@ -252,13 +312,16 @@ class LoRAStyleGenerator:
         # Use 2x input to allow for style variation
         auto_max_tokens = max(100, int(input_words * 2.0 * 1.3))
 
+        # Generate style tag from input to guide output structure
+        style_tag = generate_style_tag(user)
+
         # Build prompt matching training data format EXACTLY
-        author_tag = author.upper().replace(' ', '_').replace('.', '')
         prompt = format_prompt(
             "style_transfer",
             author=author,
             content=user,
-            author_tag=author_tag,
+            word_count=target_words,
+            style_tag=style_tag,
         )
 
         # Create sampler with temperature and top_p
@@ -292,226 +355,89 @@ class LoRAStyleGenerator:
 
         response = response.strip()
 
+        # Skip cleaning if configured (useful for debugging)
+        if self.config.skip_cleaning:
+            logger.debug("Skipping _clean_response (skip_cleaning=True)")
+            return response
+
         # Clean up the response
+        raw_response = response
         response = self._clean_response(response, input_words)
+
+        # Log if cleaning removed significant content
+        raw_words = len(raw_response.split())
+        clean_words = len(response.split())
+        if clean_words < raw_words * 0.7:
+            logger.warning(f"_clean_response removed {raw_words - clean_words} words ({raw_words} → {clean_words})")
+            # Write raw response to debug file
+            with open("debug_transfer.log", "a") as f:
+                f.write(f"\n--- RAW LORA (before cleaning) ---\n{raw_response}\n")
 
         return response
 
     def _clean_response(self, response: str, input_words: int = 0) -> str:
-        """Clean model output of thinking tags, meta-commentary, and garbage.
+        """Clean model output of obvious garbage only.
+
+        Removes:
+        - ### markers and everything after (model repetition boundary)
+        - Non-ASCII garbage (Thai, Cyrillic, Chinese characters)
+        - <think> tags
+        - Training format markers
+
+        Does NOT aggressively detect repetition - preserves content.
 
         Args:
             response: Raw model output.
-            input_words: Word count of input (for length-based cleaning).
+            input_words: Word count of input (unused, kept for compatibility).
 
         Returns:
             Cleaned response text.
         """
         import re
 
-        # 0. VERY FIRST: Truncate at training format markers
-        # The model may continue generating training examples
+        # 1. Stop at ### markers (model uses these before repeating)
+        if '###' in response:
+            response = response.split('###')[0].strip()
+
+        # 2. Stop at training format markers
         training_markers = [
             "[NEUTRAL INPUT]:",
             "[NEUTRAL INPUT]",
-            "\n\n[HP_LOVECRAFT OUTPUT]:",  # If it loops back
-            "\n\nRewrite the following",  # New training example
-            "\n\n---",  # Section breaks
-            "HP_LOVECRAFT_NOTE:",  # Hallucinated meta-comment
-            "_NOTE:",  # Any author note
-            "\nNote:",  # Note section
-            "\n\nNOTE:",  # Note section
+            "_OUTPUT]:",  # Any [AUTHOR_OUTPUT]: marker
+            "\n\nRewrite the following",
+            "\n\n---",
+            "_NOTE:",
         ]
         for marker in training_markers:
             if marker in response:
                 response = response.split(marker)[0].strip()
 
-        # 0a. FIRST: Detect repetition and garbage
-        # Split by double newline (paragraph boundaries) first
-        paragraphs = response.split('\n\n')
-        if len(paragraphs) > 1:
-            # Check for paragraph-level repetition (first 50 chars match)
-            first_para_key = paragraphs[0].strip().lower()[:50]
-            clean_paras = [paragraphs[0]]
-            for para in paragraphs[1:]:
-                para_key = para.strip().lower()[:50]
-                # Stop if this paragraph starts like one we've seen
-                if para_key == first_para_key or para_key[:30] in first_para_key:
-                    break
-                # Stop if paragraph starts with garbage
-                if para and ord(para[0]) > 127:
-                    break
-                clean_paras.append(para)
-            response = '\n\n'.join(clean_paras)
-
-        # Also check sentence-level repetition
-        sentences = re.split(r'(?<=[.!?])\s+', response)
-        if len(sentences) > 3:
-            seen = {}
-            clean_sentences = []
-            for sent in sentences:
-                sent_key = sent.strip().lower()[:50]  # Use first 50 chars
-                if sent_key in seen and len(sent_key) > 20:
-                    break
-                seen[sent_key] = True
-                clean_sentences.append(sent)
-            response = ' '.join(clean_sentences)
-
-        # 0b. Stop at inline garbage markers (random years, garbage sequences)
-        # These often appear right before the model degenerates
-        garbage_markers = [
-            r'\(\d{4}\)\s*[\u0400-\u04FF\u0E00-\u0E7F]',  # (2015) followed by garbage
-            r'\n\s*!\s*\n',  # Isolated exclamation marks on newlines
-            r'\n\s*I\s*\n',  # Isolated "I" on newlines
-        ]
-        for marker in garbage_markers:
-            match = re.search(marker, response)
-            if match:
-                response = response[:match.start()].strip()
-
-        # 1. Remove <think>...</think> blocks (Qwen3 thinking mode)
-        # Handle both single-line and multi-line think blocks
+        # 3. Remove <think>...</think> blocks (Qwen3 thinking mode)
         response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
-
-        # 2. Remove unclosed <think> tags and everything after
         if '<think>' in response:
             response = response.split('<think>')[0]
 
-        # 2b. Remove hallucinated parenthetical additions
-        # These often contain wrong information like "(later known as X)" or "(see Figure 1)"
-        parenthetical_patterns = [
-            # Biographical additions
-            r'\(later known as [^)]+\)',
-            r'\(better known as [^)]+\)',
-            r'\(also known as [^)]+\)',
-            r'\(the pen name [^)]+\)',
-            r'\(a\.k\.a\. [^)]+\)',
-            r'\(born [^)]+\)',
-            r'\(died [^)]+\)',
-            r'\(\d{4}[–-]\d{4}\)',  # Date ranges like (1818-1893)
-            # Hallucinated references
-            r'\(see [Ff]igure \d+\)',
-            r'\(see [Cc]hapter \d+\)',
-            r'\(see [Tt]able \d+\)',
-            r'\(see [Aa]ppendix [A-Z]?\)',
-            r'\(see above\)',
-            r'\(see below\)',
-            r'\(i\.[Ee]\.,? [^)]+\)',  # Remove "(i.e., ...)" explanations
-            # Without parentheses (comma-separated)
-            r',\s*later known as [^.,]+',
-            r',\s*better known as [^.,]+',
-            r',\s*also known as [^.,]+',
-            r',\s*a\.k\.a\. [^.,]+',
-        ]
-        for pattern in parenthetical_patterns:
-            response = re.sub(pattern, '', response, flags=re.IGNORECASE)
-
-        # 2c. Remove trailing non-ASCII garbage (Thai, Arabic, Korean, Chinese, Cyrillic, CJK punctuation, Hebrew)
-        # These appear when the model generates garbage tokens
-        # Include CJK punctuation: ：。，！？《》""''【】 etc.
-        # Include Hebrew: \u0590-\u05FF
+        # 4. Remove non-ASCII garbage characters (Thai, Cyrillic, Arabic, Chinese, etc.)
+        # These appear when the model degenerates
         garbage_ranges = r'[\u0400-\u04FF\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\uAC00-\uD7AF\u3040-\u30FF\u4E00-\u9FFF\u0080-\u009F\u3000-\u303F\uFF00-\uFFEF]'
-        response = re.sub(garbage_ranges + r'+[.!?]?\s*$', '', response)
 
-        # 2d. Remove mid-text non-ASCII garbage and mixed garbage
-        # Also stop at Chinese colon (：) or em-dash (——) which often precedes garbage
+        # Stop at first garbage character sequence
+        match = re.search(garbage_ranges + r'+', response)
+        if match:
+            response = response[:match.start()].strip()
+
+        # 5. Stop at Chinese punctuation that often precedes garbage
         for stop_char in ['：', '——']:
             if stop_char in response:
                 response = response.split(stop_char)[0].strip()
-        response = re.sub(garbage_ranges + r'+[.!?]*', '', response)
-        response = re.sub(r'\b[A-Z]?[a-z]*[Pp]id\b', '', response)  # Remove "mPid", "MPid" style garbage
-        response = re.sub(r'SOEVER[,.]?\s*', '', response)  # Remove "SOEVER" garbage
-        response = re.sub(r'togroup\s*', '', response)  # Remove "togroup" repetition
-        response = re.sub(r'!+\s*', ' ', response)  # Remove repeated exclamation marks
-        response = re.sub(r'\bприятн\b', '', response)  # Remove Cyrillic garbage
 
-        # 2e. Fix double commas/spaces and orphaned punctuation from removed content
-        response = re.sub(r',\s*,', ',', response)
-        response = re.sub(r'\s+,', ',', response)  # Fix " ,"
-        response = re.sub(r'in\s*,', 'in', response)  # Fix "in ,"
-        response = re.sub(r'\(\s*,', '(', response)  # Fix "( ,"
-        response = re.sub(r'\s{2,}', ' ', response)
-        # Remove trailing empty quotes, stray punctuation
-        response = re.sub(r'[""\'\']\.?\s*$', '', response)  # Trailing quotes
-        response = re.sub(r'\.{2,}$', '.', response)  # Multiple periods at end
-
-        # 3. Remove reasoning prefixes and leaked instructions
-        thinking_prefixes = [
-            r'^Okay,?\s+(so\s+)?let me.*?\.\s*',
-            r'^Okay,?\s+(so\s+)?I need to.*?\.\s*',
-            r'^First,?\s+I (need to|should|\'ll|will).*?\.\s*',
-            r'^Let me (try to|start by|begin).*?\.\s*',
-            r'^I\'ll (start|begin|try).*?\.\s*',
-            r'^Now,?\s+(I need to|let me).*?\.\s*',
-            r'^Hmm,?\s+.*?\.\s*',
-            r'^The user (is asking|wants|provided).*?\.\s*',
-            # Leaked system prompt patterns
-            r'^Do not add.*?\.\s*',
-            r'^Preserve every.*?\.\s*',
-            r'^Keep all.*?\.\s*',
-            r'^FORBIDDEN:.*?\.\s*',
-            r'^Transform into.*?\.\s*',
-            r'^Rewrite in.*?\.\s*',
-        ]
-
-        for prefix in thinking_prefixes:
-            response = re.sub(prefix, '', response, flags=re.IGNORECASE | re.MULTILINE)
-
-        # 4. Remove mid-text thinking patterns
-        mid_thinking = [
-            r'\n+Okay,?\s+(so\s+)?.*?\.\s*\n*',
-            r'\n+First,?\s+I.*?\.\s*\n*',
-            r'\n+Let me.*?\.\s*\n*',
-            r'\n+I need to.*?\.\s*\n*',
-            r'\n+Now,?\s+I.*?\.\s*\n*',
-            r'\n+The (user|original|passage).*?\.\s*\n*',
-        ]
-
-        for pattern in mid_thinking:
-            response = re.sub(pattern, '\n', response, flags=re.IGNORECASE)
+        # 6. Clean up artifacts
+        response = re.sub(r'\s{2,}', ' ', response)  # Multiple spaces
+        response = re.sub(r'\n{3,}', '\n\n', response)  # Multiple newlines
 
         response = response.strip()
 
-        # 5. Stop at patterns indicating meta-commentary or new turns
-        stop_patterns = [
-            "\n\nKeep",        # Echoing instructions
-            "\nKeeping every",  # Meta-commentary
-            "\n\nThis ",       # Starting explanation
-            "\n\nNote:",       # Meta-note
-            "\n\nuser",        # New turn marker
-            "\n\nassistant",   # New turn marker
-            "\nuser\n",        # Turn marker
-            "\n\n---",         # Section break
-            "\n---",           # Section break
-            "\n\nWrite",       # New example
-            "\n\nI need to",   # Thinking leaked
-            "\n\nFirst,",      # Thinking leaked
-            "\n\nOkay,",       # Thinking leaked
-        ]
-
-        for pattern in stop_patterns:
-            if pattern in response:
-                response = response.split(pattern)[0].strip()
-
-        # 6. Stop at double newline followed by non-ASCII (often garbage)
-        lines = response.split("\n\n")
-        clean_lines = []
-        for line in lines:
-            # Stop if line starts with non-ASCII characters
-            if line and ord(line[0]) > 127:
-                break
-            clean_lines.append(line)
-        response = "\n\n".join(clean_lines).strip()
-
-        # 7. For short inputs, only take first paragraph to avoid runaway generation
-        # But don't limit sentences - style transfer may add atmospheric elaboration
-        if input_words < 50 and "\n\n" in response:
-            response = response.split("\n\n")[0].strip()
-
-        # 8. Detect and remove duplicate phrases/sentences
-        response = self._remove_duplicates(response)
-
-        # 9. Ensure text ends with a complete sentence
+        # 7. Ensure text ends with a complete sentence
         response = self._ensure_complete_sentences(response)
 
         return response

@@ -130,6 +130,9 @@ class GenerationConfig:
     # LoRA influence settings
     lora_scale: float = 1.0  # LoRA influence: 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
 
+    # Neutralization settings
+    skip_neutralization: bool = False  # If True, skip RTT and use original text as input
+
     # Style settings
     style_temperature: float = 0.7  # Temperature for style generation (higher = more creative)
     neutralization_temperature: float = 0.3  # Temperature for neutralization (lower = more consistent)
@@ -380,6 +383,8 @@ def load_config(config_path: str = "config.json") -> Config:
             truncate_over_expanded=gen.get("truncate_over_expanded", False),
             # LoRA influence
             lora_scale=gen.get("lora_scale", 1.0),
+            # Neutralization
+            skip_neutralization=gen.get("skip_neutralization", False),
             # Style settings
             style_temperature=gen.get("style_temperature", 0.7),
             neutralization_temperature=gen.get("neutralization_temperature", 0.3),
