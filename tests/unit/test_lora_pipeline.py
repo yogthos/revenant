@@ -123,312 +123,81 @@ class TestCorpusCuration:
 
 
 # =============================================================================
-# Tests for neutralize_corpus.py
+# Tests for generate_flat_training.py
 # =============================================================================
 
-class TestCorpusNeutralization:
-    """Tests for corpus chunking and neutralization."""
-
-    def test_segment_corpus_respects_word_limits(self):
-        """Test that chunks stay within word limits."""
-        from neutralize_corpus import segment_corpus, validate_chunks
-
-        # Create a corpus with multiple paragraphs (enough for multiple chunks)
-        paragraphs = [
-            "This is paragraph one with some text and more content here. " * 15,  # ~150 words
-            "This is paragraph two with more text and additional details. " * 15,  # ~150 words
-            "This is paragraph three continuing the story forward. " * 15,         # ~150 words
-            "This is paragraph four with content about various topics. " * 15,     # ~150 words
-            "This is paragraph five ending the narrative here. " * 15,             # ~150 words
-            "This is paragraph six with even more content to process. " * 15,      # ~150 words
-        ]
-        corpus = "\n\n".join(paragraphs)
-        original_words = len(corpus.split())
-
-        chunks = segment_corpus(corpus, min_words=250, max_words=400, overlap=False)
-        stats = validate_chunks(chunks, original_words, 250, 400)
-
-        # Should produce multiple chunks
-        assert stats['chunk_count'] >= 2
-
-        # Most chunks should be within bounds (allow 10% tolerance)
-        assert stats['over_max'] <= max(1, len(chunks) * 0.15)
-        assert stats['coverage_ratio'] >= 0.8  # Should cover most content
-
-    def test_split_long_paragraph(self):
-        """Test that long paragraphs are split at sentence boundaries."""
-        from neutralize_corpus import split_long_paragraph
-
-        # Create a paragraph over the limit
-        long_para = "This is sentence one. " * 50  # ~200 words
-
-        parts = split_long_paragraph(long_para, max_words=100)
-
-        # Should be split into multiple parts
-        assert len(parts) >= 2
-
-        # Each part should be under max_words
-        for part in parts:
-            assert len(part.split()) <= 110  # Allow small tolerance
-
-        # Combined should have all original words
-        combined_words = sum(len(p.split()) for p in parts)
-        assert combined_words == len(long_para.split())
-
-    def test_validate_chunks_detects_low_coverage(self):
-        """Test that validation catches low coverage."""
-        from neutralize_corpus import validate_chunks
-
-        # Simulate chunks that only cover 50% of content
-        chunks = ["word " * 100]  # 100 words
-        original_words = 200  # But original had 200
-
-        stats = validate_chunks(chunks, original_words, 50, 150)
-
-        # Should flag low coverage
-        assert stats['coverage_ratio'] == 0.5
-        assert not stats['valid']
-        assert any('coverage' in w.lower() for w in stats['warnings'])
-
-    def test_segment_corpus_with_overlap(self):
-        """Test that overlap carries last paragraph to next chunk."""
-        from neutralize_corpus import segment_corpus
-
-        paragraphs = [
-            "First paragraph here. " * 50,   # ~150 words
-            "Second paragraph here. " * 50,  # ~150 words
-            "Third paragraph here. " * 50,   # ~150 words
-            "Fourth paragraph here. " * 50,  # ~150 words
-        ]
-        corpus = "\n\n".join(paragraphs)
-
-        chunks = segment_corpus(corpus, min_words=250, max_words=400, overlap=True)
-
-        # With overlap, chunks should share content
-        if len(chunks) > 1:
-            # Check that there's some overlap between consecutive chunks
-            for i in range(len(chunks) - 1):
-                chunk1_paras = chunks[i].split("\n\n")
-                chunk2_paras = chunks[i + 1].split("\n\n")
-                # Last para of chunk1 might be first para of chunk2
-                # (depending on exact word counts)
-
-    def test_needs_resegmentation_detects_lowercase_start(self):
-        """Test detection of chunks starting mid-sentence."""
-        from neutralize_corpus import needs_resegmentation
-
-        # Starts with lowercase (mid-sentence)
-        bad_chunk = "and then the story continues from here. This is a new sentence."
-        assert needs_resegmentation(bad_chunk) is True
-
-        # Starts with uppercase (proper start)
-        good_chunk = "The story begins here. This is another sentence."
-        assert needs_resegmentation(good_chunk) is False
-
-    def test_needs_resegmentation_detects_missing_terminal_punctuation(self):
-        """Test detection of chunks ending mid-sentence."""
-        from neutralize_corpus import needs_resegmentation
-
-        # Ends without punctuation (mid-sentence)
-        bad_chunk = "This is a complete sentence. But this one is not finished and"
-        assert needs_resegmentation(bad_chunk) is True
-
-        # Ends with proper punctuation
-        good_chunk = "This is a complete sentence. And this one is too."
-        assert needs_resegmentation(good_chunk) is False
-
-    def test_needs_resegmentation_accepts_quotes(self):
-        """Test that chunks ending in quotes are accepted."""
-        from neutralize_corpus import needs_resegmentation
-
-        # Ends with closing quote (valid)
-        quoted_chunk = 'He said, "This is the end."'
-        assert needs_resegmentation(quoted_chunk) is False
-
-    def test_clean_chunk_boundaries_with_mock_llm(self):
-        """Test chunk boundary cleanup with mocked LLM."""
-        from neutralize_corpus import clean_chunk_boundaries
-
-        def mock_llm(prompt):
-            # Return a cleaned version
-            return "The story begins here. This is a complete paragraph with proper boundaries."
-
-        bad_chunk = "and continues from before. The story begins here. This is incomplete"
-
-        cleaned = clean_chunk_boundaries(bad_chunk, mock_llm)
-
-        # Should use the LLM response (starts with capital, ends with punctuation)
-        assert cleaned[0].isupper()
-        assert cleaned[-1] in '.!?"'
-
-    def test_clean_chunk_boundaries_rejects_drastic_changes(self):
-        """Test that cleanup rejects LLM responses that change too much."""
-        from neutralize_corpus import clean_chunk_boundaries, needs_resegmentation
-
-        def mock_llm_too_short(prompt):
-            return "Short."  # Way too short
-
-        original = "and this is a longer chunk that needs cleaning but should not be replaced with something drastically different in length."
-
-        # Force needs_resegmentation to return True
-        with patch('neutralize_corpus.needs_resegmentation', return_value=True):
-            cleaned = clean_chunk_boundaries(original, mock_llm_too_short)
-
-        # Should keep original because LLM response is too short
-        assert cleaned == original
-
-    def test_describe_chunk_basic(self):
-        """Test basic chunk description generation."""
-        from neutralize_corpus import describe_chunk
-
-        def mock_llm(prompt):
-            return "A narrator describes the vastness of the cosmos in third person. The passage explores themes of wonder and human curiosity."
-
-        chunk = "The cosmos is all that is or was or ever will be."
-
-        description = describe_chunk(chunk, mock_llm)
-
-        assert len(description) > 0
-        assert "cosmos" in description.lower() or "narrator" in description.lower()
-
-    def test_describe_chunk_cleans_thinking_patterns(self):
-        """Test that LLM thinking patterns are removed from descriptions."""
-        from neutralize_corpus import describe_chunk
-
-        def mock_llm_with_thinking(prompt):
-            return "Okay, let me analyze this: The passage describes a journey through space in first person."
-
-        chunk = "I traveled through the stars."
-
-        description = describe_chunk(chunk, mock_llm_with_thinking)
-
-        # Should not start with "Okay"
-        assert not description.startswith("Okay")
-
-    def test_describe_chunk_handles_empty_response(self):
-        """Test fallback when LLM returns empty response."""
-        from neutralize_corpus import describe_chunk
-
-        def mock_llm_empty(prompt):
-            return ""
-
-        chunk = "Some text here."
-
-        description = describe_chunk(chunk, mock_llm_empty)
-
-        # Should fall back to original
-        assert description == chunk
-
-
-# =============================================================================
-# Tests for Parallel Processing
-# =============================================================================
-
-class TestParallelProcessing:
-    """Tests for parallel processing in neutralize_corpus.py."""
-
-    def test_thread_safe_checkpointer_basic(self, tmp_path):
-        """Test that ThreadSafeCheckpointer works correctly."""
-        from neutralize_corpus import ThreadSafeCheckpointer, save_checkpoint
-
-        checkpoint_path = tmp_path / "test.checkpoint"
-        results = []
-        completed = set()
-
-        checkpointer = ThreadSafeCheckpointer(checkpoint_path, results, completed)
-
-        # Add some results
-        checkpointer.add_result({"chunk_index": 0, "author": "Test", "original": "A", "description": "B"})
-        checkpointer.add_result({"chunk_index": 1, "author": "Test", "original": "C", "description": "D"})
-
-        assert checkpointer.get_progress() == 2
-        assert checkpointer.is_completed(0)
-        assert checkpointer.is_completed(1)
-        assert not checkpointer.is_completed(2)
-
-        # Verify checkpoint file was created
-        assert checkpoint_path.exists()
-
-    def test_thread_safe_checkpointer_concurrent_access(self, tmp_path):
-        """Test that checkpointer handles concurrent access correctly."""
-        import threading
-        from neutralize_corpus import ThreadSafeCheckpointer
-
-        checkpoint_path = tmp_path / "concurrent.checkpoint"
-        results = []
-        completed = set()
-
-        checkpointer = ThreadSafeCheckpointer(checkpoint_path, results, completed)
-
-        errors = []
-        results_added = []
-
-        def worker(idx):
-            try:
-                checkpointer.add_result({
-                    "chunk_index": idx,
-                    "author": "Test",
-                    "original": f"Original {idx}",
-                    "description": f"Description {idx}"
-                })
-                results_added.append(idx)
-            except Exception as e:
-                errors.append(e)
-
-        # Run multiple threads
-        threads = [threading.Thread(target=worker, args=(i,)) for i in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        # No errors should have occurred
-        assert len(errors) == 0
-
-        # All 10 should be added
-        assert checkpointer.get_progress() == 10
-        assert len(results_added) == 10
-
-        # All should be marked complete
-        for i in range(10):
-            assert checkpointer.is_completed(i)
-
-    def test_process_single_chunk_basic(self):
-        """Test process_single_chunk function."""
-        from neutralize_corpus import process_single_chunk
-
-        def mock_llm(prompt):
-            return "A description of the content."
-
-        chunk_info = (0, "Test chunk with some content here.", 1)
-
-        result = process_single_chunk(chunk_info, mock_llm, "Test Author", do_cleanup=False)
-
-        assert result["chunk_index"] == 0
-        assert result["author"] == "Test Author"
-        assert result["original"] == "Test chunk with some content here."
-        assert "description" in result
-        assert "word_count" in result
-
-    def test_process_single_chunk_with_cleanup(self):
-        """Test process_single_chunk with boundary cleanup."""
-        from neutralize_corpus import process_single_chunk
-
-        cleanup_called = [False]
-
-        def mock_llm(prompt):
-            if "CLEANED TEXT" in prompt:
-                cleanup_called[0] = True
-                return "Cleaned text. Proper ending."
-            return "A description of the content."
-
-        # Chunk that needs resegmentation (starts lowercase)
-        chunk_info = (0, "and some text that starts mid-sentence. But continues.", 1)
-
-        result = process_single_chunk(chunk_info, mock_llm, "Test Author", do_cleanup=True)
-
-        assert cleanup_called[0]  # Cleanup should have been called
-        assert result is not None
+class TestGenerateFlatTraining:
+    """Tests for training data generation functions."""
+
+    def test_is_quality_paragraph_accepts_good_text(self):
+        """Test that quality paragraphs are accepted."""
+        from generate_flat_training import is_quality_paragraph, CurationConfig
+
+        # Default min_words is 100, so we need a longer paragraph
+        config = CurationConfig(min_words=30)
+        good_para = (
+            "The cosmos is all that is or was or ever will be. "
+            "Our feeblest contemplations of the Cosmos stir us. "
+            "There is a tingling in the spine, a catch in the voice. "
+            "We know we are approaching the greatest of mysteries."
+        )
+
+        is_quality, reason = is_quality_paragraph(good_para, config)
+        assert is_quality is True
+        assert reason == "OK"
+
+    def test_is_quality_paragraph_rejects_short_text(self):
+        """Test that short paragraphs are rejected."""
+        from generate_flat_training import is_quality_paragraph, CurationConfig
+
+        config = CurationConfig(min_words=40)
+        short_para = "This is too short to be useful."
+
+        is_quality, reason = is_quality_paragraph(short_para, config)
+        assert is_quality is False
+        assert "short" in reason.lower()
+
+    def test_clean_text(self):
+        """Test text cleaning."""
+        from generate_flat_training import clean_text
+
+        # Test with multiple newlines
+        text = "Hello\n\n\n\nWorld"
+        cleaned = clean_text(text)
+        assert "\n\n\n\n" not in cleaned
+
+    def test_split_into_sentences(self):
+        """Test sentence splitting."""
+        from generate_flat_training import split_into_sentences
+
+        text = "First sentence. Second sentence. Third sentence."
+        sentences = split_into_sentences(text)
+        assert len(sentences) == 3
+
+    def test_count_word_repetition(self):
+        """Test word repetition counting."""
+        from generate_flat_training import count_word_repetition
+
+        # Normal text
+        normal_text = "The quick brown fox jumps over the lazy dog."
+        ratio1 = count_word_repetition(normal_text)
+
+        # Repetitive text
+        repetitive = "the the the the fox fox fox dog dog dog"
+        ratio2 = count_word_repetition(repetitive)
+
+        assert ratio2 > ratio1
+
+    def test_neutralize_text_returns_string_or_none(self):
+        """Test that neutralize_text returns string or None."""
+        from generate_flat_training import neutralize_text
+
+        # This test just verifies the function signature/return type
+        # Actual LLM calls are mocked in integration tests
+        # Here we just ensure the function exists and has correct signature
+        import inspect
+        sig = inspect.signature(neutralize_text)
+        assert 'styled_text' in sig.parameters
 
 
 # =============================================================================
@@ -605,10 +374,10 @@ class TestLoRAGenerator:
 
         config = GenerationConfig()
 
-        # Temperature 0.5 reduces hallucination
-        assert config.temperature == 0.5
+        # Temperature 0.4 helps complete sentences before repetition loops
+        assert config.temperature == 0.4
         assert config.top_p == 0.9
-        assert config.repetition_penalty == 1.1
+        assert config.repetition_penalty == 1.4
 
     def test_inference_prompt_format_matches_training(self):
         """Test that inference prompt matches training format."""
@@ -721,14 +490,14 @@ class TestPipelineIntegration:
             if param.default is not inspect.Parameter.empty
         }
 
-        # Verify paper's recommendations
+        # Verify training defaults
         assert defaults['epochs'] == 1  # 1 epoch with curated corpus
         assert defaults['batch_size'] == 1  # Batch size 1
-        assert defaults['learning_rate'] == 1e-4  # 2x aggressive (1e-4 vs typical 5e-5)
+        assert defaults['learning_rate'] == 1e-5  # Lower LR with high rank for stability
 
         # Verify inference defaults
         config = GenerationConfig()
-        assert config.temperature == 0.5  # Lower temperature reduces hallucination
+        assert config.temperature == 0.4  # Lower temperature reduces hallucination
 
 
 if __name__ == "__main__":

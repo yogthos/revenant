@@ -5,19 +5,21 @@ Transform text to match a target author's writing style while preserving semanti
 ## Features
 
 - **LoRA-Based Generation**: Fine-tuned adapters capture author style in model weights
-- **Critic/Repair Loop**: DeepSeek validates content preservation and fixes issues
-- **Proposition Validation**: Ensures all facts, entities, and examples are preserved
+- **RTT Neutralization**: Round-trip translation strips style before restyling
+- **Critic/Repair Loop**: Validates content preservation and fixes issues
+- **Style RAG**: Retrieves author examples for few-shot prompting
 - **Hallucination Detection**: Identifies and removes invented content
 - **Perspective Control**: Transform to first/third person while maintaining style
 - **Fast Transfer**: ~15-30 seconds per paragraph
-- **Configurable**: All parameters tunable via config file
 
 ## Requirements
 
 - Python 3.9+
 - Apple Silicon Mac (for MLX-based training/inference)
-- ~18GB RAM for inference, ~50GB for training
+- ~8GB RAM for inference (4-bit), ~50GB for training
 - DeepSeek API key (for critic/repair loop)
+
+---
 
 ## Installation
 
@@ -35,118 +37,84 @@ pip install -r requirements.txt
 
 # Download spaCy model
 python -m spacy download en_core_web_sm
-```
 
-## Quick Start
-
-### 1. Configure
-
-Copy `config.json.sample` to `config.json` and add your DeepSeek API key:
-
-```bash
+# Copy config template
 cp config.json.sample config.json
-# Edit config.json to add your API key
-```
-
-### 2. Train a LoRA Adapter
-
-```bash
-# Step 1: Generate training data (instruction back-translation)
-python scripts/neutralize_corpus.py \
-    --input data/corpus/author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name"
-
-# Step 2: Train LoRA adapter
-mlx_lm.lora -c data/training/lovecraft/config.yaml
-```
-
-### 3. Transfer Text
-
-```bash
-python restyle.py input.md -o output.md \
-    --adapter lora_adapters/author \
-    --author "Author Name"
+# Edit config.json to add your DEEPSEEK_API_KEY
 ```
 
 ---
 
-## Creating LoRA Adapters
+## Quick Start
 
-### Step 1: Prepare Your Corpus
+```bash
+# Transfer text using an existing adapter
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft \
+    --author "H.P. Lovecraft"
 
-Create a plain text file with the author's writing:
+# List available adapters
+python restyle.py --list-adapters
+```
+
+---
+
+## Training a LoRA Adapter
+
+```mermaid
+flowchart LR
+    A[Author Corpus] --> B[Curate]
+    B --> C[Generate Training Data]
+    C --> D[Train LoRA]
+    D --> E[Adapter Ready]
+```
+
+### Step 1: Prepare Corpus
+
+Create a plain text file with the author's writing. Place in `data/corpus/`:
 
 | Requirement | Recommendation |
 |-------------|----------------|
-| **Size** | 50KB-500KB (0.9M tokens optimal) |
+| **Size** | 50KB-500KB (~0.9M tokens optimal) |
 | **Format** | Clean paragraphs separated by blank lines |
 | **Content** | Representative prose samples |
-| **Remove** | Headers, footnotes, citations, non-prose content |
+| **Remove** | Headers, footnotes, citations |
 
-Place your corpus in `data/corpus/` directory:
-```bash
-data/corpus/author.txt
-```
+For large corpuses, curate to optimal size:
 
-For large corpuses, curate to optimal size first:
 ```bash
 python scripts/curate_corpus.py \
-    --input data/corpus/author_full.txt \
+    --input data/corpus/author_raw.txt \
     --output data/corpus/author.txt \
     --target-tokens 900000
 ```
 
-#### Blending Multiple Authors
-
-To create a corpus that blends styles from multiple authors while maintaining coherence:
-
-```bash
-python scripts/blend_corpuses.py \
-    --primary data/corpus/primary_author.txt \
-    --secondary data/corpus/author2.txt data/corpus/author3.txt \
-    --output data/corpus/blended.txt \
-    --threshold 0.85
-```
-
-The script uses style embeddings (LUAR) to find paragraphs from secondary authors that are stylistically compatible with the primary author. This creates a training corpus that teaches a consistent voice while incorporating stylistic elements from multiple sources.
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--threshold` | 0.85 | Similarity threshold (0.80-0.90 typical) |
-| `--primary-weight` | 2.0 | Weight for primary author in centroid |
-| `--primary-tokens` | 500000 | Target tokens for primary corpus |
-| `--min-paragraphs` | 10 | Minimum compatible paragraphs to include author |
-
 ### Step 2: Generate Training Data
 
-The neutralization step creates training pairs using instruction back-translation:
+Creates training pairs using instruction back-translation. The script neutralizes styled text to create (neutral → styled) pairs:
 
 ```bash
-python scripts/neutralize_corpus.py \
-    --input data/corpus/author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name"
+python scripts/generate_flat_training.py \
+    --corpus data/corpus/author.txt \
+    --author "Author Name" \
+    --output data/training/author
 ```
 
 **Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--min-words` | 250 | Minimum words per training chunk |
-| `--max-words` | 650 | Maximum words per training chunk |
-| `--workers` | 1 | Parallel workers (Ollama only) |
-| `--llm` | mlx | LLM provider (`mlx` or `ollama:model`) |
+| `--min-words` | 150 | Minimum words per chunk |
+| `--max-words` | 400 | Maximum words per chunk |
+| `--overlap-sentences` | 2 | Sentence overlap between chunks |
 
-**What happens:** Each paragraph is converted to a neutral content description. The model learns: "given this description → produce this styled text."
+**Output:** `data/training/author.jsonl` with training pairs.
 
 ### Step 3: Train the LoRA Adapter
 
 ```bash
 python scripts/train_mlx_lora.py \
-    --from-neutralized data/neutralized/author.jsonl \
+    --from-neutralized data/training/author.jsonl \
     --author "Author Name" \
     --train \
     --output lora_adapters/author
@@ -156,224 +124,169 @@ python scripts/train_mlx_lora.py \
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--epochs` | 1 | Training epochs (1 is often sufficient) |
-| `--batch-size` | 1 | Batch size (reduce if OOM) |
-| `--learning-rate` | 1e-4 | Learning rate |
-| `--rank` | 16 | LoRA rank (higher = more capacity) |
-| `--alpha` | 32 | LoRA alpha scaling |
-| `--resume` | - | Resume from last checkpoint |
+| `--epochs` | 1 | Training epochs (1 often sufficient) |
+| `--batch-size` | 1 | Batch size |
+| `--learning-rate` | 1e-5 | Learning rate |
+| `--rank` | 64 | LoRA rank |
+| `--alpha` | 128 | LoRA alpha (typically 2x rank) |
+| `--resume` | - | Resume from checkpoint |
 
-**Training time:** ~15-30 minutes for a typical corpus.
+**Training time:** ~1-2 hours on Apple Silicon.
 
-### Step 4: Verify Your Adapter
+### Step 4: Verify Adapter
 
-List available adapters:
 ```bash
 python restyle.py --list-adapters
-```
-
-Test with a sample:
-```bash
-python restyle.py test.txt -o output.txt \
-    --adapter lora_adapters/author \
-    -v
+python restyle.py test.txt -o output.txt --adapter lora_adapters/author -v
 ```
 
 ---
 
-## Style Transfer
+## Building the Style RAG
+
+Style RAG retrieves stylistically similar passages from the author's corpus and injects them as few-shot examples, providing the model with exact vocabulary and sentence structures to mimic.
+
+```mermaid
+flowchart LR
+    A[Corpus] --> B[Index Corpus]
+    B --> C[ChromaDB]
+    C --> D[Retrieve Examples]
+    D --> E[Inject in Prompt]
+```
+
+### Index a Corpus
+
+```bash
+python restyle.py --index-corpus data/corpus/lovecraft.txt \
+    --author "H.P. Lovecraft"
+```
+
+This creates embeddings and style metrics for each paragraph chunk, stored in `data/rag_index/`.
+
+### List Indexed Authors
+
+```bash
+python restyle.py --list-rag
+```
+
+### Use RAG During Transfer
+
+```bash
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft \
+    --author "H.P. Lovecraft" \
+    --rag \
+    --rag-examples 3
+```
+
+The `--rag` flag enables retrieval of style examples that match the input text's topic and structure.
+
+---
+
+## Running Inference
 
 ### Basic Usage
 
 ```bash
-python restyle.py <input> -o <output> --adapter <path>
+python restyle.py <input> -o <output> --adapter <path> --author <name>
 ```
 
 ### CLI Options
 
-| Option | Description |
-|--------|-------------|
-| `--adapter PATH` | Path to LoRA adapter directory (required) |
-| `--author NAME` | Author name used in generation prompts (e.g., "You are {author}"). Auto-detected from adapter metadata if not provided |
-| `--temperature FLOAT` | Generation temperature (default: 0.7) |
-| `--perspective` | Output perspective (see below) |
-| `--no-verify` | Disable entailment verification |
-| `-c, --config PATH` | Config file path (default: config.json) |
-| `-v, --verbose` | Verbose output with per-paragraph details |
-| `--list-adapters` | List available adapters and exit |
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--adapter PATH` | - | Path to LoRA adapter (required) |
+| `--author NAME` | - | Author name (auto-detected from metadata) |
+| `--temperature` | 0.4 | Generation temperature |
+| `--perspective` | preserve | Output perspective |
+| `--no-verify` | false | Skip entailment verification |
+| `--rag` | false | Enable Style RAG |
+| `--rag-examples` | 3 | Number of RAG examples |
+| `-v, --verbose` | false | Verbose output |
 
 ### Perspective Options
 
-Control the output perspective with `--perspective`:
-
 | Value | Description |
 |-------|-------------|
-| `preserve` | Keep source text's perspective (default) |
-| `first_person_singular` | Write in first person (I, me, my) |
-| `first_person_plural` | Write in first person plural (we, us, our) |
-| `third_person` | Write in third person (he, she, they) |
-| `author_voice_third_person` | Write AS the author using third person |
+| `preserve` | Keep source perspective (default) |
+| `first_person_singular` | I, me, my |
+| `first_person_plural` | we, us, our |
+| `third_person` | he, she, they |
+| `author_voice_third_person` | Write AS the author |
 
-**Example:**
 ```bash
-python restyle.py input.md -o output.md \
+python restyle.py input.txt -o output.txt \
     --adapter lora_adapters/sagan \
     --perspective first_person_singular
 ```
 
-### Streaming Output
+---
 
-Output is written incrementally as each paragraph completes. If interrupted with Ctrl+C, partial results are saved.
+## Project Structure
+
+```
+text-style-transfer/
+├── restyle.py                    # Main CLI entry point
+├── config.json                   # Configuration file
+├── requirements.txt              # Python dependencies
+│
+├── src/                          # Source code
+│   ├── generation/               # Style transfer pipeline
+│   │   ├── transfer.py          # Main StyleTransfer class
+│   │   ├── lora_generator.py    # MLX LoRA inference
+│   │   └── document_context.py  # Document-level context
+│   │
+│   ├── validation/               # Content preservation
+│   │   ├── semantic_graph.py    # Semantic graph analysis
+│   │   └── quality_critic.py    # Entailment checking
+│   │
+│   ├── rag/                      # Style RAG system
+│   │   ├── style_analyzer.py    # spaCy style metrics
+│   │   ├── corpus_indexer.py    # ChromaDB indexing
+│   │   ├── style_retriever.py   # Two-channel retrieval
+│   │   └── session_context.py   # Session context manager
+│   │
+│   ├── llm/                      # LLM providers
+│   │   ├── mlx_provider.py      # MLX (local)
+│   │   ├── deepseek.py          # DeepSeek API
+│   │   └── ollama.py            # Ollama (local)
+│   │
+│   ├── vocabulary/               # Post-processing
+│   │   └── repetition_reducer.py
+│   │
+│   └── utils/                    # Utilities
+│       ├── nlp.py               # spaCy utilities
+│       ├── prompts.py           # Prompt templates
+│       └── logging.py           # Logging
+│
+├── scripts/                      # Training & data scripts
+│   ├── curate_corpus.py         # Filter corpus to optimal size
+│   ├── generate_flat_training.py # Generate training data
+│   ├── train_mlx_lora.py        # Train LoRA adapter
+│   └── blend_corpuses.py        # Blend author styles
+│
+├── prompts/                      # Prompt templates
+│   ├── style_transfer.txt       # Main generation prompt
+│   ├── repair_system.txt        # Repair system prompt
+│   └── repair_input.txt         # Repair input template
+│
+├── data/
+│   ├── corpus/                   # Author corpus files
+│   ├── training/                 # Generated training data
+│   └── rag_index/                # ChromaDB index
+│
+└── lora_adapters/                # Trained LoRA adapters
+    └── <author>/
+        ├── adapters.safetensors # LoRA weights
+        ├── adapter_config.json  # LoRA config
+        └── metadata.json        # Training metadata
+```
 
 ---
 
-## Configuration Reference
+## Architecture
 
-All settings are in `config.json`. Copy from `config.json.sample` to get started.
-
-### LLM Providers
-
-```json
-{
-  "llm": {
-    "provider": {
-      "writer": "mlx",
-      "critic": "deepseek"
-    },
-    "providers": {
-      "deepseek": {
-        "api_key": "${DEEPSEEK_API_KEY}",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-chat",
-        "max_tokens": 4096,
-        "temperature": 0.7
-      },
-      "mlx": {
-        "model": "mlx-community/Qwen3-8B-4bit",
-        "max_tokens": 512,
-        "temperature": 0.7
-      }
-    }
-  }
-}
-```
-
-### Generation Settings
-
-```json
-{
-  "generation": {
-    // Repair settings - regenerates through LoRA when validation fails
-    "max_repair_attempts": 3,
-
-    // Meaning preservation - entailment score threshold
-    "entailment_threshold": 0.7,
-
-    // Length control
-    "max_expansion_ratio": 1.5,
-    "target_expansion_ratio": 1.2,
-    "truncate_over_expanded": false,
-
-    // LoRA influence (0.0=base only, 1.0=full, >1.0=amplified)
-    "lora_scale": 1.0,
-
-    // Post-processing - reduce word repetition
-    "repetition_threshold": 3,
-    "reduce_repetition": true,
-
-    // Document handling
-    "use_document_context": true,
-    "pass_headings_unchanged": true,
-    "min_paragraph_words": 10
-  }
-}
-```
-
-### Style Settings
-
-```json
-{
-  "style": {
-    "perspective": "preserve"
-  }
-}
-```
-
-### Key Configuration Options Explained
-
-| Option | Default | Use Case |
-|--------|---------|----------|
-| `lora_scale` | 1.0 | **Lower (0.5-0.8)**: Subtler style, more base model. **Higher (1.2-1.5)**: Stronger style influence |
-| `entailment_threshold` | 0.7 | **Higher (0.8+)**: Stricter validation. **Lower (0.5)**: More lenient |
-| `max_expansion_ratio` | 1.5 | Maximum output length relative to input (1.5 = 50% longer max) |
-| `max_repair_attempts` | 3 | More attempts = better content preservation, slower processing |
-| `repetition_threshold` | 3 | Words used N+ times in document get synonyms substituted |
-
----
-
-## Customizing Prompts
-
-All prompts are in the `prompts/` directory as editable text files:
-
-| File | Purpose |
-|------|---------|
-| `style_transfer_system.txt` | System prompt for LoRA generation (instruct models) |
-| `style_transfer_base_model_with_context.txt` | Prompt for base models |
-| `repair_with_content.txt` | Content repair prompt |
-
-Prompts use `{variable}` syntax. Available variables depend on the prompt.
-
----
-
-## Project Architecture
-
-The system implements a multi-stage pipeline for style transfer:
-
-### Core Pipeline Flow
-
-1. **Document Parsing**: Split input into paragraphs, extract document context
-2. **Neutralization**: Convert each paragraph to a content description (removes original style)
-3. **LoRA Generation**: Generate styled text from description using fine-tuned adapter
-4. **Proposition Validation**: Check all facts, entities, and examples are preserved
-5. **Critic Repair**: Fix missing content, remove hallucinations (up to 3 attempts)
-6. **Post-Processing**: Reduce repetition, remove LLM-speak patterns
-
-### Module Overview
-
-```
-src/
-├── config.py                 # Configuration loading and validation
-├── generation/
-│   ├── transfer.py           # Main pipeline orchestration (StyleTransfer class)
-│   └── lora_generator.py     # MLX LoRA inference (LoRAStyleGenerator class)
-├── validation/
-│   ├── proposition_validator.py  # Fact/entity preservation checking
-│   ├── semantic_verifier.py      # Semantic fidelity verification
-│   └── quality_critic.py         # Quality issue detection
-├── ingestion/
-│   └── proposition_extractor.py  # Extract propositions, entities, anchors
-├── vocabulary/
-│   └── repetition_reducer.py     # Post-processing for word variety
-├── llm/
-│   ├── deepseek.py           # DeepSeek API provider
-│   ├── mlx_provider.py       # MLX local inference
-│   └── ollama.py             # Ollama provider
-└── utils/
-    ├── nlp.py                # spaCy NLP utilities
-    └── prompts.py            # Prompt loading/formatting
-```
-
-### Key Classes
-
-| Class | File | Purpose |
-|-------|------|---------|
-| `StyleTransfer` | `generation/transfer.py` | Main pipeline orchestrator |
-| `LoRAStyleGenerator` | `generation/lora_generator.py` | MLX-based LoRA inference |
-| `PropositionValidator` | `validation/proposition_validator.py` | Content preservation checking |
-| `PropositionExtractor` | `ingestion/proposition_extractor.py` | Extract facts and entities |
-| `RepetitionReducer` | `vocabulary/repetition_reducer.py` | Post-processing |
-
-### Data Flow Diagram
+### Inference Pipeline
 
 ```mermaid
 flowchart TD
@@ -381,129 +294,168 @@ flowchart TD
         A[Input Document]
     end
 
-    subgraph Preprocessing
-        B[Document Parser]
-        C[Context Extractor]
-    end
-
     subgraph "Per-Paragraph Pipeline"
-        D[Neutralizer]
-        E[LoRA Generator<br/>MLX + Adapter]
-        F[Proposition Validator]
-        G{Valid?}
-        H[Critic Repair<br/>DeepSeek]
-        I[Post-Processor]
+        B[RTT Neutralization]
+        C[RAG Retrieval]
+        D[LoRA Generation]
+        E[Semantic Validation]
+        F{Valid?}
+        G[Critic Repair]
+        H[Post-Processing]
     end
 
     subgraph Output
-        J[Output Document]
+        I[Output Document]
     end
 
     A --> B
     B --> C
-    C --> D
-    D -->|Content Description| E
-    E -->|Styled Text| F
-    F --> G
-    G -->|No| H
-    H -->|Fixed Text| F
-    G -->|Yes| I
-    I --> J
-
-    subgraph "Validation Checks"
-        F1[Entity Preservation]
-        F2[Fact Coverage]
-        F3[Hallucination Detection]
-        F4[Length Check]
-    end
-
-    F --> F1
-    F --> F2
-    F --> F3
-    F --> F4
+    C -->|Style Examples| D
+    D --> E
+    E --> F
+    F -->|No| G
+    G --> E
+    F -->|Yes| H
+    H --> I
 ```
 
-### Training Data Flow
+### Training Pipeline
 
 ```mermaid
-flowchart LR
-    subgraph "Corpus Preparation"
-        A[Author Corpus<br/>data/corpus/*.txt]
-        B[Curate Script<br/>Optional]
+flowchart TD
+    subgraph "Data Preparation"
+        A[Author Corpus]
+        B[Curate Script]
+        C[Filtered Corpus]
     end
 
-    subgraph "Training Data Generation"
-        C[Neutralize Script]
-        D[Content Descriptions<br/>JSONL]
+    subgraph "Training Data"
+        D[Chunk Text]
+        E[LLM Neutralize]
+        F[Training JSONL]
     end
 
     subgraph "LoRA Training"
-        E[Train Script]
-        F[LoRA Adapter<br/>lora_adapters/*]
+        G[MLX LoRA]
+        H[Adapter Weights]
     end
 
     A --> B
     B --> C
-    A --> C
     C --> D
     D --> E
     E --> F
+    F --> G
+    G --> H
 ```
 
-### Inference Flow Detail
+### Style RAG System
+
+```mermaid
+flowchart LR
+    subgraph Indexing
+        A[Corpus] --> B[Chunk]
+        B --> C[Style Metrics]
+        B --> D[Embeddings]
+        C --> E[ChromaDB]
+        D --> E
+    end
+
+    subgraph Retrieval
+        F[Input Text] --> G[Query]
+        G --> H[Semantic Search]
+        G --> I[Structural Filter]
+        H --> J[Top-K Examples]
+        I --> J
+    end
+
+    E --> H
+    E --> I
+```
+
+### Sequence Diagram
 
 ```mermaid
 sequenceDiagram
     participant User
     participant CLI as restyle.py
     participant Transfer as StyleTransfer
-    participant Neutralizer as Neutralizer
+    participant RTT as RTT Neutralizer
+    participant RAG as Style RAG
     participant LoRA as LoRA Generator
-    participant Validator as Proposition Validator
-    participant Critic as Critic (DeepSeek)
-    participant Post as Post-Processor
+    participant Validator as Validator
+    participant Critic as Critic
 
-    User->>CLI: restyle.py input.md
+    User->>CLI: restyle.py input.txt --rag
     CLI->>Transfer: transfer_document()
 
     loop For each paragraph
-        Transfer->>Neutralizer: neutralize(paragraph)
-        Neutralizer-->>Transfer: content description
+        Transfer->>RTT: neutralize(paragraph)
+        RTT-->>Transfer: neutral text
 
-        Transfer->>LoRA: generate(description)
+        Transfer->>RAG: retrieve(paragraph, author)
+        RAG-->>Transfer: style examples
+
+        Transfer->>LoRA: generate(neutral, examples)
         LoRA-->>Transfer: styled text
 
         Transfer->>Validator: validate(source, output)
-        Validator-->>Transfer: validation result
 
         alt Validation Failed
             loop Up to 3 attempts
                 Transfer->>Critic: repair(output, issues)
                 Critic-->>Transfer: fixed text
-                Transfer->>Validator: validate(source, fixed)
-                Validator-->>Transfer: result
             end
         end
-
-        Transfer->>Post: reduce_repetition(text)
-        Post-->>Transfer: final text
     end
 
     Transfer-->>CLI: output document
-    CLI-->>User: output.md
+    CLI-->>User: output.txt
 ```
 
 ---
 
-## Performance
+## Configuration
 
-| Metric | Value |
-|--------|-------|
-| Time per paragraph | 15-30 seconds |
-| Memory (inference, 4-bit) | ~8GB |
-| Memory (training, bf16) | ~50GB |
-| Training data generation | ~30-60 min per corpus |
-| Training time | ~15-30 min |
+Copy `config.json.sample` to `config.json`:
+
+```json
+{
+  "llm": {
+    "provider": {
+      "writer": "mlx",
+      "critic": "deepseek",
+      "rtt": "mlx"
+    },
+    "providers": {
+      "deepseek": {
+        "api_key": "${DEEPSEEK_API_KEY}",
+        "model": "deepseek-chat"
+      },
+      "mlx": {
+        "model": "mlx-community/Qwen3-8B-4bit"
+      }
+    }
+  },
+  "generation": {
+    "temperature": 0.4,
+    "verify_entailment": true,
+    "entailment_threshold": 0.7,
+    "max_repair_attempts": 3,
+    "lora_scale": 2.0,
+    "reduce_repetition": true
+  }
+}
+```
+
+### Key Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `lora_scale` | 2.0 | LoRA influence (higher = stronger style) |
+| `entailment_threshold` | 0.7 | Validation strictness |
+| `max_repair_attempts` | 3 | Repair loop iterations |
+| `temperature` | 0.4 | Generation randomness |
 
 ---
 
@@ -511,37 +463,19 @@ sequenceDiagram
 
 ### MLX Not Available
 
-This project requires Apple Silicon. For other platforms, use Ollama as the LLM provider.
+Requires Apple Silicon. For other platforms, use Ollama.
 
-### Out of Memory During Training
+### Out of Memory
 
-Use 4-bit model:
+Use 4-bit model in config.json:
 ```json
-"mlx": {
-  "model": "mlx-community/Qwen3-8B-4bit"
-}
+"mlx": { "model": "mlx-community/Qwen3-8B-4bit" }
 ```
 
-Or reduce batch size:
-```bash
-python scripts/train_mlx_lora.py --train ... --batch-size 1
-```
+### Missing API Key
 
-### Missing DeepSeek API Key
-
-Set in config.json or as environment variable:
 ```bash
 export DEEPSEEK_API_KEY="your-key"
-```
-
-### Resume Interrupted Training
-
-```bash
-python scripts/train_mlx_lora.py \
-    --from-neutralized data/neutralized/author.jsonl \
-    --train \
-    --output lora_adapters/author \
-    --resume
 ```
 
 ### spaCy Model Missing
@@ -552,41 +486,23 @@ python -m spacy download en_core_web_sm
 
 ### Style Too Weak
 
-Increase `lora_scale` in config.json:
-```json
-{
-  "generation": {
-    "lora_scale": 1.3
-  }
-}
-```
+Increase `lora_scale` in config.json to 2.0-3.0.
 
 ### Content Being Lost
 
-Increase repair attempts for better content preservation:
-```json
-{
-  "generation": {
-    "max_repair_attempts": 5,
-    "entailment_threshold": 0.8
-  }
-}
-```
+Increase `max_repair_attempts` to 5 and `entailment_threshold` to 0.8.
 
 ---
 
-## Running Tests
+## Performance
 
-```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run with coverage
-python -m pytest tests/ --cov=src --cov-report=term-missing
-
-# Run specific test file
-python -m pytest tests/unit/test_proposition_extractor.py -v
-```
+| Metric | Value |
+|--------|-------|
+| Per-paragraph | 15-30 seconds |
+| Memory (inference) | ~8GB |
+| Memory (training) | ~50GB |
+| Training time | ~1-2 hours |
+| RAG indexing | ~30-60 seconds |
 
 ---
 

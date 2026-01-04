@@ -48,32 +48,30 @@ class TestFormatPrompt:
             "style_transfer",
             author="Carl Sagan",
             content="The universe is vast.",
-            author_tag="CARL_SAGAN",
+            style_examples="",
         )
         assert "Carl Sagan" in prompt
         assert "The universe is vast." in prompt
         assert "{author}" not in prompt
+        assert "{content}" not in prompt
 
     def test_format_rtt_prompt(self):
-        """Test formatting the RTT Mandarin prompt."""
-        prompt = format_prompt(
-            "rtt_to_mandarin",
-            text="This is a test."
-        )
-        assert "This is a test." in prompt
-        assert "HSK5" in prompt
+        """Test formatting the RTT Mandarin prompt (system prompt)."""
+        prompt = format_prompt("rtt_to_mandarin")
+        # This is a system prompt with no variables to format
+        assert "HSK" in prompt or "translator" in prompt.lower()
 
-    def test_format_repair_prompt(self):
-        """Test formatting the repair input prompt."""
+    def test_format_with_style_examples(self):
+        """Test formatting with style examples for RAG."""
         prompt = format_prompt(
-            "repair_input",
-            source="Original text here.",
-            output="Output with errors.",
-            errors="- Missing fact X",
+            "style_transfer",
+            author="H.P. Lovecraft",
+            content="A strange creature appeared.",
+            style_examples="[Example 1]: The eldritch horror...\n\n",
         )
-        assert "Original text here." in prompt
-        assert "Output with errors." in prompt
-        assert "Missing fact X" in prompt
+        assert "H.P. Lovecraft" in prompt
+        assert "A strange creature appeared." in prompt
+        assert "eldritch horror" in prompt
 
 
 class TestGetPromptWithFallback:
@@ -83,11 +81,11 @@ class TestGetPromptWithFallback:
         """Test that it returns file content when file exists."""
         fallback = "This is a fallback"
         prompt = get_prompt_with_fallback(
-            "rtt_translator_system",
+            "repair_system",
             fallback,
         )
-        assert "translator" in prompt.lower()
         assert fallback not in prompt
+        assert len(prompt) > 0
 
     def test_returns_fallback_when_not_exists(self):
         """Test that it returns fallback when file doesn't exist."""
@@ -108,7 +106,7 @@ class TestListPrompts:
         prompts = list_prompts()
         assert len(prompts) > 0
         assert "style_transfer" in prompts
-        assert "rtt_to_mandarin" in prompts
+        assert "repair_system" in prompts
 
     def test_list_prompts_returns_paths(self):
         """Test that list_prompts returns Path objects."""
@@ -157,9 +155,7 @@ class TestPromptFiles:
             "style_transfer",
             "rtt_to_mandarin",
             "rtt_to_english",
-            "rtt_translator_system",
             "repair_system",
-            "repair_input",
         ]
         prompts = list_prompts()
         for name in required_prompts:
