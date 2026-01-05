@@ -11,6 +11,7 @@ import json
 
 from ..utils.logging import get_logger
 from ..utils.nlp import get_nlp, extract_entities, extract_keywords
+from ..utils.prompts import load_prompt
 
 logger = get_logger(__name__)
 
@@ -138,14 +139,7 @@ class DocumentContextExtractor:
         words = text.split()
         sample = ' '.join(words[:1000]) if len(words) > 1000 else text
 
-        system_prompt = """Analyze this text and extract:
-1. thesis: One sentence summarizing the main argument or purpose
-2. intent: One of: informative, persuasive, narrative, analytical, explanatory
-3. tone: One of: formal, conversational, academic, poetic, technical, journalistic
-
-Respond in JSON format only:
-{"thesis": "...", "intent": "...", "tone": "..."}"""
-
+        system_prompt = load_prompt("document_context")
         user_prompt = f"Text to analyze:\n\n{sample}"
 
         response = self.llm_provider.call(

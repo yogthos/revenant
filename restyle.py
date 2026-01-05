@@ -38,9 +38,129 @@ import sys
 import time
 from pathlib import Path
 
+from src.utils.logging import setup_logging
+
 # Add project root to path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+
+def index_corpus(corpus_path: str, author: str, clear: bool = False) -> None:
+    """Index an author's corpus for RAG retrieval.
+
+    Args:
+        corpus_path: Path to corpus text file.
+        author: Author name.
+        clear: Whether to clear existing chunks for this author.
+    """
+    try:
+        from src.rag import CorpusIndexer, get_indexer
+    except ImportError:
+        print("Error: RAG dependencies not installed.")
+        print("Install with: pip install chromadb sentence-transformers")
+        sys.exit(1)
+
+    indexer = get_indexer()
+
+    print(f"Indexing corpus: {corpus_path}")
+    print(f"Author: {author}")
+
+    if clear:
+        print("Clearing existing chunks...")
+
+    try:
+        count = indexer.index_corpus(corpus_path, author, clear_existing=clear)
+        print(f"\nIndexed {count} chunks for {author}")
+        print(f"RAG index location: data/rag_index/")
+    except FileNotFoundError:
+        print(f"Error: Corpus file not found: {corpus_path}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error indexing corpus: {e}")
+        sys.exit(1)
+
+
+def run_repl_mode(
+    adapter_path: str,
+    author: str,
+    config_path: str = "config.json",
+    temperature: float = 0.4,
+    perspective: str = None,
+    verify: bool = True,
+) -> None:
+    """Run interactive REPL mode.
+
+    Args:
+        adapter_path: Path to LoRA adapter.
+        author: Author name.
+        config_path: Path to config file.
+        temperature: Generation temperature.
+        perspective: Output perspective.
+        verify: Whether to verify entailment.
+    """
+    from src.repl import run_repl
+    from src.config import load_config
+    from src.llm.deepseek import DeepSeekProvider
+
+    # Load config for critic provider
+    try:
+        app_config = load_config(config_path)
+    except FileNotFoundError:
+        app_config = None
+
+    # Create critic provider
+    critic_provider = None
+    if app_config and app_config.llm.providers.get("deepseek"):
+        deepseek_config = app_config.llm.get_provider_config("deepseek")
+        critic_provider = DeepSeekProvider(config=deepseek_config)
+    else:
+        import os
+        from src.config import LLMProviderConfig
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if api_key:
+            deepseek_config = LLMProviderConfig(
+                api_key=api_key,
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com",
+            )
+            critic_provider = DeepSeekProvider(config=deepseek_config)
+
+    # Run REPL
+    run_repl(
+        adapter_path=adapter_path,
+        author=author,
+        config_path=config_path,
+        temperature=temperature,
+        perspective=perspective or "preserve",
+        verify=verify,
+        critic_provider=critic_provider,
+    )
+
+
+def list_rag_authors() -> None:
+    """List authors indexed in RAG."""
+    try:
+        from src.rag import get_indexer
+    except ImportError:
+        print("RAG dependencies not installed.")
+        print("Install with: pip install chromadb sentence-transformers")
+        return
+
+    indexer = get_indexer()
+    authors = indexer.get_authors()
+
+    if not authors:
+        print("\nNo authors indexed yet.")
+        print("\nTo index an author's corpus:")
+        print("  python restyle.py index-corpus corpus.txt --author 'Author Name'")
+        return
+
+    print("\nIndexed authors in RAG:")
+    print("-" * 40)
+    for author in authors:
+        count = indexer.get_chunk_count(author)
+        print(f"  {author}: {count} chunks")
+    print()
 
 
 def list_adapters(adapters_dir: str = "lora_adapters") -> None:
@@ -96,7 +216,7 @@ def transfer_file(
     adapter_path: str,
     author: str,
     config_path: str = "config.json",
-    temperature: float = 0.7,
+    temperature: float = 0.2,
     perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
@@ -165,12 +285,15 @@ def transfer_file(
             use_document_context=gen.use_document_context,
             pass_headings_unchanged=gen.pass_headings_unchanged,
             min_paragraph_words=gen.min_paragraph_words,
+            # RAG settings
+            use_structural_rag=gen.use_structural_rag,
         )
     else:
         config = TransferConfig(
             temperature=temperature,
             verify_entailment=verify,
             perspective=effective_perspective,
+            use_structural_rag=True,  # Default to enabled
         )
 
     # Create critic provider for repairs
@@ -320,8 +443,8 @@ def main():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.7,
-        help="Generation temperature (default: 0.7)",
+        default=0.4,
+        help="Generation temperature (default: 0.4, helps complete sentences)",
     )
     parser.add_argument(
         "--perspective",
@@ -345,9 +468,26 @@ def main():
         help="List available LoRA adapters",
     )
     parser.add_argument(
+        "--list-rag",
+        action="store_true",
+        help="List authors indexed in RAG",
+    )
+    parser.add_argument(
         "--adapters-dir",
         default="lora_adapters",
         help="Directory containing adapters (default: lora_adapters)",
+    )
+
+    # Index corpus subcommand (handled as special input)
+    parser.add_argument(
+        "--index-corpus",
+        metavar="CORPUS_FILE",
+        help="Index a corpus file for RAG (requires --author)",
+    )
+    parser.add_argument(
+        "--clear-rag",
+        action="store_true",
+        help="Clear existing RAG chunks for author when indexing",
     )
 
     # Config
@@ -364,16 +504,65 @@ def main():
         help="Verbose output",
     )
 
+    # REPL mode
+    parser.add_argument(
+        "--repl",
+        action="store_true",
+        help="Start interactive REPL mode for live style transfer",
+    )
+
     args = parser.parse_args()
+
+    # Setup logging based on verbose flag
+    setup_logging(level="INFO" if args.verbose else "WARNING")
 
     # List adapters mode
     if args.list_adapters:
         list_adapters(args.adapters_dir)
         return
 
+    # List RAG authors mode
+    if args.list_rag:
+        list_rag_authors()
+        return
+
+    # Index corpus mode
+    if args.index_corpus:
+        if not args.author:
+            parser.error("--author is required for --index-corpus")
+        index_corpus(args.index_corpus, args.author, args.clear_rag)
+        return
+
+    # REPL mode
+    if args.repl:
+        if not args.adapter:
+            parser.error("--adapter is required for REPL mode")
+
+        # Load author from metadata if not provided
+        author = args.author
+        if not author:
+            metadata_path = Path(args.adapter) / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                author = metadata.get("author")
+
+        if not author:
+            parser.error("--author is required (not found in adapter metadata)")
+
+        run_repl_mode(
+            adapter_path=args.adapter,
+            author=author,
+            config_path=args.config,
+            temperature=args.temperature,
+            perspective=args.perspective,
+            verify=not args.no_verify,
+        )
+        return
+
     # Validate required arguments for transfer
     if not args.input:
-        parser.error("Input file is required (or use --list-adapters)")
+        parser.error("Input file is required (or use --list-adapters, --list-rag)")
 
     if not args.output:
         # Default output name

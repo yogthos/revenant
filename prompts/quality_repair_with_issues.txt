@@ -1,3 +1,0 @@
-You are {author}. Rewrite the following text in your distinctive voice.
-
-IMPORTANT: {fix_text}. Only output the rewritten text, nothing else.

@@ -20,10 +20,9 @@ class TestLoadPrompt:
 
     def test_load_existing_prompt(self):
         """Test loading an existing prompt file."""
-        # Should load the style_transfer_system.txt prompt
-        prompt = load_prompt("style_transfer_system")
-        assert "You are {author}" in prompt
-        assert "RULES:" in prompt
+        prompt = load_prompt("style_transfer")
+        assert "{author}" in prompt
+        assert "{content}" in prompt
 
     def test_load_nonexistent_prompt_raises_error(self):
         """Test that loading a nonexistent prompt raises FileNotFoundError."""
@@ -34,8 +33,8 @@ class TestLoadPrompt:
         """Test that prompts are cached."""
         clear_prompt_cache()
         # Load same prompt twice
-        prompt1 = load_prompt("style_transfer_system")
-        prompt2 = load_prompt("style_transfer_system")
+        prompt1 = load_prompt("style_transfer")
+        prompt2 = load_prompt("style_transfer")
         # Should be the same object due to caching
         assert prompt1 is prompt2
 
@@ -45,29 +44,34 @@ class TestFormatPrompt:
 
     def test_format_with_variables(self):
         """Test formatting a prompt with variables."""
-        prompt = format_prompt("style_transfer_system", author="Carl Sagan", perspective_instruction="")
-        assert "You are Carl Sagan" in prompt
+        prompt = format_prompt(
+            "style_transfer",
+            author="Carl Sagan",
+            content="The universe is vast.",
+            structural_guidance="",
+        )
+        assert "Carl Sagan" in prompt
+        assert "The universe is vast." in prompt
         assert "{author}" not in prompt
+        assert "{content}" not in prompt
 
-    def test_format_base_model_prompt(self):
-        """Test formatting the base model prompt with multiple variables."""
-        prompt = format_prompt(
-            "style_transfer_base_model",
-            target_words=250,
-            author="Isaac Asimov"
-        )
-        assert "250 word" in prompt
-        assert "Isaac Asimov" in prompt
+    def test_format_rtt_prompt(self):
+        """Test formatting the RTT Mandarin prompt (system prompt)."""
+        prompt = format_prompt("rtt_to_mandarin")
+        # This is a system prompt with no variables to format
+        assert "HSK" in prompt or "translator" in prompt.lower()
 
-    def test_format_critic_repair(self):
-        """Test formatting the critic repair prompt."""
-        instructions = "- Fix grammar\n- Add missing entity"
+    def test_format_with_structural_guidance(self):
+        """Test formatting with structural guidance."""
         prompt = format_prompt(
-            "critic_repair_system",
-            instructions=instructions
+            "style_transfer",
+            author="H.P. Lovecraft",
+            content="A strange creature appeared.",
+            structural_guidance="\n\nRHYTHM: Vary between 5 and 35 words\n",
         )
-        assert "Fix grammar" in prompt
-        assert "Add missing entity" in prompt
+        assert "H.P. Lovecraft" in prompt
+        assert "A strange creature appeared." in prompt
+        assert "RHYTHM" in prompt
 
 
 class TestGetPromptWithFallback:
@@ -77,13 +81,11 @@ class TestGetPromptWithFallback:
         """Test that it returns file content when file exists."""
         fallback = "This is a fallback"
         prompt = get_prompt_with_fallback(
-            "style_transfer_system",
+            "style_transfer",
             fallback,
-            author="Test Author",
-            perspective_instruction=""
         )
-        assert "You are Test Author" in prompt
         assert fallback not in prompt
+        assert len(prompt) > 0
 
     def test_returns_fallback_when_not_exists(self):
         """Test that it returns fallback when file doesn't exist."""
@@ -103,8 +105,8 @@ class TestListPrompts:
         """Test listing prompts from default directory."""
         prompts = list_prompts()
         assert len(prompts) > 0
-        assert "style_transfer_system" in prompts
-        assert "critic_repair_system" in prompts
+        assert "style_transfer" in prompts
+        assert "rtt_deepseek" in prompts
 
     def test_list_prompts_returns_paths(self):
         """Test that list_prompts returns Path objects."""
@@ -125,11 +127,11 @@ class TestClearPromptCache:
     def test_clear_cache(self):
         """Test that cache can be cleared."""
         # Load a prompt to populate cache
-        load_prompt("style_transfer_system")
+        load_prompt("style_transfer")
         # Clear should not raise
         clear_prompt_cache()
         # Should still be able to load after clear
-        prompt = load_prompt("style_transfer_system")
+        prompt = load_prompt("style_transfer")
         assert prompt is not None
 
 
@@ -147,14 +149,15 @@ class TestPromptFiles:
             close_count = content.count('}')
             assert open_count == close_count, f"Unmatched braces in {name}"
 
-    def test_style_transfer_prompts_exist(self):
-        """Test that core style transfer prompts exist."""
+    def test_core_prompts_exist(self):
+        """Test that core prompts used by the pipeline exist."""
         required_prompts = [
-            "style_transfer_system",
-            "style_transfer_base_model",
-            "critic_repair_system",
-            "critic_repair_user",
-            "repair_strict",
+            "style_transfer",
+            "rtt_to_mandarin",
+            "rtt_to_english",
+            "rtt_deepseek",
+            "document_context",
+            "nli_repair",
         ]
         prompts = list_prompts()
         for name in required_prompts:

@@ -130,12 +130,13 @@ class GenerationConfig:
     # LoRA influence settings
     lora_scale: float = 1.0  # LoRA influence: 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
 
+    # Neutralization settings
+    skip_neutralization: bool = False  # If True, skip RTT and use original text as input
+
     # Style settings
     style_temperature: float = 0.7  # Temperature for style generation (higher = more creative)
     neutralization_temperature: float = 0.3  # Temperature for neutralization (lower = more consistent)
-    skip_neutralization: bool = True  # Skip neutralization to preserve more facts
-
-    # Neutralization token settings
+    # Neutralization token settings (legacy, now uses graph-based descriptions)
     neutralization_min_tokens: int = 300  # Minimum tokens for neutralization output
     neutralization_token_multiplier: float = 1.2  # Multiplier: tokens = max(min, words * multiplier)
 
@@ -155,6 +156,15 @@ class GenerationConfig:
     use_document_context: bool = True  # Extract document-level context
     pass_headings_unchanged: bool = True  # Don't transform headings
     min_paragraph_words: int = 10  # Skip paragraphs shorter than this
+
+    # RAG settings
+    use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
+
+    # NLI Auditor settings (sentence-level verification)
+    use_sentence_nli: bool = False  # Enable sentence-level NLI verification (slower but more accurate)
+    nli_model: str = "cross-encoder/nli-deberta-v3-base"  # NLI model for sentence verification
+    nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
+    nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
 
 
 @dataclass
@@ -382,11 +392,12 @@ def load_config(config_path: str = "config.json") -> Config:
             truncate_over_expanded=gen.get("truncate_over_expanded", False),
             # LoRA influence
             lora_scale=gen.get("lora_scale", 1.0),
+            # Neutralization
+            skip_neutralization=gen.get("skip_neutralization", False),
             # Style settings
             style_temperature=gen.get("style_temperature", 0.7),
             neutralization_temperature=gen.get("neutralization_temperature", 0.3),
-            skip_neutralization=gen.get("skip_neutralization", True),
-            # Neutralization token settings
+            # Neutralization token settings (legacy, now uses graph-based descriptions)
             neutralization_min_tokens=gen.get("neutralization_min_tokens", 300),
             neutralization_token_multiplier=gen.get("neutralization_token_multiplier", 1.2),
             # Content anchor detection
@@ -402,6 +413,13 @@ def load_config(config_path: str = "config.json") -> Config:
             use_document_context=gen.get("use_document_context", True),
             pass_headings_unchanged=gen.get("pass_headings_unchanged", True),
             min_paragraph_words=gen.get("min_paragraph_words", 10),
+            # RAG settings
+            use_structural_rag=gen.get("use_structural_rag", True),
+            # NLI Auditor settings
+            use_sentence_nli=gen.get("use_sentence_nli", False),
+            nli_model=gen.get("nli_model", "cross-encoder/nli-deberta-v3-base"),
+            nli_recall_threshold=gen.get("nli_recall_threshold", 0.5),
+            nli_precision_threshold=gen.get("nli_precision_threshold", 0.5),
         )
 
     if "style" in data:
