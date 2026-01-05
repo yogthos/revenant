@@ -90,6 +90,7 @@ class TransferConfig:
     # Sentence splitting settings (break run-on sentences)
     split_sentences: bool = True  # Enable sentence splitting at conjunction points
     max_sentence_length: int = 50  # Words - split sentences longer than this
+    sentence_length_variance: float = 0.3  # Variance factor (0.3 = 70%-130% of max)
 
     # Grammar correction settings (final post-processing pass)
     correct_grammar: bool = True  # Enable style-safe grammar correction
@@ -209,7 +210,10 @@ class StyleTransfer:
         self.sentence_splitter = None
         if self.config.split_sentences:
             from ..vocabulary.sentence_splitter import SentenceSplitter, SentenceSplitterConfig
-            splitter_config = SentenceSplitterConfig(max_sentence_length=self.config.max_sentence_length)
+            splitter_config = SentenceSplitterConfig(
+                max_sentence_length=self.config.max_sentence_length,
+                length_variance=self.config.sentence_length_variance,
+            )
             self.sentence_splitter = SentenceSplitter(splitter_config)
 
         # Initialize grammar corrector for final post-processing

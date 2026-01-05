@@ -14,6 +14,7 @@ class TestSentenceSplitterConfig:
 
         assert config.max_sentence_length == 50
         assert config.min_clause_length == 15
+        assert config.length_variance == 0.3  # Default variance
         assert "and" in config.split_conjunctions
         assert "but" in config.split_conjunctions
 
@@ -62,6 +63,33 @@ class TestSentenceSplitter:
         splitter = SentenceSplitter(config)
 
         assert splitter.config.max_sentence_length == 30
+
+    def test_length_variance_produces_varied_thresholds(self):
+        """Test that variance produces different effective max lengths."""
+        from src.vocabulary.sentence_splitter import SentenceSplitter, SentenceSplitterConfig
+
+        config = SentenceSplitterConfig(max_sentence_length=50, length_variance=0.3)
+        splitter = SentenceSplitter(config)
+
+        # Generate multiple effective max lengths
+        lengths = [splitter._get_effective_max_length() for _ in range(100)]
+
+        # With 30% variance, we should see values from 35 to 65 (50 * 0.7 to 50 * 1.3)
+        assert min(lengths) >= 35
+        assert max(lengths) <= 65
+        # Should have at least some variation
+        assert len(set(lengths)) > 1
+
+    def test_zero_variance_produces_fixed_threshold(self):
+        """Test that zero variance produces consistent threshold."""
+        from src.vocabulary.sentence_splitter import SentenceSplitter, SentenceSplitterConfig
+
+        config = SentenceSplitterConfig(max_sentence_length=50, length_variance=0)
+        splitter = SentenceSplitter(config)
+
+        # All lengths should be exactly 50
+        lengths = [splitter._get_effective_max_length() for _ in range(10)]
+        assert all(l == 50 for l in lengths)
 
     def test_short_sentence_unchanged(self):
         """Test that short sentences are not split."""
@@ -237,7 +265,8 @@ class TestIntegration:
         from src.vocabulary.sentence_splitter import SentenceSplitter, SentenceSplitterConfig
 
         # Simulate the kind of run-on that LoRA models produce
-        config = SentenceSplitterConfig(max_sentence_length=30, min_clause_length=10)
+        # Set length_variance=0 for deterministic test results
+        config = SentenceSplitterConfig(max_sentence_length=30, min_clause_length=10, length_variance=0)
         splitter = SentenceSplitter(config)
 
         text = (

@@ -6,6 +6,7 @@ to prevent the "wall of text" effect from LoRA models that overfit to long sente
 Based on the approach in docs/sentence_control.md.
 """
 
+import random
 from dataclasses import dataclass, field
 from typing import List, Tuple
 
@@ -31,6 +32,7 @@ class SentenceSplitterConfig:
     max_sentence_length: int = 50  # Words - split sentences longer than this
     min_clause_length: int = 15  # Minimum words between split points
     split_conjunctions: List[str] = field(default_factory=lambda: ["and", "but", "for", "yet", "so"])
+    length_variance: float = 0.3  # Variance factor (0.3 = 70%-130% of max_sentence_length)
 
 
 class SentenceSplitter:
@@ -55,6 +57,28 @@ class SentenceSplitter:
         if self._nlp is None:
             self._nlp = get_nlp()
         return self._nlp
+
+    def _get_effective_max_length(self) -> int:
+        """Get max sentence length with random variance.
+
+        Prevents uniform "medium-medium-medium" rhythm by varying the
+        threshold per sentence (70%-130% of base max_sentence_length).
+
+        Returns:
+            Effective max length for this sentence.
+        """
+        if self.config.length_variance <= 0:
+            return self.config.max_sentence_length
+
+        # Calculate variance range (e.g., 0.3 variance = 70%-130%)
+        min_factor = 1.0 - self.config.length_variance
+        max_factor = 1.0 + self.config.length_variance
+
+        base = self.config.max_sentence_length
+        return random.randint(
+            int(base * min_factor),
+            int(base * max_factor)
+        )
 
     def split(self, text: str) -> Tuple[str, SplitStats]:
         """Split run-on sentences in text.
@@ -82,7 +106,9 @@ class SentenceSplitter:
             original_lengths.append(sent_words)
 
             # If sentence is acceptable length, keep it
-            if sent_words <= self.config.max_sentence_length:
+            # Use variance to prevent uniform "medium-medium-medium" rhythm
+            effective_max = self._get_effective_max_length()
+            if sent_words <= effective_max:
                 result_sentences.append(sent.text)
                 result_lengths.append(sent_words)
                 continue

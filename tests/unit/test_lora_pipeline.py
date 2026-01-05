@@ -374,9 +374,11 @@ class TestLoRAGenerator:
 
         config = GenerationConfig()
 
-        # Temperature 0.4 helps complete sentences before repetition loops
-        assert config.temperature == 0.4
-        assert config.top_p == 0.9
+        # Temperature 0.7 allows creative/rare word choices
+        # min_p 0.05 filters nonsense at high temp
+        assert config.temperature == 0.7
+        assert config.top_p == 0.95
+        assert config.min_p == 0.05
         assert config.repetition_penalty == 1.4
 
     def test_inference_prompt_format_matches_training(self):
@@ -497,7 +499,8 @@ class TestPipelineIntegration:
 
         # Verify inference defaults
         config = GenerationConfig()
-        assert config.temperature == 0.4  # Lower temperature reduces hallucination
+        assert config.temperature == 0.7  # Higher temp allows creative word choices
+        assert config.min_p == 0.05  # Filter nonsense at high temp
 
 
 if __name__ == "__main__":

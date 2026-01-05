@@ -93,8 +93,9 @@ class GenerationConfig:
     """Configuration for LoRA generation."""
 
     max_tokens: int = 512
-    temperature: float = 0.4  # Higher temp helps complete sentences before repetition loops
-    top_p: float = 0.9
+    temperature: float = 0.7  # Higher temp allows creative/rare word choices
+    top_p: float = 0.95  # Nucleus sampling - higher considers more options
+    min_p: float = 0.05  # Filter nonsense at high temp (keeps tokens with prob >= 5% of top)
     repetition_penalty: float = 1.4  # Strong penalty to prevent repetition loops
     min_tokens: int = 50  # Prevent too-short outputs
     lora_scale: float = 2.0  # LoRA influence: match training scale (alpha/rank = 128/64 = 2.0)
@@ -331,10 +332,12 @@ class LoRAStyleGenerator:
             structural_guidance=guidance_str,
         )
 
-        # Create sampler with temperature and top_p
+        # Create sampler with temperature, top_p, and min_p
+        # min_p filters low-probability nonsense while allowing creative choices
         sampler = make_sampler(
             temp=self.config.temperature,
             top_p=self.config.top_p,
+            min_p=self.config.min_p,
         )
 
         # Create repetition penalty processor

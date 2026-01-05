@@ -31,21 +31,41 @@ DEFAULT_SKIP_RULES = {
     "SENTENCE_FRAGMENT",       # Fragments used for effect
     "COMMA_COMPOUND_SENTENCE", # Long compound sentences are valid style
 
+    # Creative sentence beginnings (allow "And", "But", "So" etc.)
+    "SENT_START_CONJUNCTIONS",         # Generic conjunction at sentence start
+    "AND_BEGINNING",                   # "And" at sentence start
+    "BUT_BEGINNING",                   # "But" at sentence start
+    "SO_AT_SENTENCE_START",            # "So" at sentence start
+    "CONJUNCTIONS_AT_SENTENCE_START",  # General rule
+    "SENTENCE_BEGINNING_WITH_AND",     # Alternate rule ID
+    "SENTENCE_BEGINNING_WITH_BUT",     # Alternate rule ID
+    "EN_A_VS_AN",                      # Sometimes "a unique" vs "an unique" is style
+
     # Punctuation style
     "EN_QUOTES",               # Don't force smart quotes
     "DASH_RULE",               # Don't enforce dash conventions
     "OXFORD_COMMA",            # Author's choice
+    "COMMA_PARENTHESIS_WHITESPACE",    # Allow stylistic comma placement
 
     # Word choice
     "VERY",                    # "very" is fine for emphasis
     "RATHER",                  # Stylistic choice
     "SOMEWHAT",                # Stylistic choice
+    "REALLY",                  # Stylistic intensifier
+    "QUITE",                   # Stylistic qualifier
 
     # Archaic/formal language
     "WHEREAS",                 # Valid formal connector
     "WHILST",                  # Valid British/archaic form
     "AMONGST",                 # Valid British/archaic form
     "FURTHERMORE",             # Valid connector (even if overused by LLMs)
+    "HENCEFORTH",              # Valid archaic connector
+    "WHEREUPON",               # Valid archaic connector
+    "NONETHELESS",             # Valid connector
+
+    # Repetition (may be intentional for emphasis)
+    "ENGLISH_WORD_REPEAT_RULE",        # Deliberate repetition
+    "EN_WORD_REPEAT_BEGINNING_RULE",   # "That that" sometimes intentional
 }
 
 

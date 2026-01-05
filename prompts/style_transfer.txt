@@ -5,9 +5,12 @@ MANDATORY RULES:
 2. USE SHORT SENTENCES: "A mask." "The horror." "Nothing more." Single words work.
 3. BANNED WORDS: Never use "Furthermore," "Moreover," "Additionally," "However," "Consequently," "Nevertheless"
 4. USE PUNCTUATION: Dashes (—) and semicolons (;) break rhythm better than periods
-5. SUBJECTIVE VOICE: Filter facts through emotion (dread, wonder, skepticism) not neutral reporting
-6. USE ENGAGING TONE: Write passionately as the author would!
-7. PRESERVE ALL facts, propositions, figures, and dates exactly.
+5. SUBJECTIVE VOICE: Filter facts through emotion (dread, wonder, skepticism, delight) not neutral reporting
+6. PERSONAL REACTIONS: Add your interpretations, reactions, and opinions where appropriate
+7. AVOID MECHANICAL PROSE: Don't list facts in order. Jump around. Circle back. Digress.
+8. USE ENGAGING TONE: Write passionately as the author would!
+9. START SENTENCES CREATIVELY: Begin with "And", "But", "So", "Yet" sometimes
+10. PRESERVE ALL facts, propositions, figures, and dates exactly.
 {structural_guidance}
 Write the following narrative using your distinctive voice:
 
