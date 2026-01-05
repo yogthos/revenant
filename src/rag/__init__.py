@@ -48,6 +48,17 @@ from .structural_rag import (
     get_structural_guidance,
 )
 
+from .enhanced_analyzer import (
+    EnhancedStructuralAnalyzer,
+    EnhancedStyleProfile,
+    SyntacticTemplate,
+    VocabularyCluster,
+    TransitionInventory,
+    StanceProfile,
+    OpeningPatterns,
+    get_enhanced_analyzer,
+)
+
 __all__ = [
     # Style analysis
     "StyleMetrics",
@@ -70,4 +81,13 @@ __all__ = [
     "StructuralGuidance",
     "get_structural_rag",
     "get_structural_guidance",
+    # Enhanced analyzer
+    "EnhancedStructuralAnalyzer",
+    "EnhancedStyleProfile",
+    "SyntacticTemplate",
+    "VocabularyCluster",
+    "TransitionInventory",
+    "StanceProfile",
+    "OpeningPatterns",
+    "get_enhanced_analyzer",
 ]
