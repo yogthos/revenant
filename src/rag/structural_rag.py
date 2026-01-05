@@ -14,14 +14,12 @@ This addresses the core issues:
 - Robotic Formality → Fragment usage, informal punctuation
 """
 
-from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from dataclasses import dataclass
+from typing import List, Optional, Dict
 import random
 
 from .structural_analyzer import (
-    StructuralAnalyzer,
     RhythmFingerprint,
-    StructuralStyle,
     get_structural_analyzer,
 )
 from .corpus_indexer import get_indexer

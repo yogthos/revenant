@@ -8,7 +8,7 @@ Uses a Cross-Encoder NLI model which is more accurate than bi-encoders for this 
 """
 
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Callable
+from typing import List, Tuple, Optional
 import numpy as np
 
 from ..utils.nlp import get_nlp

@@ -81,7 +81,7 @@ class TestGetPromptWithFallback:
         """Test that it returns file content when file exists."""
         fallback = "This is a fallback"
         prompt = get_prompt_with_fallback(
-            "repair_system",
+            "style_transfer",
             fallback,
         )
         assert fallback not in prompt
@@ -106,7 +106,7 @@ class TestListPrompts:
         prompts = list_prompts()
         assert len(prompts) > 0
         assert "style_transfer" in prompts
-        assert "repair_system" in prompts
+        assert "rtt_deepseek" in prompts
 
     def test_list_prompts_returns_paths(self):
         """Test that list_prompts returns Path objects."""
@@ -155,7 +155,9 @@ class TestPromptFiles:
             "style_transfer",
             "rtt_to_mandarin",
             "rtt_to_english",
-            "repair_system",
+            "rtt_deepseek",
+            "document_context",
+            "nli_repair",
         ]
         prompts = list_prompts()
         for name in required_prompts:

@@ -19,7 +19,6 @@ from .document_context import DocumentContext, extract_document_context
 from ..utils.nlp import (
     split_into_paragraphs,
     split_into_sentences,
-    filter_headings,
     is_heading,
 )
 from ..utils.logging import get_logger

@@ -203,7 +203,6 @@ text-style-transfer/
 │   ├── validation/               # Content preservation
 │   │   ├── semantic_graph.py    # Proposition graph analysis
 │   │   ├── nli_auditor.py       # Sentence-level NLI verification
-│   │   ├── quality_critic.py    # Quality issue detection
 │   │   └── triplet_extractor.py # Subject-predicate-object extraction
 │   │
 │   ├── neutralization/           # Style stripping
@@ -237,13 +236,12 @@ text-style-transfer/
 │
 ├── prompts/                      # Prompt templates
 │   ├── style_transfer.txt       # Main generation prompt
-│   ├── repair_system.txt        # Factual repair system prompt
-│   ├── repair_input.txt         # Factual repair input format
 │   ├── nli_repair.txt           # NLI-based repair prompt
 │   ├── document_context.txt     # Document analysis prompt
 │   ├── rtt_deepseek.txt         # RTT neutralization (single)
 │   ├── rtt_deepseek_batch.txt   # RTT neutralization (batch)
-│   └── quality_repair.txt       # Quality repair prompt
+│   ├── rtt_to_mandarin.txt      # RTT step 1 (local MLX)
+│   └── rtt_to_english.txt       # RTT step 2 (local MLX)
 │
 ├── data/
 │   ├── corpus/                   # Author corpus files
