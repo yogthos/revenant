@@ -80,6 +80,63 @@ def index_corpus(corpus_path: str, author: str, clear: bool = False) -> None:
         sys.exit(1)
 
 
+def run_repl_mode(
+    adapter_path: str,
+    author: str,
+    config_path: str = "config.json",
+    temperature: float = 0.4,
+    perspective: str = None,
+    verify: bool = True,
+) -> None:
+    """Run interactive REPL mode.
+
+    Args:
+        adapter_path: Path to LoRA adapter.
+        author: Author name.
+        config_path: Path to config file.
+        temperature: Generation temperature.
+        perspective: Output perspective.
+        verify: Whether to verify entailment.
+    """
+    from src.repl import run_repl
+    from src.config import load_config
+    from src.llm.deepseek import DeepSeekProvider
+
+    # Load config for critic provider
+    try:
+        app_config = load_config(config_path)
+    except FileNotFoundError:
+        app_config = None
+
+    # Create critic provider
+    critic_provider = None
+    if app_config and app_config.llm.providers.get("deepseek"):
+        deepseek_config = app_config.llm.get_provider_config("deepseek")
+        critic_provider = DeepSeekProvider(config=deepseek_config)
+    else:
+        import os
+        from src.config import LLMProviderConfig
+        api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+        if api_key:
+            deepseek_config = LLMProviderConfig(
+                api_key=api_key,
+                model="deepseek-chat",
+                base_url="https://api.deepseek.com",
+            )
+            critic_provider = DeepSeekProvider(config=deepseek_config)
+
+    # Run REPL
+    run_repl(
+        adapter_path=adapter_path,
+        author=author,
+        config_path=config_path,
+        temperature=temperature,
+        perspective=perspective or "preserve",
+        verify=verify,
+        critic_provider=critic_provider,
+    )
+
+
 def list_rag_authors() -> None:
     """List authors indexed in RAG."""
     try:
@@ -447,6 +504,13 @@ def main():
         help="Verbose output",
     )
 
+    # REPL mode
+    parser.add_argument(
+        "--repl",
+        action="store_true",
+        help="Start interactive REPL mode for live style transfer",
+    )
+
     args = parser.parse_args()
 
     # Setup logging based on verbose flag
@@ -467,6 +531,33 @@ def main():
         if not args.author:
             parser.error("--author is required for --index-corpus")
         index_corpus(args.index_corpus, args.author, args.clear_rag)
+        return
+
+    # REPL mode
+    if args.repl:
+        if not args.adapter:
+            parser.error("--adapter is required for REPL mode")
+
+        # Load author from metadata if not provided
+        author = args.author
+        if not author:
+            metadata_path = Path(args.adapter) / "metadata.json"
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                author = metadata.get("author")
+
+        if not author:
+            parser.error("--author is required (not found in adapter metadata)")
+
+        run_repl_mode(
+            adapter_path=args.adapter,
+            author=author,
+            config_path=args.config,
+            temperature=args.temperature,
+            perspective=args.perspective,
+            verify=not args.no_verify,
+        )
         return
 
     # Validate required arguments for transfer

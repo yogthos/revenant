@@ -11,6 +11,7 @@ Transform text to match a target author's writing style while preserving semanti
 - **Structural RAG**: Provides rhythm and syntax guidance from author corpus
 - **NLI Auditor**: Optional sentence-level fact verification
 - **Perspective Control**: Transform to first/third person while maintaining style
+- **Interactive REPL**: Terminal UI for live style transfer with history and commands
 - **Fast Transfer**: ~15-30 seconds per paragraph
 
 ## Requirements
@@ -54,6 +55,9 @@ python restyle.py input.txt -o output.txt \
     --adapter lora_adapters/lovecraft \
     --author "H.P. Lovecraft"
 
+# Interactive REPL mode for live style transfer
+python restyle.py --repl --adapter lora_adapters/lovecraft
+
 # List available adapters
 python restyle.py --list-adapters
 
@@ -62,6 +66,44 @@ python restyle.py input.txt -o output.txt \
     --adapter lora_adapters/lovecraft \
     --no-verify
 ```
+
+### Interactive REPL Mode
+
+The REPL provides an interactive terminal UI for live style transfer:
+
+```bash
+python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecraft"
+```
+
+```
+───────────────────────────────────────────────────────────────
+─────────────── Style Transfer: H.P. Lovecraft ────────────────
+───────────────────────────────────────────────────────────────
+
+  Enter text to transform (press Enter twice to submit)
+  Commands: /help, /clear, /history, /quit
+
+│ The old house stood at the end of the street.
+│
+
+───────────────────────────────────────────────────────────────
+  Output (23 words):
+───────────────────────────────────────────────────────────────
+
+  The ancient edifice loomed at the terminus of that forgotten
+  thoroughfare, its gambrel roof silhouetted against a gibbous moon.
+
+───────────────────────────────────────────────────────────────
+```
+
+**REPL Commands:**
+| Command | Description |
+|---------|-------------|
+| `/help` | Show available commands |
+| `/clear` | Clear the screen |
+| `/history` | Show transformation history |
+| `/last` | Show last transformation |
+| `/quit` | Exit the REPL |
 
 ---
 
@@ -166,6 +208,7 @@ python restyle.py <input> -o <output> --adapter <path> --author <name>
 | `--temperature` | 0.4 | Generation temperature |
 | `--perspective` | preserve | Output perspective |
 | `--no-verify` | false | Skip entailment verification |
+| `--repl` | false | Start interactive REPL mode |
 | `-v, --verbose` | false | Verbose output |
 
 ### Perspective Options
@@ -222,6 +265,9 @@ text-style-transfer/
 │   │
 │   ├── vocabulary/               # Post-processing
 │   │   └── repetition_reducer.py # LLM-speak reduction
+│   │
+│   ├── repl/                     # Interactive REPL
+│   │   └── repl.py              # Terminal UI for live transfer
 │   │
 │   └── utils/                    # Utilities
 │       ├── nlp.py               # spaCy utilities
