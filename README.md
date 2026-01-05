@@ -1,13 +1,15 @@
 # Text Style Transfer
 
-Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer with a critic/repair loop to ensure content fidelity.
+Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer with semantic graph validation to ensure content fidelity.
 
 ## Features
 
 - **LoRA-Based Generation**: Fine-tuned adapters capture author style in model weights
 - **RTT Neutralization**: Round-trip translation strips style before restyling
 - **Semantic Graph Validation**: Validates content preservation using proposition graphs
+- **Style-Preserving Repair**: Uses LoRA for repairs to maintain author voice (not generic LLM)
 - **Structural RAG**: Provides rhythm and syntax guidance from author corpus
+- **NLI Auditor**: Optional sentence-level fact verification
 - **Perspective Control**: Transform to first/third person while maintaining style
 - **Fast Transfer**: ~15-30 seconds per paragraph
 
@@ -15,8 +17,8 @@ Transform text to match a target author's writing style while preserving semanti
 
 - Python 3.9+
 - Apple Silicon Mac (for MLX-based training/inference)
-- ~8GB RAM for inference (4-bit), ~50GB for training
-- DeepSeek API key (for critic/repair loop)
+- ~8GB RAM for inference, ~50GB for training
+- DeepSeek API key (for RTT neutralization)
 
 ---
 
@@ -35,7 +37,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # Download spaCy model
-python -m spacy download en_core_web_sm
+python -m spacy download en_core_web_lg
 
 # Copy config template
 cp config.json.sample config.json
@@ -54,6 +56,11 @@ python restyle.py input.txt -o output.txt \
 
 # List available adapters
 python restyle.py --list-adapters
+
+# Skip verification for faster output
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft \
+    --no-verify
 ```
 
 ---
@@ -63,9 +70,10 @@ python restyle.py --list-adapters
 ```mermaid
 flowchart LR
     A[Author Corpus] --> B[Curate]
-    B --> C[Generate Training Data]
-    C --> D[Train LoRA]
-    D --> E[Adapter Ready]
+    B --> C[RTT Neutralize]
+    C --> D[Generate Training Pairs]
+    D --> E[Train LoRA]
+    E --> F[Adapter Ready]
 ```
 
 ### Step 1: Prepare Corpus
@@ -193,21 +201,28 @@ text-style-transfer/
 │   │   └── document_context.py  # Document-level context
 │   │
 │   ├── validation/               # Content preservation
-│   │   ├── semantic_graph.py    # Semantic graph analysis
-│   │   └── quality_critic.py    # Entailment checking
+│   │   ├── semantic_graph.py    # Proposition graph analysis
+│   │   ├── nli_auditor.py       # Sentence-level NLI verification
+│   │   ├── quality_critic.py    # Quality issue detection
+│   │   └── triplet_extractor.py # Subject-predicate-object extraction
+│   │
+│   ├── neutralization/           # Style stripping
+│   │   └── openie_flatten.py    # RTT-based neutralization
 │   │
 │   ├── rag/                      # Structural RAG system
 │   │   ├── style_analyzer.py    # spaCy style metrics
 │   │   ├── corpus_indexer.py    # ChromaDB indexing
+│   │   ├── structural_analyzer.py # Rhythm pattern analysis
 │   │   └── structural_rag.py    # Rhythm/syntax guidance
 │   │
 │   ├── llm/                      # LLM providers
-│   │   ├── mlx_provider.py      # MLX (local)
+│   │   ├── provider.py          # Base provider interface
+│   │   ├── mlx_provider.py      # MLX (local Apple Silicon)
 │   │   ├── deepseek.py          # DeepSeek API
 │   │   └── ollama.py            # Ollama (local)
 │   │
 │   ├── vocabulary/               # Post-processing
-│   │   └── repetition_reducer.py
+│   │   └── repetition_reducer.py # LLM-speak reduction
 │   │
 │   └── utils/                    # Utilities
 │       ├── nlp.py               # spaCy utilities
@@ -216,22 +231,24 @@ text-style-transfer/
 │
 ├── scripts/                      # Training & data scripts
 │   ├── curate_corpus.py         # Filter corpus to optimal size
-│   ├── generate_flat_training.py # Generate training data
+│   ├── generate_flat_training.py # Generate training data via RTT
 │   ├── train_mlx_lora.py        # Train LoRA adapter
 │   └── blend_corpuses.py        # Blend author styles
 │
 ├── prompts/                      # Prompt templates
 │   ├── style_transfer.txt       # Main generation prompt
-│   ├── repair_system.txt        # Semantic repair system
-│   ├── repair_input.txt         # Semantic repair input
-│   ├── document_context.txt     # Document analysis
-│   ├── rtt_deepseek.txt         # RTT neutralization
-│   └── quality_repair.txt       # Quality repair
+│   ├── repair_system.txt        # Factual repair system prompt
+│   ├── repair_input.txt         # Factual repair input format
+│   ├── nli_repair.txt           # NLI-based repair prompt
+│   ├── document_context.txt     # Document analysis prompt
+│   ├── rtt_deepseek.txt         # RTT neutralization (single)
+│   ├── rtt_deepseek_batch.txt   # RTT neutralization (batch)
+│   └── quality_repair.txt       # Quality repair prompt
 │
 ├── data/
 │   ├── corpus/                   # Author corpus files
 │   ├── training/                 # Generated training data
-│   └── rag_index/                # ChromaDB index
+│   └── rag_index/                # ChromaDB persistent index
 │
 └── lora_adapters/                # Trained LoRA adapters
     └── <author>/
@@ -252,30 +269,42 @@ flowchart TD
         A[Input Document]
     end
 
+    subgraph "Document Processing"
+        B[Extract Document Context]
+        C[Split into Paragraphs]
+    end
+
     subgraph "Per-Paragraph Pipeline"
-        B[RTT Neutralization]
-        C[Structural RAG]
-        D[LoRA Generation]
-        E[Semantic Validation]
-        F{Valid?}
-        G[Critic Repair]
-        H[Post-Processing]
+        D[RTT Neutralization]
+        E[Structural RAG Guidance]
+        F[LoRA Style Generation]
+        G[Semantic Graph Validation]
+        H{Critical Entities Missing?}
+        I[LoRA Style-Preserving Repair]
+        J[Repetition Reduction]
     end
 
     subgraph Output
-        I[Output Document]
+        K[Output Document]
     end
 
     A --> B
     B --> C
-    C -->|Rhythm Guidance| D
+    C --> D
     D --> E
-    E --> F
-    F -->|No| G
-    G --> E
-    F -->|Yes| H
-    H --> I
+    E -->|Rhythm Patterns| F
+    F --> G
+    G --> H
+    H -->|Yes| I
+    I --> G
+    H -->|No| J
+    J --> K
+
+    style I fill:#e1f5fe
+    style F fill:#e1f5fe
 ```
+
+**Key insight**: The repair loop uses the **same LoRA** as generation, not a generic LLM. This preserves the author's style during repairs. Vocabulary changes (the whole point of style transfer) are accepted; only missing named entities trigger repair.
 
 ### Training Pipeline
 
@@ -287,14 +316,14 @@ flowchart TD
         C[Filtered Corpus]
     end
 
-    subgraph "Training Data"
+    subgraph "Training Data Generation"
         D[Chunk Text]
-        E[LLM Neutralize]
-        F[Training JSONL]
+        E[DeepSeek RTT Neutralize]
+        F["Training Pairs (neutral → styled)"]
     end
 
     subgraph "LoRA Training"
-        G[MLX LoRA]
+        G[MLX LoRA Fine-tuning]
         H[Adapter Weights]
     end
 
@@ -307,6 +336,26 @@ flowchart TD
     G --> H
 ```
 
+### Validation Flow
+
+```mermaid
+flowchart TD
+    A[LoRA Output] --> B[Build Semantic Graph]
+    B --> C[Compare with Source Graph]
+    C --> D{Differences Found?}
+    D -->|No| E[Accept Output]
+    D -->|Yes| F[Extract Missing Entities]
+    F --> G{Critical Entities Missing?}
+    G -->|No| H[Accept - Vocabulary Changes OK]
+    G -->|Yes| I[LoRA Repair with Entity Hints]
+    I --> B
+
+    style H fill:#c8e6c9
+    style E fill:#c8e6c9
+```
+
+The semantic graph extracts propositions (subject-predicate-object) from both source and output. Only **named entities** (people, places, organizations, numbers) trigger repairs. Vocabulary style changes like "big" → "cyclopean" are accepted as intended behavior.
+
 ### Sequence Diagram
 
 ```mermaid
@@ -317,11 +366,12 @@ sequenceDiagram
     participant RTT as RTT Neutralizer
     participant RAG as Structural RAG
     participant LoRA as LoRA Generator
-    participant Validator as Validator
-    participant Critic as Critic
+    participant Graph as Semantic Graph
+    participant NLI as NLI Auditor
 
     User->>CLI: restyle.py input.txt
     CLI->>Transfer: transfer_document()
+    Transfer->>Transfer: extract_document_context()
 
     loop For each paragraph
         Transfer->>RTT: neutralize(paragraph)
@@ -333,13 +383,17 @@ sequenceDiagram
         Transfer->>LoRA: generate(neutral, guidance)
         LoRA-->>Transfer: styled text
 
-        Transfer->>Validator: validate(source, output)
+        Transfer->>Graph: validate(source, output)
+        Graph-->>Transfer: missing_entities[]
 
-        alt Validation Failed
-            loop Up to 3 attempts
-                Transfer->>Critic: repair(output, issues)
-                Critic-->>Transfer: fixed text
-            end
+        alt Critical Entities Missing
+            Transfer->>LoRA: repair(source, entity_hints)
+            LoRA-->>Transfer: repaired styled text
+        end
+
+        opt NLI Enabled
+            Transfer->>NLI: audit(source, output)
+            NLI-->>Transfer: recall/precision scores
         end
     end
 
@@ -359,39 +413,101 @@ Copy `config.json.sample` to `config.json`:
     "provider": {
       "writer": "mlx",
       "critic": "deepseek",
-      "rtt": "mlx"
+      "rtt": "deepseek"
     },
     "providers": {
       "deepseek": {
         "api_key": "${DEEPSEEK_API_KEY}",
-        "model": "deepseek-chat"
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "max_tokens": 4096,
+        "temperature": 0.7,
+        "timeout": 120
       },
       "mlx": {
-        "model": "mlx-community/Qwen3-8B-4bit"
+        "model": "mlx-community/Qwen3-8B-Base-bf16",
+        "max_tokens": 256,
+        "temperature": 0.2,
+        "top_p": 0.9
+      },
+      "deepseek_rtt": {
+        "model": "deepseek-chat",
+        "max_tokens": 8192,
+        "temperature": 0.1,
+        "batch_size": 10,
+        "concurrent_batches": 4
       }
+    },
+    "retry": {
+      "max_attempts": 5,
+      "base_delay": 2,
+      "max_delay": 60
     }
   },
   "generation": {
-    "temperature": 0.4,
-    "verify_entailment": true,
-    "entailment_threshold": 0.7,
-    "max_repair_attempts": 3,
+    "entailment_threshold": 0.8,
+    "max_repair_attempts": 1,
+    "max_expansion_ratio": 3.0,
+    "target_expansion_ratio": 1.2,
     "lora_scale": 1.0,
+    "skip_neutralization": false,
     "reduce_repetition": true,
-    "use_structural_rag": true
-  }
+    "repetition_threshold": 3,
+    "use_document_context": true,
+    "pass_headings_unchanged": true,
+    "min_paragraph_words": 10,
+    "use_structural_rag": true,
+    "use_sentence_nli": false,
+    "nli_model": "cross-encoder/nli-deberta-v3-base",
+    "nli_recall_threshold": 0.5,
+    "nli_precision_threshold": 0.5
+  },
+  "style": {
+    "perspective": "preserve"
+  },
+  "log_level": "INFO"
 }
 ```
 
-### Key Options
+### LLM Provider Options
+
+| Provider | Role | Description |
+|----------|------|-------------|
+| `writer` | Generation | Local MLX model with LoRA adapter |
+| `critic` | Repair/Validation | API model for quality checks |
+| `rtt` | Neutralization | API model for round-trip translation |
+
+### Generation Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `lora_scale` | 1.0 | LoRA influence (higher = stronger style, >1.5 risks memorization) |
-| `entailment_threshold` | 0.7 | Validation strictness |
-| `max_repair_attempts` | 3 | Repair loop iterations |
-| `temperature` | 0.4 | Generation randomness |
-| `use_structural_rag` | true | Enable rhythm/syntax guidance |
+| `entailment_threshold` | 0.8 | Min NLI score for content preservation |
+| `max_repair_attempts` | 1 | Max repair loop iterations |
+| `max_expansion_ratio` | 3.0 | Max output/input word ratio |
+| `target_expansion_ratio` | 1.2 | Target ratio for generation |
+| `lora_scale` | 1.0 | LoRA influence (0.0=base, 1.0=full, >1.5 risks memorization) |
+| `skip_neutralization` | false | Skip RTT, use original text directly |
+| `reduce_repetition` | true | Enable LLM-speak word replacement |
+| `repetition_threshold` | 3 | Words used N+ times get replaced |
+| `use_document_context` | true | Extract document-level intent/tone |
+| `pass_headings_unchanged` | true | Don't transform markdown headings |
+| `min_paragraph_words` | 10 | Skip paragraphs shorter than N words |
+| `use_structural_rag` | true | Enable rhythm/syntax guidance from corpus |
+
+### NLI Auditor Options (Sentence-Level Verification)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `use_sentence_nli` | false | Enable sentence-level NLI (slower but more accurate) |
+| `nli_model` | `cross-encoder/nli-deberta-v3-base` | CrossEncoder model for NLI |
+| `nli_recall_threshold` | 0.5 | Min entailment probability for recall |
+| `nli_precision_threshold` | 0.5 | Max contradiction probability for precision |
+
+### Style Options
+
+| Option | Values | Description |
+|--------|--------|-------------|
+| `perspective` | `preserve`, `first_person_singular`, `first_person_plural`, `third_person`, `author_voice_third_person` | Output point-of-view |
 
 ---
 
@@ -399,7 +515,7 @@ Copy `config.json.sample` to `config.json`:
 
 ### MLX Not Available
 
-Requires Apple Silicon. For other platforms, use Ollama.
+Requires Apple Silicon. For other platforms, use Ollama provider.
 
 ### Out of Memory
 
@@ -417,20 +533,24 @@ export DEEPSEEK_API_KEY="your-key"
 ### spaCy Model Missing
 
 ```bash
-python -m spacy download en_core_web_sm
+python -m spacy download en_core_web_lg
 ```
 
 ### Style Too Weak
 
-Increase `lora_scale` in config.json to 2.0-3.0.
+Increase `lora_scale` in config.json to 1.5-2.0.
 
 ### Content Being Lost
 
-Increase `max_repair_attempts` to 5 and `entailment_threshold` to 0.8.
+Increase `entailment_threshold` to 0.9 and check for missing named entities in verbose output.
+
+### Style Being Destroyed During Repair
+
+This was a bug where generic LLM repair overwrote styled output. Now fixed: repairs use the LoRA to maintain author voice. Only missing named entities trigger repair; vocabulary changes are accepted.
 
 ### Facts Being Changed (Numbers, Dates, Names)
 
-The LoRA may convert numbers to words. Try lowering `lora_scale` to 0.5-1.0 to reduce this.
+The LoRA may transform numbers to prose. Lower `lora_scale` to 0.5-0.8 for more factual preservation.
 
 ---
 
