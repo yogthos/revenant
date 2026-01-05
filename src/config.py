@@ -166,6 +166,10 @@ class GenerationConfig:
     nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
     nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
 
+    # Grammar correction settings (final post-processing pass)
+    correct_grammar: bool = True  # Enable style-safe grammar correction
+    grammar_language: str = "en-US"  # Language variant: "en-US" or "en-GB"
+
 
 @dataclass
 class SemanticValidationConfig:
@@ -420,6 +424,9 @@ def load_config(config_path: str = "config.json") -> Config:
             nli_model=gen.get("nli_model", "cross-encoder/nli-deberta-v3-base"),
             nli_recall_threshold=gen.get("nli_recall_threshold", 0.5),
             nli_precision_threshold=gen.get("nli_precision_threshold", 0.5),
+            # Grammar correction settings
+            correct_grammar=gen.get("correct_grammar", True),
+            grammar_language=gen.get("grammar_language", "en-US"),
         )
 
     if "style" in data:

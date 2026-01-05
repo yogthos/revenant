@@ -10,9 +10,8 @@ Concrete patterns ("DET ADJ NOUN — ADV VERB") do.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional, Tuple
+from typing import List, Dict, Set, Optional
 from collections import Counter
-import re
 
 from ..utils.nlp import get_nlp
 from ..utils.logging import get_logger

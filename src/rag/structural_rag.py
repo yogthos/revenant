@@ -18,7 +18,7 @@ This addresses the core issues:
 - Sophisticated Clarity → Transition inventory + opening patterns
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional, Dict
 import random
 

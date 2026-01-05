@@ -247,8 +247,6 @@ class LoRAStyleGenerator:
         Args:
             scale: Scaling factor for LoRA weights.
         """
-        import mlx.core as mx
-
         def scale_lora_layers(module, path=""):
             """Recursively find and scale LoRA layers."""
             # Check if this module has LoRA weights
@@ -371,7 +369,7 @@ class LoRAStyleGenerator:
 
         # Clean up the response
         raw_response = response
-        response = self._clean_response(response, input_words)
+        response = self._clean_response(response)
 
         # Log if cleaning removed significant content
         raw_words = len(raw_response.split())
@@ -382,7 +380,7 @@ class LoRAStyleGenerator:
 
         return response
 
-    def _clean_response(self, response: str, input_words: int = 0) -> str:
+    def _clean_response(self, response: str) -> str:
         """Clean model output of obvious garbage only.
 
         Removes:
@@ -395,7 +393,6 @@ class LoRAStyleGenerator:
 
         Args:
             response: Raw model output.
-            input_words: Word count of input (unused, kept for compatibility).
 
         Returns:
             Cleaned response text.

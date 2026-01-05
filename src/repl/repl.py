@@ -6,7 +6,7 @@ Provides a terminal UI similar to Claude Code for interactive style transfer.
 import sys
 import os
 import textwrap
-from typing import Optional, Callable
+from typing import Optional
 from dataclasses import dataclass
 
 from ..generation.transfer import StyleTransfer, TransferConfig

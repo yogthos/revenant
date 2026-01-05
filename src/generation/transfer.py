@@ -87,6 +87,14 @@ class TransferConfig:
     nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
     nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
 
+    # Sentence splitting settings (break run-on sentences)
+    split_sentences: bool = True  # Enable sentence splitting at conjunction points
+    max_sentence_length: int = 50  # Words - split sentences longer than this
+
+    # Grammar correction settings (final post-processing pass)
+    correct_grammar: bool = True  # Enable style-safe grammar correction
+    grammar_language: str = "en-US"  # Language variant: "en-US" or "en-GB"
+
 
 @dataclass
 class TransferStats:
@@ -95,6 +103,8 @@ class TransferStats:
     paragraphs_processed: int = 0
     paragraphs_repaired: int = 0
     words_replaced: int = 0
+    sentences_split: int = 0
+    grammar_corrections: int = 0
     total_time_seconds: float = 0.0
     avg_time_per_paragraph: float = 0.0
     entailment_scores: List[float] = field(default_factory=list)
@@ -109,6 +119,8 @@ class TransferStats:
             "paragraphs_processed": self.paragraphs_processed,
             "paragraphs_repaired": self.paragraphs_repaired,
             "words_replaced": self.words_replaced,
+            "sentences_split": self.sentences_split,
+            "grammar_corrections": self.grammar_corrections,
             "total_time_seconds": round(self.total_time_seconds, 2),
             "avg_time_per_paragraph": round(self.avg_time_per_paragraph, 2),
             "avg_entailment_score": round(
@@ -177,7 +189,7 @@ class StyleTransfer:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
-            lora_scale=getattr(self.config, 'lora_scale', 2.0),
+            lora_scale=self.config.lora_scale,
             skip_cleaning=False,  # Always clean output to remove garbage
         )
         self.generator = LoRAStyleGenerator(
@@ -192,6 +204,20 @@ class StyleTransfer:
             self.repetition_reducer = RepetitionReducer(
                 threshold=self.config.repetition_threshold
             )
+
+        # Initialize sentence splitter for run-on sentences
+        self.sentence_splitter = None
+        if self.config.split_sentences:
+            from ..vocabulary.sentence_splitter import SentenceSplitter, SentenceSplitterConfig
+            splitter_config = SentenceSplitterConfig(max_sentence_length=self.config.max_sentence_length)
+            self.sentence_splitter = SentenceSplitter(splitter_config)
+
+        # Initialize grammar corrector for final post-processing
+        self.grammar_corrector = None
+        if self.config.correct_grammar:
+            from ..vocabulary.grammar_corrector import GrammarCorrector, GrammarCorrectorConfig
+            grammar_config = GrammarCorrectorConfig(language=self.config.grammar_language)
+            self.grammar_corrector = GrammarCorrector(grammar_config)
 
         # Set up entailment verifier if requested
         if self.config.verify_entailment and self.verify_fn is None:
@@ -896,6 +922,16 @@ class StyleTransfer:
                 output, reduction_stats = self.repetition_reducer.reduce(output)
                 self._transfer_stats.words_replaced += reduction_stats.replacements_made
 
+            # Apply sentence splitting to break run-on sentences
+            if self.sentence_splitter and not is_heading_para:
+                output, split_stats = self.sentence_splitter.split(output)
+                self._transfer_stats.sentences_split += split_stats.total_splits
+
+            # Apply grammar correction as final step (after sentence splitting)
+            if self.grammar_corrector and not is_heading_para:
+                output, grammar_stats = self.grammar_corrector.correct(output)
+                self._transfer_stats.grammar_corrections += grammar_stats.corrections_applied
+
             para_time = time.time() - para_start
             logger.debug(f"Paragraph {i+1}: {para_time:.1f}s, score={score:.2f}")
 
@@ -927,6 +963,18 @@ class StyleTransfer:
                     f"Repetition reduction: {self._transfer_stats.words_replaced} replacements, "
                     f"top overused: {', '.join(w for w, _ in overused)}"
                 )
+
+        # Log sentence splitting summary
+        if self.sentence_splitter and self._transfer_stats.sentences_split > 0:
+            logger.info(
+                f"Sentence splitting: {self._transfer_stats.sentences_split} sentences split"
+            )
+
+        # Log grammar correction summary
+        if self.grammar_corrector and self._transfer_stats.grammar_corrections > 0:
+            logger.info(
+                f"Grammar correction: {self._transfer_stats.grammar_corrections} corrections applied"
+            )
 
         logger.info(
             f"Transfer complete: {self._transfer_stats.paragraphs_processed} paragraphs in "
