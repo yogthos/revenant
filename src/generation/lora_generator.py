@@ -456,6 +456,7 @@ class LoRAStyleGenerator:
         target_words: Optional[int] = None,
         structural_guidance: Optional[str] = None,
         raw_prompt: bool = False,
+        temperature: Optional[float] = None,
     ) -> str:
         """Generate styled text from content description.
 
@@ -468,6 +469,8 @@ class LoRAStyleGenerator:
                            Use get_structural_guidance() to generate.
             raw_prompt: If True, use content directly as prompt without formatting.
                        Used when content is already a fully-formed prompt (e.g., persona prompt).
+            temperature: Override for sampling temperature (defaults to config).
+                        Lower values (0.1-0.3) for more deterministic repairs.
 
         Returns:
             Generated text in the author's style.
@@ -512,8 +515,10 @@ class LoRAStyleGenerator:
 
         # Create sampler with temperature, top_p, and min_p
         # min_p filters low-probability nonsense while allowing creative choices
+        # Use override temperature if provided (for repairs)
+        effective_temp = temperature if temperature is not None else self.config.temperature
         sampler = make_sampler(
-            temp=self.config.temperature,
+            temp=effective_temp,
             top_p=self.config.top_p,
             min_p=self.config.min_p,
         )

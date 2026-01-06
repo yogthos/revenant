@@ -66,6 +66,7 @@ class TransferConfig:
 
     # Repair settings
     max_repair_attempts: int = 3
+    repair_temperature: float = 0.3  # Lower temperature for repair attempts
 
     # Post-processing settings
     reduce_repetition: bool = True
@@ -371,6 +372,43 @@ class StyleTransfer:
 
         return compute_semantic_similarity(original, output)
 
+    def _compute_bidirectional_entailment(self, source: str, output: str) -> Tuple[float, float, float]:
+        """Compute bidirectional entailment scores for semantic parity.
+
+        Bidirectional entailment ensures:
+        - Forward (source→output): Output preserves source content (nothing lost)
+        - Backward (output→source): Output doesn't add hallucinations (nothing fabricated)
+
+        Args:
+            source: Original source text.
+            output: Generated output text.
+
+        Returns:
+            Tuple of (combined_score, forward_score, backward_score).
+            Combined score is min(forward, backward) for strict semantic parity.
+        """
+        if not self.verify_fn:
+            return 1.0, 1.0, 1.0  # No verifier available
+
+        # Forward: Does output preserve source content?
+        # If source entails output, the output hasn't lost meaning
+        forward_score = self.verify_fn(source, output)
+
+        # Backward: Does output stay faithful to source?
+        # If output entails source, the output hasn't added hallucinations
+        backward_score = self.verify_fn(output, source)
+
+        # Combined score: use minimum for strict semantic parity
+        # Both directions must be high for true equivalence
+        combined_score = min(forward_score, backward_score)
+
+        logger.debug(
+            f"Bidirectional entailment: forward={forward_score:.3f}, "
+            f"backward={backward_score:.3f}, combined={combined_score:.3f}"
+        )
+
+        return combined_score, forward_score, backward_score
+
     def transfer_paragraph(
         self,
         paragraph: str,
@@ -673,11 +711,16 @@ class StyleTransfer:
         stats: Optional['TransferStats'] = None,
         max_attempts: int = 3,
     ) -> Tuple[str, bool]:
-        """Validate styled output against source graph and repair if needed.
+        """Validate styled output using bidirectional entailment with convergence tracking.
 
-        Uses style-preserving repair through the LoRA generator to maintain
-        author voice while fixing factual issues. Only repairs for actual
-        entity/fact misses, not vocabulary style changes.
+        Uses NLI-based entailment to ensure semantic parity:
+        - Forward: Output preserves source content (nothing lost)
+        - Backward: Output doesn't hallucinate (nothing fabricated)
+
+        Convergence strategy:
+        - Track best output across all attempts
+        - Terminate if score meets threshold OR plateaus for 2 iterations
+        - Fall back to source text if nothing meets threshold
 
         Args:
             source: Original source text.
@@ -691,76 +734,114 @@ class StyleTransfer:
         Returns:
             Tuple of (output, is_valid).
         """
-        for attempt in range(max_attempts):
-            # Compare graphs
-            output_graph = builder.build_from_text(output)
-            diff = comparator.compare(source_graph, output_graph)
+        threshold = self.config.entailment_threshold
 
-            if diff.is_isomorphic:
-                logger.debug("Output graph matches source perfectly")
-                return output, True
+        # Track best output across all attempts for convergence
+        best_output = output
+        best_score = 0.0
+        score_history = []
+        plateau_count = 0
 
-            # Check if repair is needed - only for actual entity/fact misses
-            # Skip repair for pure vocabulary style changes (which is the point of style transfer!)
-            missing_entities = self._extract_critical_entities(diff.missing_nodes)
-
-            if not missing_entities and not diff.added_nodes:
-                # No critical entities missing, vocabulary changes are fine
-                logger.debug("No critical entities missing, accepting styled output")
-                return output, True
-
-            # If only vocabulary differences (no named entities), accept the output
-            if not missing_entities and diff.missing_nodes:
-                logger.debug(f"Missing {len(diff.missing_nodes)} propositions but no critical entities - accepting styled output")
-                return output, True
+        for attempt in range(max_attempts + 1):  # +1 for initial check
+            # Compute bidirectional entailment
+            combined_score, forward_score, backward_score = self._compute_bidirectional_entailment(source, output)
 
             logger.info(
-                f"Repair attempt {attempt + 1}/{max_attempts}: "
-                f"{len(missing_entities)} critical entities missing"
+                f"Entailment check {attempt}/{max_attempts}: "
+                f"combined={combined_score:.3f} (forward={forward_score:.3f}, backward={backward_score:.3f}), "
+                f"threshold={threshold}"
             )
 
+            # Track best output seen
+            if combined_score > best_score:
+                best_score = combined_score
+                best_output = output
+                plateau_count = 0
+            else:
+                plateau_count += 1
+
+            # Check if we've met the threshold
+            if combined_score >= threshold:
+                logger.debug(f"Entailment threshold met: {combined_score:.3f} >= {threshold}")
+                return output, True
+
+            # Check for convergence plateau (no improvement for 2 iterations)
+            if plateau_count >= 2:
+                logger.info(
+                    f"Entailment score plateaued at {best_score:.3f} "
+                    f"(below threshold {threshold})"
+                )
+                break
+
+            # Skip repair on last iteration (we're just validating)
+            if attempt >= max_attempts:
+                break
+
+            # Determine repair strategy based on which direction is weaker
+            if not self.generator:
+                logger.warning("No generator for repair, keeping best output")
+                break
+
+            # Diagnose the issue
+            if backward_score < forward_score:
+                # Output has hallucinations - regenerate with stricter adherence
+                repair_hint = "[IMPORTANT: Include ONLY information from the source. Add nothing new.]"
+                logger.debug(f"Repair {attempt + 1}: Addressing hallucinations (backward={backward_score:.3f})")
+            else:
+                # Output is missing content - regenerate with explicit content hints
+                # Extract missing entities from semantic graph comparison
+                output_graph = builder.build_from_text(output)
+                diff = comparator.compare(source_graph, output_graph)
+                missing_entities = self._extract_critical_entities(diff.missing_nodes)
+
+                if missing_entities:
+                    repair_hint = f"[MUST INCLUDE: {', '.join(missing_entities[:5])}]"  # Limit to 5
+                    logger.debug(f"Repair {attempt + 1}: Addressing missing entities: {missing_entities[:5]}")
+                else:
+                    repair_hint = "[IMPORTANT: Preserve all key information from the source.]"
+                    logger.debug(f"Repair {attempt + 1}: Addressing content loss (forward={forward_score:.3f})")
+
             try:
-                # Use LoRA for style-preserving repair
-                # Re-generate with explicit entity constraints to maintain author voice
-                if not self.generator:
-                    logger.warning("No generator for repair, keeping original output")
-                    break
-
-                # Create repair content: original source with entity hints
-                entity_hint = f"[MUST INCLUDE: {', '.join(missing_entities)}]" if missing_entities else ""
-                repair_content = f"{entity_hint}\n\n{source}" if entity_hint else source
-
+                # Use lower temperature for repairs to reduce variance
+                repair_content = f"{repair_hint}\n\n{source}"
                 target_words = len(output.split())
+
                 repaired = self.generator.generate(
                     content=repair_content,
                     author=self.author,
                     target_words=target_words,
+                    temperature=self.config.repair_temperature,
                 )
 
                 if repaired and len(repaired.split()) > 10:
-                    # Check if repair actually includes the missing entities
-                    repaired_lower = repaired.lower()
-                    entities_found = sum(1 for e in missing_entities if e.lower() in repaired_lower)
-
-                    if entities_found >= len(missing_entities) * 0.5:  # At least half found
-                        output = repaired
-                        logger.debug(f"LoRA repair produced: {len(repaired.split())} words with {entities_found}/{len(missing_entities)} entities")
-                    else:
-                        logger.debug(f"LoRA repair only found {entities_found}/{len(missing_entities)} entities, keeping original")
-                        break
+                    output = repaired
+                    logger.debug(f"Repair produced: {len(repaired.split())} words")
                 else:
-                    logger.warning("LoRA repair produced empty/short output, keeping original")
-                    break
+                    logger.warning("Repair produced empty/short output")
+                    # Continue with current best
 
             except Exception as e:
-                logger.warning(f"LoRA repair failed: {e}")
-                break
+                logger.warning(f"Repair failed: {e}")
+                # Continue with current best
 
-        # Final validation - accept if no critical entities missing
-        output_graph = builder.build_from_text(output)
-        diff = comparator.compare(source_graph, output_graph)
-        missing_entities = self._extract_critical_entities(diff.missing_nodes)
-        return output, len(missing_entities) == 0
+            score_history.append(combined_score)
+
+        # Final decision: use best output if it meets a minimum quality bar
+        # If best is still too low, fall back to source (preserve semantics over style)
+        minimum_acceptable = threshold * 0.7  # Allow 30% below threshold before fallback
+
+        if best_score >= minimum_acceptable:
+            logger.info(
+                f"Using best output (score={best_score:.3f}, threshold={threshold})"
+            )
+            return best_output, best_score >= threshold
+        else:
+            # Semantic divergence too high - fall back to source text
+            logger.warning(
+                f"Entailment too low ({best_score:.3f} < {minimum_acceptable:.3f}), "
+                f"falling back to source text to preserve semantics"
+            )
+            return source, False
 
     def _extract_critical_entities(self, missing_nodes: list) -> List[str]:
         """Extract critical named entities from missing proposition nodes.
