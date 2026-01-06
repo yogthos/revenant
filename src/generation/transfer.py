@@ -711,16 +711,18 @@ class StyleTransfer:
         stats: Optional['TransferStats'] = None,
         max_attempts: int = 3,
     ) -> Tuple[str, bool]:
-        """Validate styled output using bidirectional entailment with convergence tracking.
+        """Validate styled output using multi-layer semantic verification.
 
-        Uses NLI-based entailment to ensure semantic parity:
-        - Forward: Output preserves source content (nothing lost)
-        - Backward: Output doesn't hallucinate (nothing fabricated)
+        Uses comprehensive verification to catch:
+        - Sentence-level hallucinations (fabricated content)
+        - Missing source content
+        - Fabricated named entities
+        - Topic drift
 
         Convergence strategy:
         - Track best output across all attempts
-        - Terminate if score meets threshold OR plateaus for 2 iterations
-        - Fall back to source text if nothing meets threshold
+        - Use detailed diagnostics to guide targeted repairs
+        - Fall back to source text if hallucinations persist
 
         Args:
             source: Original source text.
@@ -734,77 +736,97 @@ class StyleTransfer:
         Returns:
             Tuple of (output, is_valid).
         """
+        from ..validation.semantic_verifier import verify_semantic_preservation
+
         threshold = self.config.entailment_threshold
 
-        # Track best output across all attempts for convergence
+        # Track best output across all attempts
         best_output = output
         best_score = 0.0
-        score_history = []
+        best_result = None
         plateau_count = 0
 
         for attempt in range(max_attempts + 1):  # +1 for initial check
-            # Compute bidirectional entailment
-            combined_score, forward_score, backward_score = self._compute_bidirectional_entailment(source, output)
+            # Multi-layer semantic verification
+            result = verify_semantic_preservation(source, output, threshold)
 
             logger.info(
-                f"Entailment check {attempt}/{max_attempts}: "
-                f"combined={combined_score:.3f} (forward={forward_score:.3f}, backward={backward_score:.3f}), "
-                f"threshold={threshold}"
+                f"Semantic verification {attempt}/{max_attempts}: "
+                f"score={result.overall_score:.3f}, grounded={result.grounded_ratio:.0%}, "
+                f"hallucinations={result.hallucination_count}, threshold={threshold}"
             )
 
+            # Log detailed issues
+            issues = result.get_issues()
+            if issues:
+                logger.info(f"  Issues: {'; '.join(issues)}")
+
             # Track best output seen
-            if combined_score > best_score:
-                best_score = combined_score
+            if result.overall_score > best_score:
+                best_score = result.overall_score
                 best_output = output
+                best_result = result
                 plateau_count = 0
             else:
                 plateau_count += 1
 
-            # Check if we've met the threshold
-            if combined_score >= threshold:
-                logger.debug(f"Entailment threshold met: {combined_score:.3f} >= {threshold}")
+            # Check if we've met the threshold with no hallucinations
+            if result.overall_score >= threshold and result.hallucination_count == 0:
+                logger.debug(f"Verification passed: {result.overall_score:.3f} >= {threshold}")
                 return output, True
 
-            # Check for convergence plateau (no improvement for 2 iterations)
-            if plateau_count >= 2:
-                logger.info(
-                    f"Entailment score plateaued at {best_score:.3f} "
-                    f"(below threshold {threshold})"
+            # Immediate rejection if too many hallucinations
+            if result.hallucination_count >= 3:
+                logger.warning(
+                    f"Too many hallucinations ({result.hallucination_count}), "
+                    f"falling back to source"
                 )
+                return source, False
+
+            # Check for convergence plateau
+            if plateau_count >= 2:
+                logger.info(f"Score plateaued at {best_score:.3f}")
                 break
 
-            # Skip repair on last iteration (we're just validating)
+            # Skip repair on last iteration
             if attempt >= max_attempts:
                 break
 
-            # Determine repair strategy based on which direction is weaker
+            # No generator = no repair possible
             if not self.generator:
-                logger.warning("No generator for repair, keeping best output")
+                logger.warning("No generator for repair")
                 break
 
-            # Diagnose the issue
-            if backward_score < forward_score:
-                # Output has hallucinations - regenerate with stricter adherence
-                repair_hint = "[IMPORTANT: Include ONLY information from the source. Add nothing new.]"
-                logger.debug(f"Repair {attempt + 1}: Addressing hallucinations (backward={backward_score:.3f})")
-            else:
-                # Output is missing content - regenerate with explicit content hints
-                # Extract missing entities from semantic graph comparison
-                output_graph = builder.build_from_text(output)
-                diff = comparator.compare(source_graph, output_graph)
-                missing_entities = self._extract_critical_entities(diff.missing_nodes)
+            # Craft repair prompt based on specific issues
+            repair_hints = []
 
-                if missing_entities:
-                    repair_hint = f"[MUST INCLUDE: {', '.join(missing_entities[:5])}]"  # Limit to 5
-                    logger.debug(f"Repair {attempt + 1}: Addressing missing entities: {missing_entities[:5]}")
-                else:
-                    repair_hint = "[IMPORTANT: Preserve all key information from the source.]"
-                    logger.debug(f"Repair {attempt + 1}: Addressing content loss (forward={forward_score:.3f})")
+            if result.hallucination_count > 0:
+                repair_hints.append(
+                    "CRITICAL: Include ONLY facts from the source text. "
+                    "Do not add any new information, quotes, or examples."
+                )
+
+            if result.fabricated_entities:
+                repair_hints.append(
+                    f"ERROR: Remove fabricated references to: {', '.join(result.fabricated_entities[:3])}"
+                )
+
+            if result.missing_entities:
+                repair_hints.append(
+                    f"MUST INCLUDE: {', '.join(result.missing_entities[:5])}"
+                )
+
+            if result.content_word_coverage < 0.5:
+                missing_sample = ', '.join(result.missing_content_words[:5])
+                repair_hints.append(
+                    f"PRESERVE these concepts: {missing_sample}"
+                )
+
+            repair_hint = "[" + " | ".join(repair_hints) + "]" if repair_hints else ""
 
             try:
-                # Use lower temperature for repairs to reduce variance
-                repair_content = f"{repair_hint}\n\n{source}"
-                target_words = len(output.split())
+                repair_content = f"{repair_hint}\n\n{source}" if repair_hint else source
+                target_words = len(source.split())  # Match source length, not hallucinated length
 
                 repaired = self.generator.generate(
                     content=repair_content,
@@ -818,28 +840,32 @@ class StyleTransfer:
                     logger.debug(f"Repair produced: {len(repaired.split())} words")
                 else:
                     logger.warning("Repair produced empty/short output")
-                    # Continue with current best
 
             except Exception as e:
                 logger.warning(f"Repair failed: {e}")
-                # Continue with current best
 
-            score_history.append(combined_score)
+        # Final decision based on best result
+        if best_result is None:
+            return source, False
 
-        # Final decision: use best output if it meets a minimum quality bar
-        # If best is still too low, fall back to source (preserve semantics over style)
-        minimum_acceptable = threshold * 0.7  # Allow 30% below threshold before fallback
+        # Strict: reject if any hallucinations detected in best output
+        if best_result.hallucination_count > 0:
+            logger.warning(
+                f"Best output has {best_result.hallucination_count} hallucination(s), "
+                f"falling back to source"
+            )
+            return source, False
+
+        # Accept if score is reasonable (allow some flexibility for style changes)
+        minimum_acceptable = threshold * 0.6
 
         if best_score >= minimum_acceptable:
-            logger.info(
-                f"Using best output (score={best_score:.3f}, threshold={threshold})"
-            )
+            logger.info(f"Using best output (score={best_score:.3f})")
             return best_output, best_score >= threshold
         else:
-            # Semantic divergence too high - fall back to source text
             logger.warning(
-                f"Entailment too low ({best_score:.3f} < {minimum_acceptable:.3f}), "
-                f"falling back to source text to preserve semantics"
+                f"Score too low ({best_score:.3f} < {minimum_acceptable:.3f}), "
+                f"falling back to source"
             )
             return source, False
 
