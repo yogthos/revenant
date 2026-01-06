@@ -88,25 +88,3 @@ Rewrite as {author}'s academic/scientific voice while preserving ALL content:
 """
 
     return prompt
-
-
-def build_minimal_persona_prompt(
-    content: str,
-    author: str,
-    persona: PersonaConfig,
-) -> str:
-    """Build a shorter persona prompt for repairs/re-transfers.
-
-    Less verbose than full prompt, used when we need quick fixes.
-    """
-    return f"""You are {author}. Style: dense academic prose.
-
-RULES:
-- Syntactic complexity: use em-dashes, which-clauses, long modifiers
-- Nominalization: abstract nouns over active verbs
-- Clinical detachment: no melodrama, describe process not emotion
-- Preserve ALL facts
-
-{content}
-###
-"""

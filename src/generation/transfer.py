@@ -133,6 +133,7 @@ class TransferStats:
             "paragraphs_processed": self.paragraphs_processed,
             "paragraphs_repaired": self.paragraphs_repaired,
             "words_replaced": self.words_replaced,
+            "sentences_restructured": self.sentences_restructured,
             "sentences_split": self.sentences_split,
             "grammar_corrections": self.grammar_corrections,
             "total_time_seconds": round(self.total_time_seconds, 2),
