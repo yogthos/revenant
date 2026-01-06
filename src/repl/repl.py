@@ -94,7 +94,7 @@ class StyleREPL:
         self.transfer = transfer
         self.config = config
         self.use_color = config.use_color and supports_color()
-        self.history: list[tuple[str, str]] = []  # (input, output) pairs
+        self.history: list[tuple[str, list[str]]] = []  # (input, [variations]) pairs
         self.running = False
 
     def _color(self, text: str, *codes: str) -> str:
@@ -127,7 +127,8 @@ class StyleREPL:
 
         # Instructions
         print()
-        print(self._color("  Enter text to transform (press Enter twice to submit)", Colors.DIM))
+        print(self._color("  Enter a paragraph to transform (press Enter twice to submit)", Colors.DIM))
+        print(self._color("  Generates 5 variations for comparison", Colors.DIM))
         print(self._color("  Commands: /help, /clear, /history, /quit", Colors.DIM))
         print()
 
@@ -141,9 +142,15 @@ class StyleREPL:
         print(f"  {self._color('/last', Colors.CYAN)}     Show last transformation")
         print(f"  {self._color('/quit', Colors.CYAN)}     Exit the REPL")
         print()
-        print(self._color("Input:", Colors.BOLD))
-        print("  Type or paste your text, then press Enter twice to transform.")
-        print("  Multi-line input is supported - just keep typing until done.")
+        print(self._color("How it works:", Colors.BOLD))
+        print("  1. Enter a paragraph (press Enter twice to submit)")
+        print("  2. Text is neutralized via Round-Trip Translation (RTT)")
+        print("  3. LoRA generates 5 variations for comparison")
+        print("  4. Choose the best variation for your document")
+        print()
+        print(self._color("Tips:", Colors.BOLD))
+        print("  - Best for fixing specific paragraphs in an otherwise-good document")
+        print("  - Multi-line input is supported")
         print()
 
     def _print_history(self) -> None:
@@ -156,14 +163,17 @@ class StyleREPL:
         print(self._color(f"History ({len(self.history)} transformations):", Colors.BOLD))
         print()
 
-        for i, (inp, out) in enumerate(self.history, 1):
+        for i, (inp, variations) in enumerate(self.history, 1):
             # Truncate for display
             inp_preview = inp[:50] + "..." if len(inp) > 50 else inp
-            out_preview = out[:50] + "..." if len(out) > 50 else out
+            first_var = variations[0] if variations else ""
+            out_preview = first_var[:50] + "..." if len(first_var) > 50 else first_var
 
             print(f"  {self._color(f'[{i}]', Colors.DIM)}")
             print(f"    {self._color('Input:', Colors.YELLOW)} {inp_preview}")
             print(f"    {self._color('Output:', Colors.GREEN)} {out_preview}")
+            if len(variations) > 1:
+                print(f"    {self._color(f'({len(variations)} variations)', Colors.DIM)}")
             print()
 
     def _print_last(self) -> None:
@@ -172,15 +182,16 @@ class StyleREPL:
             print(self._color("  No transformations yet.", Colors.DIM))
             return
 
-        inp, out = self.history[-1]
+        inp, variations = self.history[-1]
         print()
         print(self._color("Last transformation:", Colors.BOLD))
         print()
         print(self._color("Input:", Colors.YELLOW))
         self._print_wrapped(inp)
         print()
-        print(self._color("Output:", Colors.GREEN))
-        self._print_wrapped(out)
+
+        # Show all variations
+        self._print_output(variations)
         print()
 
     def _print_wrapped(self, text: str, indent: int = 2) -> None:
@@ -232,48 +243,86 @@ class StyleREPL:
 
         return "\n".join(lines)
 
-    def _transform_text(self, text: str) -> Optional[str]:
-        """Transform text using the style transfer pipeline."""
+    def _transform_text(self, text: str, num_variations: int = 5) -> Optional[list[str]]:
+        """Transform text using the style transfer pipeline.
+
+        Args:
+            text: Input text to transform.
+            num_variations: Number of variations to generate (default 5).
+
+        Returns:
+            List of output variations, or None on error.
+        """
         if not text.strip():
             return None
 
-        # Show processing indicator
-        print()
-        print(self._color("  Transforming...", Colors.DIM), end="", flush=True)
+        word_count = len(text.split())
 
-        try:
-            # Use transfer_paragraph for single chunks, transfer_document for longer
-            word_count = len(text.split())
-
-            if word_count < 100:
-                # Short text - single paragraph mode
-                output, score = self.transfer.transfer_paragraph(text)
-            else:
-                # Longer text - document mode
+        # For longer documents, just do single output
+        if word_count >= 100:
+            print()
+            print(self._color("  Transforming document...", Colors.DIM), end="", flush=True)
+            try:
                 output, stats = self.transfer.transfer_document(text)
+                print("\r" + " " * 50 + "\r", end="")
+                return [output] if output else None
+            except Exception as e:
+                print("\r" + " " * 50 + "\r", end="")
+                print(self._color(f"  Error: {e}", Colors.RED))
+                logger.exception("Transform error")
+                return None
 
-            # Clear the "Transforming..." line
-            print("\r" + " " * 50 + "\r", end="")
+        # Generate multiple variations for paragraphs
+        variations = []
+        print()
 
-            return output
+        for i in range(num_variations):
+            print(self._color(f"  Generating variation {i+1}/{num_variations}...", Colors.DIM), end="\r", flush=True)
 
-        except Exception as e:
-            print("\r" + " " * 50 + "\r", end="")
-            print(self._color(f"  Error: {e}", Colors.RED))
-            logger.exception("Transform error")
+            try:
+                output, score = self.transfer.transfer_paragraph(text)
+                if output and output.strip():
+                    # Avoid duplicates
+                    if output.strip() not in [v.strip() for v in variations]:
+                        variations.append(output)
+            except Exception as e:
+                logger.warning(f"Variation {i+1} failed: {e}")
+                continue
+
+        # Clear the progress line
+        print(" " * 60, end="\r")
+
+        if not variations:
+            print(self._color("  Error: No variations generated", Colors.RED))
             return None
 
-    def _print_output(self, output: str) -> None:
-        """Print the transformed output."""
+        return variations
+
+    def _print_output(self, variations: list[str]) -> None:
+        """Print the transformed output variations."""
         width = get_terminal_width()
 
         print()
         print(self._color("─" * width, Colors.DIM))
-        print(self._color(f"  Output ({len(output.split())} words):", Colors.GREEN, Colors.BOLD))
-        print(self._color("─" * width, Colors.DIM))
-        print()
 
-        self._print_wrapped(output)
+        if len(variations) == 1:
+            # Single output (document mode)
+            output = variations[0]
+            print(self._color(f"  Output ({len(output.split())} words):", Colors.GREEN, Colors.BOLD))
+            print(self._color("─" * width, Colors.DIM))
+            print()
+            self._print_wrapped(output)
+        else:
+            # Multiple variations
+            print(self._color(f"  {len(variations)} Variations Generated:", Colors.GREEN, Colors.BOLD))
+            print(self._color("─" * width, Colors.DIM))
+
+            for i, output in enumerate(variations, 1):
+                print()
+                print(self._color(f"  [{i}] ", Colors.CYAN, Colors.BOLD) +
+                      self._color(f"({len(output.split())} words)", Colors.DIM))
+                print(self._color("  " + "─" * (width - 4), Colors.DIM))
+                self._print_wrapped(output)
 
         print(self._color("─" * width, Colors.DIM))
         print()

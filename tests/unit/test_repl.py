@@ -133,11 +133,14 @@ class TestStyleREPL:
         assert result is True
 
     def test_transform_text_short(self, mock_transfer, repl_config):
-        """Test transforming short text uses transfer_paragraph."""
+        """Test transforming short text generates variations using transfer_paragraph."""
         repl = StyleREPL(mock_transfer, repl_config)
         result = repl._transform_text("Short test input.")
-        assert result == "Transformed text."
-        mock_transfer.transfer_paragraph.assert_called_once()
+        # Now returns a list of variations
+        assert isinstance(result, list)
+        assert "Transformed text." in result
+        # Called multiple times for variations
+        assert mock_transfer.transfer_paragraph.call_count >= 1
 
     def test_transform_empty_text(self, mock_transfer, repl_config):
         """Test transforming empty text returns None."""
@@ -150,12 +153,16 @@ class TestStyleREPL:
         repl = StyleREPL(mock_transfer, repl_config)
 
         # Simulate a transformation
-        output = repl._transform_text("Test input")
-        if output:
-            repl.history.append(("Test input", output))
+        variations = repl._transform_text("Test input")
+        if variations:
+            repl.history.append(("Test input", variations))
 
         assert len(repl.history) == 1
-        assert repl.history[0] == ("Test input", "Transformed text.")
+        # History now stores list of variations
+        inp, vars = repl.history[0]
+        assert inp == "Test input"
+        assert isinstance(vars, list)
+        assert "Transformed text." in vars
 
 
 if __name__ == "__main__":
