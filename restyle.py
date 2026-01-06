@@ -223,6 +223,8 @@ def transfer_file(
     perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
+    lora_scale: float = None,
+    checkpoint: str = None,
 ) -> None:
     """Transfer a file using LoRA adapter.
 
@@ -236,6 +238,8 @@ def transfer_file(
         perspective: Output perspective (None uses config default).
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
+        lora_scale: LoRA influence scale (None uses config default).
+        checkpoint: Specific checkpoint file to use (None uses final adapter).
     """
     from src.generation.transfer import StyleTransfer, TransferConfig
     from src.config import load_config
@@ -266,6 +270,8 @@ def transfer_file(
 
     if app_config:
         gen = app_config.generation
+        # Use CLI lora_scale if provided, otherwise config value
+        effective_lora_scale = lora_scale if lora_scale is not None else gen.lora_scale
         config = TransferConfig(
             # Use CLI temperature if specified, otherwise config value
             temperature=temperature,
@@ -278,7 +284,7 @@ def transfer_file(
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
             # LoRA influence
-            lora_scale=gen.lora_scale,
+            lora_scale=effective_lora_scale,
             # Neutralization
             skip_neutralization=gen.skip_neutralization,
             # Post-processing
@@ -304,6 +310,7 @@ def transfer_file(
             verify_entailment=verify,
             perspective=effective_perspective,
             use_structural_rag=True,  # Default to enabled
+            lora_scale=lora_scale if lora_scale is not None else 1.0,
         )
 
     # Create critic provider for repairs
@@ -338,6 +345,7 @@ def transfer_file(
         author_name=author,
         critic_provider=critic_provider,
         config=config,
+        checkpoint=checkpoint,
     )
 
     # Set up output file for streaming
@@ -469,6 +477,20 @@ def main():
         "--no-verify",
         action="store_true",
         help="Disable entailment verification",
+    )
+    parser.add_argument(
+        "--lora-scale",
+        type=float,
+        default=None,
+        help="LoRA influence scale (0.0=base only, 0.5=balanced, 1.0=full). "
+             "Overrides config setting.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default=None,
+        help="Specific checkpoint file to use (e.g., '0000600_adapters.safetensors'). "
+             "Uses final adapter if not specified.",
     )
 
     # Utility options
@@ -605,6 +627,8 @@ def main():
         perspective=args.perspective,
         verify=not args.no_verify,
         verbose=args.verbose,
+        lora_scale=args.lora_scale,
+        checkpoint=args.checkpoint,
     )
 
 

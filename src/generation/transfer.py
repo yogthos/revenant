@@ -172,6 +172,7 @@ class StyleTransfer:
         critic_provider,
         config: Optional[TransferConfig] = None,
         verify_fn: Optional[Callable[[str, str], float]] = None,
+        checkpoint: Optional[str] = None,
     ):
         """Initialize the fast transfer pipeline.
 
@@ -181,6 +182,7 @@ class StyleTransfer:
             critic_provider: LLM provider for critique/repair (e.g., DeepSeek).
             config: Transfer configuration.
             verify_fn: Optional verification function (original, output) -> score.
+            checkpoint: Specific checkpoint file to use (e.g., "0000600_adapters.safetensors").
         """
         self.config = config or TransferConfig()
         self.author = author_name
@@ -198,6 +200,7 @@ class StyleTransfer:
         self.generator = LoRAStyleGenerator(
             adapter_path=adapter_path,
             config=gen_config,
+            checkpoint=checkpoint,
         )
 
         # Initialize repetition reducer for post-processing

@@ -10,7 +10,9 @@ Performance target: ~5-10 seconds per paragraph generation.
 """
 
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -154,6 +156,7 @@ class LoRAStyleGenerator:
         adapter_path: Optional[str] = None,
         base_model: str = "mlx-community/Qwen3-8B-Base-bf16",
         config: Optional[GenerationConfig] = None,
+        checkpoint: Optional[str] = None,
     ):
         """Initialize the LoRA generator.
 
@@ -161,6 +164,8 @@ class LoRAStyleGenerator:
             adapter_path: Path to LoRA adapter directory.
             base_model: Base model (overridden by adapter metadata if available).
             config: Generation configuration.
+            checkpoint: Specific checkpoint file to use (e.g., "0000600_adapters.safetensors").
+                       If provided, creates a temp directory with symlinks to use this checkpoint.
         """
         if not MLX_AVAILABLE:
             raise RuntimeError(
@@ -170,8 +175,10 @@ class LoRAStyleGenerator:
 
         self.config = config or GenerationConfig()
         self.adapter_path = adapter_path
+        self.checkpoint = checkpoint
         self.base_model_name = base_model
         self.metadata: Optional[AdapterMetadata] = None
+        self._temp_dir = None  # For checkpoint symlink directory
 
         # Lazy load model
         self._model = None
@@ -195,10 +202,35 @@ class LoRAStyleGenerator:
         except Exception:
             return False
 
+    def _setup_checkpoint_adapter(self) -> str:
+        """Create temp directory with symlinks for checkpoint loading.
+
+        Returns:
+            Path to use as adapter_path (temp dir with symlinks).
+        """
+        adapter_dir = Path(self.adapter_path)
+        checkpoint_file = adapter_dir / self.checkpoint
+
+        if not checkpoint_file.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_file}")
+
+        # Create temp directory
+        self._temp_dir = tempfile.mkdtemp(prefix="lora_checkpoint_")
+        temp_path = Path(self._temp_dir)
+
+        # Symlink the checkpoint as adapters.safetensors
+        (temp_path / "adapters.safetensors").symlink_to(checkpoint_file.resolve())
+
+        # Symlink adapter_config.json if it exists
+        config_file = adapter_dir / "adapter_config.json"
+        if config_file.exists():
+            (temp_path / "adapter_config.json").symlink_to(config_file.resolve())
+
+        logger.info(f"Using checkpoint: {self.checkpoint}")
+        return self._temp_dir
+
     def _ensure_loaded(self):
         """Ensure model is loaded."""
-        import os
-
         if self._model is not None:
             return
 
@@ -214,11 +246,17 @@ class LoRAStyleGenerator:
 
         try:
             if self.adapter_path:
+                # Determine effective adapter path (handle checkpoint if specified)
+                if self.checkpoint:
+                    effective_adapter_path = self._setup_checkpoint_adapter()
+                else:
+                    effective_adapter_path = self.adapter_path
+
                 lora_scale = self.config.lora_scale
                 logger.info(f"With LoRA adapter: {self.adapter_path} (scale={lora_scale})")
                 self._model, self._tokenizer = load(
                     self.base_model_name,
-                    adapter_path=self.adapter_path,
+                    adapter_path=effective_adapter_path,
                 )
                 # Apply LoRA scale if not default (1.0)
                 # This scales the adapter weights to control style influence
@@ -546,4 +584,11 @@ class LoRAStyleGenerator:
         """Unload model to free memory."""
         self._model = None
         self._tokenizer = None
+
+        # Clean up temp checkpoint directory if it exists
+        if self._temp_dir and os.path.exists(self._temp_dir):
+            import shutil
+            shutil.rmtree(self._temp_dir, ignore_errors=True)
+            self._temp_dir = None
+
         logger.info("Model unloaded")
