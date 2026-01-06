@@ -7,11 +7,11 @@ Transform text to match a target author's writing style while preserving semanti
 - **LoRA-Based Generation**: Fine-tuned adapters capture author style in model weights
 - **RTT Neutralization**: Round-trip translation strips style before restyling
 - **Semantic Graph Validation**: Validates content preservation using proposition graphs
-- **Style-Preserving Repair**: Uses LoRA for repairs to maintain author voice (not generic LLM)
+- **Structural Grafting**: Copies rhetorical structure (argument flow) from author samples
 - **Structural RAG**: Provides rhythm and syntax guidance from author corpus
-- **NLI Auditor**: Optional sentence-level fact verification
+- **Persona Prompting**: Dense academic prose patterns to evade AI detection
 - **Perspective Control**: Transform to first/third person while maintaining style
-- **Interactive REPL**: Terminal UI for live style transfer with history and commands
+- **Interactive REPL**: Terminal UI with 5 variations per paragraph
 - **Fast Transfer**: ~15-30 seconds per paragraph
 
 ## Requirements
@@ -19,7 +19,7 @@ Transform text to match a target author's writing style while preserving semanti
 - Python 3.9+
 - Apple Silicon Mac (for MLX-based training/inference)
 - ~8GB RAM for inference, ~50GB for training
-- DeepSeek API key (for RTT neutralization)
+- DeepSeek API key (for RTT neutralization and skeleton extraction)
 
 ---
 
@@ -55,8 +55,10 @@ python restyle.py input.txt -o output.txt \
     --adapter lora_adapters/lovecraft \
     --author "H.P. Lovecraft"
 
-# Interactive REPL mode for live style transfer
-python restyle.py --repl --adapter lora_adapters/lovecraft
+# Interactive REPL mode (generates 5 variations)
+python restyle.py --repl \
+    --adapter lora_adapters/lovecraft \
+    --author "H.P. Lovecraft"
 
 # List available adapters
 python restyle.py --list-adapters
@@ -67,9 +69,59 @@ python restyle.py input.txt -o output.txt \
     --no-verify
 ```
 
-### Interactive REPL Mode
+---
 
-The REPL provides an interactive terminal UI for live style transfer:
+## Corpus Management
+
+### Loading a Corpus
+
+Use the unified corpus loading script to clean, analyze, and index author text:
+
+```bash
+# Full pipeline: clean, dedupe, extract skeletons, index
+python scripts/load_corpus.py \
+    --input data/corpus/author.txt \
+    --author "Author Name"
+
+# Fast mode (skip skeleton extraction)
+python scripts/load_corpus.py \
+    --input data/corpus/author.txt \
+    --author "Author Name" \
+    --skip-skeletons
+
+# Clear existing and reload
+python scripts/load_corpus.py \
+    --input data/corpus/author.txt \
+    --author "Author Name" \
+    --clear
+
+# List indexed authors
+python scripts/load_corpus.py --list
+```
+
+**What it does:**
+
+1. **Quality Filtering**: Removes short paragraphs, encoding artifacts, fragments
+2. **Deduplication**: Removes near-duplicate passages using semantic similarity
+3. **Style Metrics**: Extracts sentence length, complexity, POS ratios
+4. **Embeddings**: Generates vectors for semantic search
+5. **Rhetorical Skeletons**: Extracts argument structure via LLM (e.g., `[Observation] → [Paradox] → [Conclusion]`)
+6. **ChromaDB Indexing**: Stores everything for retrieval during inference
+
+### Corpus Requirements
+
+| Requirement | Recommendation |
+|-------------|----------------|
+| **Size** | 50KB-500KB (~0.9M tokens optimal) |
+| **Format** | Clean paragraphs separated by blank lines |
+| **Content** | Representative prose samples |
+| **Remove** | Headers, footnotes, citations |
+
+---
+
+## Interactive REPL Mode
+
+The REPL provides an interactive terminal UI for live style transfer with **5 variations** per input:
 
 ```bash
 python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecraft"
@@ -80,23 +132,40 @@ python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecr
 ─────────────── Style Transfer: H.P. Lovecraft ────────────────
 ───────────────────────────────────────────────────────────────
 
-  Enter text to transform (press Enter twice to submit)
+  Enter a paragraph to transform (press Enter twice to submit)
+  Generates 5 variations for comparison
   Commands: /help, /clear, /history, /quit
 
 │ The old house stood at the end of the street.
 │
 
 ───────────────────────────────────────────────────────────────
-  Output (23 words):
+  5 Variations Generated:
 ───────────────────────────────────────────────────────────────
 
+  [1] (23 words)
+  ──────────────────────────────────────────────────────────────
   The ancient edifice loomed at the terminus of that forgotten
   thoroughfare, its gambrel roof silhouetted against a gibbous moon.
 
+  [2] (21 words)
+  ──────────────────────────────────────────────────────────────
+  At the street's neglected end stood the house—ancient, decrepit,
+  and possessed of an atmosphere wholly its own.
+
+  ...
 ───────────────────────────────────────────────────────────────
 ```
 
+**How it works:**
+
+1. Enter a paragraph (press Enter twice to submit)
+2. Text is neutralized via Round-Trip Translation (RTT)
+3. LoRA generates 5 variations for comparison
+4. Choose the best variation for your document
+
 **REPL Commands:**
+
 | Command | Description |
 |---------|-------------|
 | `/help` | Show available commands |
@@ -111,31 +180,19 @@ python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecr
 
 ```mermaid
 flowchart LR
-    A[Author Corpus] --> B[Curate]
+    A[Author Corpus] --> B[Load & Index]
     B --> C[RTT Neutralize]
     C --> D[Generate Training Pairs]
     D --> E[Train LoRA]
     E --> F[Adapter Ready]
 ```
 
-### Step 1: Prepare Corpus
-
-Create a plain text file with the author's writing. Place in `data/corpus/`:
-
-| Requirement | Recommendation |
-|-------------|----------------|
-| **Size** | 50KB-500KB (~0.9M tokens optimal) |
-| **Format** | Clean paragraphs separated by blank lines |
-| **Content** | Representative prose samples |
-| **Remove** | Headers, footnotes, citations |
-
-For large corpuses, curate to optimal size:
+### Step 1: Load Corpus into ChromaDB
 
 ```bash
-python scripts/curate_corpus.py \
-    --input data/corpus/author_raw.txt \
-    --output data/corpus/author.txt \
-    --target-tokens 900000
+python scripts/load_corpus.py \
+    --input data/corpus/author.txt \
+    --author "Author Name"
 ```
 
 ### Step 2: Generate Training Data
@@ -229,80 +286,6 @@ python restyle.py input.txt -o output.txt \
 
 ---
 
-## Project Structure
-
-```
-text-style-transfer/
-├── restyle.py                    # Main CLI entry point
-├── config.json                   # Configuration file
-├── requirements.txt              # Python dependencies
-│
-├── src/                          # Source code
-│   ├── generation/               # Style transfer pipeline
-│   │   ├── transfer.py          # Main StyleTransfer class
-│   │   ├── lora_generator.py    # MLX LoRA inference
-│   │   └── document_context.py  # Document-level context
-│   │
-│   ├── validation/               # Content preservation
-│   │   ├── semantic_graph.py    # Proposition graph analysis
-│   │   ├── nli_auditor.py       # Sentence-level NLI verification
-│   │   └── triplet_extractor.py # Subject-predicate-object extraction
-│   │
-│   ├── neutralization/           # Style stripping
-│   │   └── openie_flatten.py    # RTT-based neutralization
-│   │
-│   ├── rag/                      # Structural RAG system
-│   │   ├── style_analyzer.py    # spaCy style metrics
-│   │   ├── corpus_indexer.py    # ChromaDB indexing
-│   │   ├── structural_analyzer.py # Rhythm pattern analysis
-│   │   └── structural_rag.py    # Rhythm/syntax guidance
-│   │
-│   ├── llm/                      # LLM providers
-│   │   ├── provider.py          # Base provider interface
-│   │   ├── mlx_provider.py      # MLX (local Apple Silicon)
-│   │   ├── deepseek.py          # DeepSeek API
-│   │   └── ollama.py            # Ollama (local)
-│   │
-│   ├── vocabulary/               # Post-processing
-│   │   └── repetition_reducer.py # LLM-speak reduction
-│   │
-│   ├── repl/                     # Interactive REPL
-│   │   └── repl.py              # Terminal UI for live transfer
-│   │
-│   └── utils/                    # Utilities
-│       ├── nlp.py               # spaCy utilities
-│       ├── prompts.py           # Prompt templates
-│       └── logging.py           # Logging
-│
-├── scripts/                      # Training & data scripts
-│   ├── curate_corpus.py         # Filter corpus to optimal size
-│   ├── generate_flat_training.py # Generate training data via RTT
-│   ├── train_mlx_lora.py        # Train LoRA adapter
-│   └── blend_corpuses.py        # Blend author styles
-│
-├── prompts/                      # Prompt templates
-│   ├── style_transfer.txt       # Main generation prompt
-│   ├── nli_repair.txt           # NLI-based repair prompt
-│   ├── document_context.txt     # Document analysis prompt
-│   ├── rtt_deepseek.txt         # RTT neutralization (single)
-│   ├── rtt_deepseek_batch.txt   # RTT neutralization (batch)
-│   ├── rtt_to_mandarin.txt      # RTT step 1 (local MLX)
-│   └── rtt_to_english.txt       # RTT step 2 (local MLX)
-│
-├── data/
-│   ├── corpus/                   # Author corpus files
-│   ├── training/                 # Generated training data
-│   └── rag_index/                # ChromaDB persistent index
-│
-└── lora_adapters/                # Trained LoRA adapters
-    └── <author>/
-        ├── adapters.safetensors # LoRA weights
-        ├── adapter_config.json  # LoRA config
-        └── metadata.json        # Training metadata
-```
-
----
-
 ## Architecture
 
 ### Inference Pipeline
@@ -321,11 +304,12 @@ flowchart TD
     subgraph "Per-Paragraph Pipeline"
         D[RTT Neutralization]
         E[Structural RAG Guidance]
+        E2[Structural Grafting]
         F[LoRA Style Generation]
         G[Semantic Graph Validation]
         H{Critical Entities Missing?}
         I[LoRA Style-Preserving Repair]
-        J[Repetition Reduction]
+        J[Post-Processing]
     end
 
     subgraph Output
@@ -336,7 +320,8 @@ flowchart TD
     B --> C
     C --> D
     D --> E
-    E -->|Rhythm Patterns| F
+    E --> E2
+    E2 -->|Skeleton + Sample| F
     F --> G
     G --> H
     H -->|Yes| I
@@ -346,110 +331,111 @@ flowchart TD
 
     style I fill:#e1f5fe
     style F fill:#e1f5fe
+    style E2 fill:#fff3e0
 ```
 
-**Key insight**: The repair loop uses the **same LoRA** as generation, not a generic LLM. This preserves the author's style during repairs. Vocabulary changes (the whole point of style transfer) are accepted; only missing named entities trigger repair.
+**Key Components:**
 
-### Training Pipeline
+- **RTT Neutralization**: Strips source style via English → Mandarin → English translation
+- **Structural RAG**: Retrieves rhythm patterns (sentence length distribution, complexity) from corpus
+- **Structural Grafting**: Finds semantically similar passage, extracts its rhetorical skeleton, injects as blueprint
+- **Semantic Graph Validation**: Only named entities trigger repair; vocabulary changes are accepted
+- **Post-Processing**: Grammar correction, sentence splitting, repetition reduction
 
-```mermaid
-flowchart TD
-    subgraph "Data Preparation"
-        A[Author Corpus]
-        B[Curate Script]
-        C[Filtered Corpus]
-    end
+### Structural Grafting
 
-    subgraph "Training Data Generation"
-        D[Chunk Text]
-        E[DeepSeek RTT Neutralize]
-        F["Training Pairs (neutral → styled)"]
-    end
+Copies the **argumentative structure** from author samples without copying words:
 
-    subgraph "LoRA Training"
-        G[MLX LoRA Fine-tuning]
-        H[Adapter Weights]
-    end
+```
+Input: "The scientific method begins with observation..."
 
-    A --> B
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-    F --> G
-    G --> H
+Retrieved Sample: "The cosmos, in its infinite expanse, presents to the
+inquiring mind a tapestry of phenomena..."
+
+Extracted Skeleton: [Observation] → [Paradox] → [Rhetorical Question] → [Resolution]
+
+Output: "The methodology of science—that most rigorous of human
+endeavors—commences with observation. Yet how curious that mere
+observation should yield such profound truths? The answer lies..."
 ```
 
-### Validation Flow
+---
 
-```mermaid
-flowchart TD
-    A[LoRA Output] --> B[Build Semantic Graph]
-    B --> C[Compare with Source Graph]
-    C --> D{Differences Found?}
-    D -->|No| E[Accept Output]
-    D -->|Yes| F[Extract Missing Entities]
-    F --> G{Critical Entities Missing?}
-    G -->|No| H[Accept - Vocabulary Changes OK]
-    G -->|Yes| I[LoRA Repair with Entity Hints]
-    I --> B
+## Project Structure
 
-    style H fill:#c8e6c9
-    style E fill:#c8e6c9
 ```
-
-The semantic graph extracts propositions (subject-predicate-object) from both source and output. Only **named entities** (people, places, organizations, numbers) trigger repairs. Vocabulary style changes like "big" → "cyclopean" are accepted as intended behavior.
-
-### Sequence Diagram
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant CLI as restyle.py
-    participant Transfer as StyleTransfer
-    participant RTT as RTT Neutralizer
-    participant RAG as Structural RAG
-    participant LoRA as LoRA Generator
-    participant Graph as Semantic Graph
-    participant NLI as NLI Auditor
-
-    User->>CLI: restyle.py input.txt
-    CLI->>Transfer: transfer_document()
-    Transfer->>Transfer: extract_document_context()
-
-    loop For each paragraph
-        Transfer->>RTT: neutralize(paragraph)
-        RTT-->>Transfer: neutral text
-
-        Transfer->>RAG: get_guidance(paragraph)
-        RAG-->>Transfer: rhythm patterns
-
-        Transfer->>LoRA: generate(neutral, guidance)
-        LoRA-->>Transfer: styled text
-
-        Transfer->>Graph: validate(source, output)
-        Graph-->>Transfer: missing_entities[]
-
-        alt Critical Entities Missing
-            Transfer->>LoRA: repair(source, entity_hints)
-            LoRA-->>Transfer: repaired styled text
-        end
-
-        opt NLI Enabled
-            Transfer->>NLI: audit(source, output)
-            NLI-->>Transfer: recall/precision scores
-        end
-    end
-
-    Transfer-->>CLI: output document
-    CLI-->>User: output.txt
+text-style-transfer/
+├── restyle.py                    # Main CLI entry point
+├── config.json                   # Configuration file
+├── requirements.txt              # Python dependencies
+│
+├── src/                          # Source code
+│   ├── generation/               # Style transfer pipeline
+│   │   ├── transfer.py          # Main StyleTransfer class
+│   │   ├── lora_generator.py    # MLX LoRA inference
+│   │   └── document_context.py  # Document-level context
+│   │
+│   ├── validation/               # Content preservation
+│   │   ├── semantic_graph.py    # Proposition graph analysis
+│   │   └── entailment.py        # NLI entailment checking
+│   │
+│   ├── rag/                      # Structural RAG system
+│   │   ├── style_analyzer.py    # spaCy style metrics
+│   │   ├── corpus_indexer.py    # ChromaDB indexing
+│   │   ├── structural_analyzer.py # Rhythm pattern analysis
+│   │   ├── structural_rag.py    # Rhythm/syntax guidance
+│   │   ├── skeleton_extractor.py # Rhetorical skeleton extraction
+│   │   ├── structural_grafter.py # Skeleton-based grafting
+│   │   └── enhanced_analyzer.py # Vocabulary/transition analysis
+│   │
+│   ├── persona/                  # AI detection evasion
+│   │   ├── config.py            # Per-author persona settings
+│   │   └── prompt_builder.py    # Dense academic prompts
+│   │
+│   ├── llm/                      # LLM providers
+│   │   ├── provider.py          # Base provider interface
+│   │   ├── mlx_provider.py      # MLX (local Apple Silicon)
+│   │   └── deepseek.py          # DeepSeek API
+│   │
+│   ├── vocabulary/               # Post-processing
+│   │   ├── repetition_reducer.py # LLM-speak reduction
+│   │   ├── sentence_splitter.py # Run-on sentence splitting
+│   │   └── grammar_checker.py   # Style-safe grammar fixes
+│   │
+│   ├── repl/                     # Interactive REPL
+│   │   └── repl.py              # Terminal UI (5 variations)
+│   │
+│   └── utils/                    # Utilities
+│       ├── nlp.py               # spaCy utilities
+│       └── logging.py           # Logging
+│
+├── scripts/                      # Training & data scripts
+│   ├── load_corpus.py           # Unified corpus loading
+│   ├── generate_flat_training.py # Generate training data via RTT
+│   ├── train_mlx_lora.py        # Train LoRA adapter
+│   ├── curate_corpus.py         # Filter corpus to optimal size
+│   └── update_skeletons.py      # Add skeletons to existing index
+│
+├── prompts/                      # Prompt templates
+│   └── style_transfer.txt       # Main generation prompt
+│
+├── data/
+│   ├── corpus/                   # Author corpus files
+│   ├── training/                 # Generated training data
+│   └── rag_index/                # ChromaDB persistent index
+│
+└── lora_adapters/                # Trained LoRA adapters
+    └── <author>/
+        ├── adapters.safetensors # LoRA weights
+        ├── adapter_config.json  # LoRA config
+        └── metadata.json        # Training metadata
 ```
 
 ---
 
 ## Configuration
 
-Copy `config.json.sample` to `config.json`:
+Key settings in `config.json`:
 
 ```json
 {
@@ -458,104 +444,56 @@ Copy `config.json.sample` to `config.json`:
       "writer": "mlx",
       "critic": "deepseek",
       "rtt": "deepseek"
-    },
-    "providers": {
-      "deepseek": {
-        "api_key": "${DEEPSEEK_API_KEY}",
-        "base_url": "https://api.deepseek.com",
-        "model": "deepseek-chat",
-        "max_tokens": 4096,
-        "temperature": 0.7,
-        "timeout": 120
-      },
-      "mlx": {
-        "model": "mlx-community/Qwen3-8B-Base-bf16",
-        "max_tokens": 256,
-        "temperature": 0.2,
-        "top_p": 0.9
-      },
-      "deepseek_rtt": {
-        "model": "deepseek-chat",
-        "max_tokens": 8192,
-        "temperature": 0.1,
-        "batch_size": 10,
-        "concurrent_batches": 4
-      }
-    },
-    "retry": {
-      "max_attempts": 5,
-      "base_delay": 2,
-      "max_delay": 60
     }
   },
   "generation": {
-    "entailment_threshold": 0.8,
-    "max_repair_attempts": 1,
-    "max_expansion_ratio": 3.0,
-    "target_expansion_ratio": 1.2,
-    "lora_scale": 1.0,
+    "entailment_threshold": 0.9,
+    "max_repair_attempts": 3,
+    "max_expansion_ratio": 2.5,
+    "target_expansion_ratio": 1.0,
+    "lora_scale": 0.3,
     "skip_neutralization": false,
     "reduce_repetition": true,
-    "repetition_threshold": 3,
-    "use_document_context": true,
-    "pass_headings_unchanged": true,
-    "min_paragraph_words": 10,
     "use_structural_rag": true,
-    "use_sentence_nli": false,
-    "nli_model": "cross-encoder/nli-deberta-v3-base",
-    "nli_recall_threshold": 0.5,
-    "nli_precision_threshold": 0.5
-  },
-  "style": {
-    "perspective": "preserve"
-  },
-  "log_level": "INFO"
+    "use_structural_grafting": true,
+    "use_persona": true,
+    "correct_grammar": true,
+    "split_sentences": true
+  }
 }
 ```
 
-### LLM Provider Options
-
-| Provider | Role | Description |
-|----------|------|-------------|
-| `writer` | Generation | Local MLX model with LoRA adapter |
-| `critic` | Repair/Validation | API model for quality checks |
-| `rtt` | Neutralization | API model for round-trip translation |
-
-### Generation Options
+### Key Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `entailment_threshold` | 0.8 | Min NLI score for content preservation |
-| `max_repair_attempts` | 1 | Max repair loop iterations |
-| `max_expansion_ratio` | 3.0 | Max output/input word ratio |
-| `target_expansion_ratio` | 1.2 | Target ratio for generation |
-| `lora_scale` | 1.0 | LoRA influence (0.0=base, 1.0=full, >1.5 risks memorization) |
-| `skip_neutralization` | false | Skip RTT, use original text directly |
-| `reduce_repetition` | true | Enable LLM-speak word replacement |
-| `repetition_threshold` | 3 | Words used N+ times get replaced |
-| `use_document_context` | true | Extract document-level intent/tone |
-| `pass_headings_unchanged` | true | Don't transform markdown headings |
-| `min_paragraph_words` | 10 | Skip paragraphs shorter than N words |
+| `lora_scale` | 0.3 | LoRA influence (0.0=base only, 1.0=full, >1.5 risks memorization) |
 | `use_structural_rag` | true | Enable rhythm/syntax guidance from corpus |
-
-### NLI Auditor Options (Sentence-Level Verification)
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `use_sentence_nli` | false | Enable sentence-level NLI (slower but more accurate) |
-| `nli_model` | `cross-encoder/nli-deberta-v3-base` | CrossEncoder model for NLI |
-| `nli_recall_threshold` | 0.5 | Min entailment probability for recall |
-| `nli_precision_threshold` | 0.5 | Max contradiction probability for precision |
-
-### Style Options
-
-| Option | Values | Description |
-|--------|--------|-------------|
-| `perspective` | `preserve`, `first_person_singular`, `first_person_plural`, `third_person`, `author_voice_third_person` | Output point-of-view |
+| `use_structural_grafting` | true | Enable rhetorical skeleton grafting |
+| `use_persona` | true | Enable dense academic persona prompts |
+| `skip_neutralization` | false | Skip RTT (use original text directly) |
+| `correct_grammar` | true | Apply style-safe grammar corrections |
+| `split_sentences` | true | Break run-on sentences at conjunctions |
 
 ---
 
 ## Troubleshooting
+
+### Content Being Lost
+
+- Increase `entailment_threshold` to 0.9
+- Check for missing named entities in verbose output (`-v`)
+- Lower `lora_scale` if model is hallucinating
+
+### Style Too Weak
+
+- Increase `lora_scale` to 0.5-1.0
+- Ensure corpus is indexed: `python scripts/load_corpus.py --list`
+
+### Memorized Output (No Content Overlap)
+
+- Lower `lora_scale` to 0.2-0.3
+- Use earlier training checkpoint
 
 ### MLX Not Available
 
@@ -574,28 +512,6 @@ Use 4-bit model in config.json:
 export DEEPSEEK_API_KEY="your-key"
 ```
 
-### spaCy Model Missing
-
-```bash
-python -m spacy download en_core_web_lg
-```
-
-### Style Too Weak
-
-Increase `lora_scale` in config.json to 1.5-2.0.
-
-### Content Being Lost
-
-Increase `entailment_threshold` to 0.9 and check for missing named entities in verbose output.
-
-### Style Being Destroyed During Repair
-
-This was a bug where generic LLM repair overwrote styled output. Now fixed: repairs use the LoRA to maintain author voice. Only missing named entities trigger repair; vocabulary changes are accepted.
-
-### Facts Being Changed (Numbers, Dates, Names)
-
-The LoRA may transform numbers to prose. Lower `lora_scale` to 0.5-0.8 for more factual preservation.
-
 ---
 
 ## Performance
@@ -606,7 +522,7 @@ The LoRA may transform numbers to prose. Lower `lora_scale` to 0.5-0.8 for more 
 | Memory (inference) | ~8GB |
 | Memory (training) | ~50GB |
 | Training time | ~1-2 hours |
-| RAG indexing | ~30-60 seconds |
+| Corpus indexing | ~2s/chunk (with skeletons) |
 
 ---
 
