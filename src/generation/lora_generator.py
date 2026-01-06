@@ -284,6 +284,7 @@ class LoRAStyleGenerator:
         max_tokens: Optional[int] = None,
         target_words: Optional[int] = None,
         structural_guidance: Optional[str] = None,
+        raw_prompt: bool = False,
     ) -> str:
         """Generate styled text from content description.
 
@@ -294,6 +295,8 @@ class LoRAStyleGenerator:
             target_words: Target word count for output.
             structural_guidance: Formatted structural guidance (rhythm, punctuation hints).
                            Use get_structural_guidance() to generate.
+            raw_prompt: If True, use content directly as prompt without formatting.
+                       Used when content is already a fully-formed prompt (e.g., persona prompt).
 
         Returns:
             Generated text in the author's style.
@@ -314,23 +317,27 @@ class LoRAStyleGenerator:
         # Use 2x input to allow for style variation
         auto_max_tokens = max(100, int(input_words * 2.0 * 1.3))
 
-        # Generate style tag from input to guide output structure
-        style_tag = generate_style_tag(user)
+        if raw_prompt:
+            # Use content directly as prompt (for persona-injected prompts)
+            prompt = content
+        else:
+            # Generate style tag from input to guide output structure
+            style_tag = generate_style_tag(user)
 
-        # Format structural guidance (adds newline prefix if present)
-        guidance_str = ""
-        if structural_guidance:
-            guidance_str = "\n\nSTRUCTURAL GUIDANCE:\n" + structural_guidance + "\n"
+            # Format structural guidance (adds newline prefix if present)
+            guidance_str = ""
+            if structural_guidance:
+                guidance_str = "\n\nSTRUCTURAL GUIDANCE:\n" + structural_guidance + "\n"
 
-        # Build prompt matching training data format EXACTLY
-        prompt = format_prompt(
-            "style_transfer",
-            author=author,
-            content=user,
-            word_count=target_words,
-            style_tag=style_tag,
-            structural_guidance=guidance_str,
-        )
+            # Build prompt matching training data format EXACTLY
+            prompt = format_prompt(
+                "style_transfer",
+                author=author,
+                content=user,
+                word_count=target_words,
+                style_tag=style_tag,
+                structural_guidance=guidance_str,
+            )
 
         # Create sampler with temperature, top_p, and min_p
         # min_p filters low-probability nonsense while allowing creative choices
@@ -378,8 +385,8 @@ class LoRAStyleGenerator:
         raw_words = len(raw_response.split())
         clean_words = len(response.split())
         if clean_words < raw_words * 0.7:
-            logger.warning(f"_clean_response removed {raw_words - clean_words} words ({raw_words} → {clean_words})")
-            logger.debug(f"Raw content before cleaning: {raw_response[:500]}...")
+            # Usually this means repetition was removed (model repeats after ### marker)
+            logger.debug(f"_clean_response removed {raw_words - clean_words} words ({raw_words} → {clean_words}) - likely repetition")
 
         return response
 
@@ -400,11 +407,18 @@ class LoRAStyleGenerator:
         Returns:
             Cleaned response text.
         """
+        original_len = len(response.split())
+
         # 1. Stop at ### markers (model uses these before repeating)
         if '###' in response:
-            response = response.split('###')[0].strip()
+            before = response.split('###')[0].strip()
+            removed = original_len - len(before.split())
+            if removed > 10:
+                logger.debug(f"### marker removed {removed} words")
+            response = before
 
-        # 2. Stop at training format markers
+        # 2. Stop at training format markers and obvious garbage patterns
+        # Be conservative - only stop at clear garbage, not potential content
         training_markers = [
             "[NEUTRAL INPUT]:",
             "[NEUTRAL INPUT]",
@@ -412,10 +426,24 @@ class LoRAStyleGenerator:
             "\n\nRewrite the following",
             "\n\n---",
             "_NOTE:",
+            ".DebugLine",  # Model garbage
+            ".debugLine",  # Model garbage (lowercase)
+            "DebugLine:",  # Model garbage
+            # Removed: RAG guidance patterns that can match legitimate prose
+            # Removed: STYLE GUIDELINES, CRITICAL RULES (could be quoted)
         ]
         for marker in training_markers:
             if marker in response:
-                response = response.split(marker)[0].strip()
+                before = response.split(marker)[0].strip()
+                removed = len(response.split()) - len(before.split())
+                if removed > 10:
+                    logger.debug(f"Training marker '{marker}' removed {removed} words")
+                response = before
+
+        # 2b. Remove obvious numeric/symbol garbage sequences
+        # Pattern: digit sequences or symbol sequences that are clearly garbage
+        garbage_seq_pattern = r'[\d!@#$%^&*()_+{}|:"<>?,./;\'\[\]\\=\-]{10,}'
+        response = re.sub(garbage_seq_pattern, '', response)
 
         # 3. Remove <think>...</think> blocks (Qwen3 thinking mode)
         response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
@@ -429,12 +457,21 @@ class LoRAStyleGenerator:
         # Stop at first garbage character sequence
         match = re.search(garbage_ranges + r'+', response)
         if match:
-            response = response[:match.start()].strip()
+            before = response[:match.start()].strip()
+            removed = len(response.split()) - len(before.split())
+            if removed > 10:
+                logger.debug(f"Non-ASCII garbage at pos {match.start()} removed {removed} words, char: {repr(response[match.start():match.start()+5])}")
+            response = before
 
         # 5. Stop at Chinese punctuation that often precedes garbage
-        for stop_char in ['：', '——']:
+        # But NOT regular em-dash which is legitimate
+        for stop_char in ['：']:  # Removed '——' as it conflicts with em-dash
             if stop_char in response:
-                response = response.split(stop_char)[0].strip()
+                before = response.split(stop_char)[0].strip()
+                removed = len(response.split()) - len(before.split())
+                if removed > 10:
+                    logger.debug(f"Chinese punctuation '{stop_char}' removed {removed} words")
+                response = before
 
         # 6. Clean up artifacts
         response = re.sub(r'\s{2,}', ' ', response)  # Multiple spaces
@@ -442,7 +479,32 @@ class LoRAStyleGenerator:
 
         response = response.strip()
 
-        # 7. Ensure text ends with a complete sentence
+        # 7. Remove sentences containing fiction-specific markers (hallucinations)
+        # These are clearly memorized content, not style transfer
+        fiction_markers = [
+            r'\barkham\b', r'\bcthulhu\b', r'\bnecronomicon\b', r'\bmiskatonic\b',
+            r'\binnsmouth\b', r'\bdunwich\b', r'\bshoggoth\b', r'\byog-sothoth\b',
+            r'\bazathoth\b', r'\bnyarlathotep\b', r'\br\'lyeh\b', r'\bdagon\b',
+            r'\bmy letters to you\b', r'\bin my letters\b', r'\bi have seen\b',
+            r'\bi have written\b', r'\bi cannot recall\b', r'\bwhose names i\b',
+        ]
+        fiction_pattern = re.compile('|'.join(fiction_markers), re.IGNORECASE)
+
+        # Split into sentences and filter
+        sentences = re.split(r'(?<=[.!?])\s+', response)
+        clean_sentences = []
+        for sent in sentences:
+            if not fiction_pattern.search(sent):
+                clean_sentences.append(sent)
+            else:
+                logger.debug(f"Removed fiction hallucination: {sent[:80]}...")
+
+        if clean_sentences:
+            response = ' '.join(clean_sentences)
+
+        response = response.strip()
+
+        # 8. Ensure text ends with a complete sentence
         response = self._ensure_complete_sentences(response)
 
         return response

@@ -362,6 +362,52 @@ class CorpusIndexer:
 
         return random.sample(documents, n)
 
+    def retrieve_similar(
+        self,
+        author: str,
+        query_text: str,
+        n: int = 3
+    ) -> List[dict]:
+        """Retrieve chunks semantically similar to query text.
+
+        Args:
+            author: Author name to search within.
+            query_text: Text to find similar chunks for.
+            n: Number of results to return.
+
+        Returns:
+            List of dicts with 'text', 'skeleton', and 'distance' keys.
+        """
+        # Encode query
+        query_embedding = self.embedding_model.encode([query_text])[0]
+
+        # Query ChromaDB
+        results = self.collection.query(
+            query_embeddings=[query_embedding.tolist()],
+            where={"author": author},
+            n_results=n,
+            include=["documents", "metadatas", "distances"]
+        )
+
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        if not documents:
+            logger.warning(f"No similar chunks found for author: {author}")
+            return []
+
+        # Build result list
+        chunks = []
+        for doc, meta, dist in zip(documents, metadatas, distances):
+            chunks.append({
+                "text": doc,
+                "skeleton": meta.get("skeleton", ""),
+                "distance": dist,
+            })
+
+        return chunks
+
 
 # Default indexer using project data directory
 _default_indexer = None

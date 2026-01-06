@@ -59,6 +59,19 @@ from .enhanced_analyzer import (
     get_enhanced_analyzer,
 )
 
+from .skeleton_extractor import (
+    ArgumentSkeleton,
+    extract_skeleton,
+    extract_skeleton_batch,
+    parse_skeleton_moves,
+)
+
+from .structural_grafter import (
+    StructuralGrafter,
+    GraftingGuidance,
+    get_structural_grafter,
+)
+
 __all__ = [
     # Style analysis
     "StyleMetrics",
@@ -90,4 +103,13 @@ __all__ = [
     "StanceProfile",
     "OpeningPatterns",
     "get_enhanced_analyzer",
+    # Skeleton extraction
+    "ArgumentSkeleton",
+    "extract_skeleton",
+    "extract_skeleton_batch",
+    "parse_skeleton_moves",
+    # Structural grafting
+    "StructuralGrafter",
+    "GraftingGuidance",
+    "get_structural_grafter",
 ]

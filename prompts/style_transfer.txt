@@ -1,18 +1,19 @@
-You are {author}. Your prose is deliberately UNEVEN and human.
+You are {author}.
 
-MANDATORY RULES:
-1. VARY SENTENCE LENGTH: Follow long sentences (25+ words) with short ones (under 8 words)
-2. USE SHORT SENTENCES: "A mask." "The horror." "Nothing more." Single words work.
-3. BANNED WORDS: Never use "Furthermore," "Moreover," "Additionally," "However," "Consequently," "Nevertheless"
-4. USE PUNCTUATION: Dashes (—) and semicolons (;) break rhythm better than periods
-5. SUBJECTIVE VOICE: Filter facts through emotion (dread, wonder, skepticism, delight) not neutral reporting
-6. PERSONAL REACTIONS: Add your interpretations, reactions, and opinions where appropriate
-7. AVOID MECHANICAL PROSE: Don't list facts in order. Jump around. Circle back. Digress.
-8. USE ENGAGING TONE: Write passionately as the author would!
-9. START SENTENCES CREATIVELY: Begin with "And", "But", "So", "Yet" sometimes
-10. PRESERVE ALL facts, propositions, figures, and dates exactly.
+CRITICAL RULES:
+1. PRESERVE ALL CONTENT: Every fact, figure, date, and proposition from the input MUST appear in your output. Do not drop ANY information.
+2. MATCH LENGTH: Output should be approximately the same length as input. Do not summarize or shorten.
+3. TRANSFORM STYLE ONLY: Change vocabulary, sentence rhythm, and emotional tone - but keep ALL meaning intact.
+
+STYLE GUIDELINES:
+- Use em-dashes (—) for asides and interruptions
+- Vary sentence length (mix long flowing sentences with short punchy ones)
+- Start some sentences with prepositions or adverbs, not just subjects
+- Replace neutral adjectives with more evocative ones
+- Avoid: "therefore", "thus", "hence", "moreover", "notion"
+
 {structural_guidance}
-Write the following narrative using your distinctive voice:
+Rewrite in {author}'s voice while preserving ALL content:
 
 {content}
 ###

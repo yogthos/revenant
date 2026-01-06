@@ -140,6 +140,54 @@ class OpeningPatterns:
 
 
 @dataclass
+class OrganicComplexityProfile:
+    """Organic complexity markers that distinguish human from AI writing.
+
+    These patterns are explicitly tracked because they correlate with
+    human writing and help evade AI detection:
+    - Inverted openings (prepositional/adverbial starts)
+    - Periodic sentences (main verb late)
+    - Em-dash interruptions
+    """
+    inverted_opening_rate: float = 0.0  # % sentences starting with ADP/ADV/SCONJ
+    periodic_sentence_rate: float = 0.0  # % sentences with main verb in latter half
+    em_dash_rate: float = 0.0  # % sentences with em-dash interruptions
+    # Example inverted openings from corpus
+    inverted_examples: List[str] = field(default_factory=list)
+    # Example periodic sentences from corpus
+    periodic_examples: List[str] = field(default_factory=list)
+
+    def to_instruction(self) -> str:
+        """Format as prompt instruction."""
+        lines = []
+
+        # Inverted openings guidance
+        if self.inverted_opening_rate > 0.05:
+            pct = int(self.inverted_opening_rate * 100)
+            lines.append(f"INVERTED OPENINGS: ~{pct}% of sentences")
+            lines.append("  Start with prepositions, adverbs, or subordinating conjunctions")
+            if self.inverted_examples:
+                lines.append(f"  Examples: \"{self.inverted_examples[0][:50]}...\"")
+
+        # Periodic sentence guidance
+        if self.periodic_sentence_rate > 0.2:
+            pct = int(self.periodic_sentence_rate * 100)
+            lines.append(f"PERIODIC SENTENCES: ~{pct}% of sentences")
+            lines.append("  Build context before the main verb/point")
+
+        # Em-dash guidance
+        if self.em_dash_rate > 0.05:
+            pct = int(self.em_dash_rate * 100)
+            lines.append(f"EM-DASH INTERRUPTIONS: ~{pct}% of sentences")
+            lines.append("  Use em-dashes (—) for sudden asides, clarifications, or judgments")
+
+        # Anti-balanced structure warning
+        lines.append("AVOID BALANCED STRUCTURES: Do NOT start with 'A, and B' patterns")
+
+        return "\n".join(lines) if lines else ""
+
+
+@dataclass
 class EnhancedStyleProfile:
     """Complete enhanced style profile for prompt injection."""
     syntactic_templates: List[SyntacticTemplate] = field(default_factory=list)
@@ -147,10 +195,16 @@ class EnhancedStyleProfile:
     transitions: TransitionInventory = field(default_factory=TransitionInventory)
     stance: StanceProfile = field(default_factory=StanceProfile)
     openings: OpeningPatterns = field(default_factory=OpeningPatterns)
+    organic_complexity: OrganicComplexityProfile = field(default_factory=OrganicComplexityProfile)
 
     def format_for_prompt(self) -> str:
         """Format complete enhanced guidance for prompt."""
         sections = []
+
+        # IMPORTANT: Organic complexity guidance comes first for emphasis
+        organic_instr = self.organic_complexity.to_instruction()
+        if organic_instr:
+            sections.append(f"[ORGANIC COMPLEXITY - CRITICAL FOR HUMAN-LIKE OUTPUT]:\n{organic_instr}")
 
         # Syntactic templates
         if self.syntactic_templates:
@@ -537,6 +591,74 @@ class EnhancedStructuralAnalyzer:
         )
 
     # ==========================================================================
+    # Phase 6: Organic Complexity Extraction
+    # ==========================================================================
+
+    # POS tags that indicate inverted openings (prepositional, adverbial, subordinating)
+    INVERTED_OPENING_POS = {'ADP', 'ADV', 'SCONJ'}
+
+    def extract_organic_complexity(self, texts: List[str]) -> OrganicComplexityProfile:
+        """Extract organic complexity metrics from corpus.
+
+        Measures patterns that distinguish human from AI writing:
+        - Inverted openings (prepositions, adverbs, subordinating conjunctions first)
+        - Periodic sentences (main verb in latter half)
+        - Em-dash interruptions
+        """
+        total_sentences = 0
+        inverted_openings = 0
+        periodic_sentences = 0
+        em_dash_sentences = 0
+        inverted_examples: List[str] = []
+        periodic_examples: List[str] = []
+
+        for text in texts:
+            doc = self.nlp(text)
+            for sent in doc.sents:
+                total_sentences += 1
+                sent_text = sent.text.strip()
+                tokens = list(sent)
+
+                if len(tokens) < 3:
+                    continue
+
+                # Check for em-dash interruption
+                if '—' in sent_text or ' – ' in sent_text:
+                    em_dash_sentences += 1
+
+                # Check for inverted opening (first content word is ADP/ADV/SCONJ)
+                first_content_pos = None
+                for token in tokens:
+                    if not token.is_space and not token.is_punct:
+                        first_content_pos = token.pos_
+                        break
+
+                if first_content_pos in self.INVERTED_OPENING_POS:
+                    inverted_openings += 1
+                    if len(inverted_examples) < 3:
+                        inverted_examples.append(sent_text)
+
+                # Check for periodic structure (main verb in latter half)
+                root_tokens = [t for t in tokens if t.dep_ == "ROOT"]
+                if root_tokens:
+                    root = root_tokens[0]
+                    root_pos = root.i - sent.start
+                    if root_pos > len(tokens) * 0.4:
+                        periodic_sentences += 1
+                        if len(periodic_examples) < 3:
+                            periodic_examples.append(sent_text)
+
+        total_sentences = max(1, total_sentences)
+
+        return OrganicComplexityProfile(
+            inverted_opening_rate=inverted_openings / total_sentences,
+            periodic_sentence_rate=periodic_sentences / total_sentences,
+            em_dash_rate=em_dash_sentences / total_sentences,
+            inverted_examples=inverted_examples,
+            periodic_examples=periodic_examples,
+        )
+
+    # ==========================================================================
     # Main Analysis Entry Point
     # ==========================================================================
 
@@ -554,12 +676,21 @@ class EnhancedStructuralAnalyzer:
 
         logger.info(f"Running enhanced structural analysis on {len(texts)} chunks")
 
+        # Extract organic complexity metrics
+        organic = self.extract_organic_complexity(texts)
+        logger.info(
+            f"Organic complexity: {organic.inverted_opening_rate*100:.0f}% inverted, "
+            f"{organic.periodic_sentence_rate*100:.0f}% periodic, "
+            f"{organic.em_dash_rate*100:.0f}% em-dash"
+        )
+
         return EnhancedStyleProfile(
             syntactic_templates=self.extract_syntactic_templates(texts),
             vocabulary=self.extract_vocabulary_clusters(texts),
             transitions=self.extract_transitions(texts),
             stance=self.extract_stance_profile(texts),
             openings=self.extract_opening_patterns(texts),
+            organic_complexity=organic,
         )
 
 
