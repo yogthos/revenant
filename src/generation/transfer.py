@@ -663,11 +663,49 @@ class StyleTransfer:
 
         return text.strip()
 
+    def _clean_punctuation_artifacts(self, text: str) -> str:
+        """Clean up punctuation artifacts from LoRA output and post-processing.
+
+        Fixes common issues like:
+        - "—," or ",—" (em-dash combined with comma)
+        - ".—" or "—." (em-dash combined with period)
+        - Double punctuation
+        """
+        import re
+
+        # Fix em-dash + punctuation combinations
+        text = re.sub(r'—\s*,', ',', text)  # "—," -> ","
+        text = re.sub(r',\s*—', ',', text)  # ",—" -> ","
+        text = re.sub(r'—\s*\.', '.', text)  # "—." -> "."
+        text = re.sub(r'\.\s*—', '.', text)  # ".—" -> "."
+        text = re.sub(r'—\s*;', ';', text)  # "—;" -> ";"
+        text = re.sub(r';\s*—', ';', text)  # ";—" -> ";"
+        text = re.sub(r'—\s*:', ':', text)  # "—:" -> ":"
+        text = re.sub(r':\s*—', ':', text)  # ":—" -> ":"
+
+        # Fix double punctuation
+        text = re.sub(r',\s*,', ',', text)
+        text = re.sub(r'\.\s*\.', '.', text)
+        text = re.sub(r';\s*;', ';', text)
+        text = re.sub(r':\s*:', ':', text)
+
+        # Fix spacing around punctuation
+        text = re.sub(r'\s+([.,;:!?])', r'\1', text)  # No space before
+        text = re.sub(r'([.,;:!?])([A-Za-z])', r'\1 \2', text)  # Space after
+
+        # Normalize multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+
+        return text.strip()
+
     def _ensure_complete_ending(self, text: str) -> str:
         """Ensure text ends with a complete sentence.
 
         If text ends mid-sentence, remove the incomplete part.
         """
+        # First clean punctuation artifacts
+        text = self._clean_punctuation_artifacts(text)
+
         text = text.strip()
         if not text:
             return text
