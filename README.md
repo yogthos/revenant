@@ -49,17 +49,34 @@ cp config.json.sample config.json
 
 ## Building a LoRA Adapter from Scratch
 
-This section walks through the complete process of creating a style transfer adapter from author text. You'll need to complete these steps before you can use the style transfer system.
+This section walks through the complete process of creating a style transfer adapter from author text.
 
 ```mermaid
 flowchart LR
-    A[1. Prepare Corpus] --> B[2. Index in ChromaDB]
-    B --> C[3. Generate Training Data]
+    A[1. Curate Corpus] --> B[2. Generate Training Data]
+    B --> C[3. Index ChromaDB]
     C --> D[4. Train LoRA]
-    D --> E[5. Verify & Use]
 ```
 
-### Step 1: Prepare Your Corpus
+**Quick Reference:**
+
+```bash
+# 1. Curate corpus (filter to optimal size)
+python scripts/curate_corpus.py --input raw.txt --output corpus.txt --target-tokens 900000
+
+# 2. Generate training data (variations, neutralization, formatting)
+python scripts/generate_flat_training.py --corpus corpus.txt --author "Author" --output data/training/author
+
+# 3. Index for inference RAG (Structural Grafting, rhythm retrieval)
+python scripts/load_corpus.py --input corpus.txt --author "Author"
+
+# 4. Train LoRA (create config.yaml first - see Step 4)
+mlx_lm.lora --config data/training/author/config.yaml
+```
+
+---
+
+### Step 1: Curate Your Corpus
 
 Gather representative text samples from your target author. The corpus quality directly affects output quality.
 
@@ -147,51 +164,7 @@ This creates ~150-word chunks with 2-sentence overlap (style lives in transition
 
 **Note:** If you skip this step, `generate_flat_training.py` does chunking automatically.
 
-### Step 2: Index Corpus in ChromaDB
-
-The corpus indexer processes your text and stores it in ChromaDB for retrieval during inference. This enables Structural RAG (rhythm guidance) and Structural Grafting (argument structure copying).
-
-```bash
-python scripts/load_corpus.py \
-    --input data/corpus/lovecraft.txt \
-    --author "H.P. Lovecraft"
-```
-
-**What this does:**
-
-1. **Splits** corpus into paragraphs
-2. **Filters** for quality (removes short, broken, or repetitive paragraphs)
-3. **Deduplicates** using semantic similarity (removes near-duplicates)
-4. **Analyzes** style metrics per paragraph (sentence length, complexity, POS ratios)
-5. **Generates** embeddings for semantic search
-6. **Extracts** rhetorical skeletons via LLM (argument structure like `[Observation] → [Analysis] → [Conclusion]`)
-7. **Stores** everything in ChromaDB at `data/rag_index/`
-
-**Options:**
-
-| Option | Description |
-|--------|-------------|
-| `--min-words 30` | Minimum words per paragraph (default: 30) |
-| `--skip-skeletons` | Skip skeleton extraction (faster, but disables Structural Grafting) |
-| `--clear` | Clear existing data for this author before loading |
-| `--no-dedup` | Skip deduplication |
-| `-v` | Verbose output showing rejection reasons |
-
-**Verify indexing:**
-
-```bash
-# List all indexed authors and chunk counts
-python scripts/load_corpus.py --list
-```
-
-Output:
-```
-Indexed authors (1):
---------------------------------------------------
-  H.P. Lovecraft: 127 chunks (98 with skeletons, 77%)
-```
-
-### Step 3: Generate Training Data
+### Step 2: Generate Training Data
 
 This step creates training pairs by neutralizing the author's styled text. The training format is `(neutral_text → styled_text)`, teaching the model to add style while preserving content.
 
@@ -255,6 +228,50 @@ data/training/lovecraft/
 ```
 
 The model learns: given instruction + neutral content → generate styled output.
+
+### Step 3: Index Corpus in ChromaDB (for Inference)
+
+The corpus indexer stores your text in ChromaDB for retrieval **during inference**. This enables Structural RAG (rhythm guidance) and Structural Grafting (argument structure copying). This step is independent of training.
+
+```bash
+python scripts/load_corpus.py \
+    --input data/corpus/lovecraft.txt \
+    --author "H.P. Lovecraft"
+```
+
+**What this does:**
+
+1. **Splits** corpus into paragraphs
+2. **Filters** for quality (removes short, broken, or repetitive paragraphs)
+3. **Deduplicates** using semantic similarity (removes near-duplicates)
+4. **Analyzes** style metrics per paragraph (sentence length, complexity, POS ratios)
+5. **Generates** embeddings for semantic search
+6. **Extracts** rhetorical skeletons via LLM (argument structure like `[Observation] → [Analysis] → [Conclusion]`)
+7. **Stores** everything in ChromaDB at `data/rag_index/`
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--min-words 30` | Minimum words per paragraph (default: 30) |
+| `--skip-skeletons` | Skip skeleton extraction (faster, but disables Structural Grafting) |
+| `--clear` | Clear existing data for this author before loading |
+| `--no-dedup` | Skip deduplication |
+| `-v` | Verbose output showing rejection reasons |
+
+**Verify indexing:**
+
+```bash
+# List all indexed authors and chunk counts
+python scripts/load_corpus.py --list
+```
+
+Output:
+```
+Indexed authors (1):
+--------------------------------------------------
+  H.P. Lovecraft: 127 chunks (98 with skeletons, 77%)
+```
 
 ### Step 4: Train the LoRA Adapter
 

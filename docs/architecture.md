@@ -9,11 +9,15 @@ This document provides a deep technical explanation of the style transfer system
 ```mermaid
 flowchart TB
     subgraph Training["Training Pipeline"]
-        T1[Author Corpus] --> T2[ChromaDB Index]
-        T1 --> T3[RTT Neutralization]
+        T1[Author Corpus] --> T2[Triad Variations]
+        T2 --> T3[RTT Neutralization]
         T3 --> T4[Training Pairs]
         T4 --> T5[LoRA Training]
         T5 --> T6[Adapter Weights]
+    end
+
+    subgraph IndexDB["Corpus Index (for Inference)"]
+        T1 --> C1[ChromaDB Index]
     end
 
     subgraph Inference["Inference Pipeline"]
@@ -21,8 +25,11 @@ flowchart TB
         I2 --> I3[Semantic Graph]
         I3 --> I4[RTT Neutralization]
         I4 --> I5[Structural RAG]
+        C1 --> I5
         I5 --> I6[Structural Grafting]
+        C1 --> I6
         I6 --> I7[LoRA Generation]
+        T6 --> I7
         I7 --> I8[Semantic Validation]
         I8 --> I9[Post-Processing]
         I9 --> I10[Reference Reinjection]
@@ -112,12 +119,14 @@ max_word_repetition_ratio: 0.55  # Avoid repetitive text
 ```mermaid
 flowchart TD
     A[Raw Author Corpus] --> B[Curate Corpus]
-    B --> C[Index in ChromaDB]
-    B --> D[Create Overlapping Chunks]
-    D --> E[RTT Neutralization]
-    E --> F[Format Training Pairs]
+    B --> C[Generate Training Data]
+    C --> D[Triad Variations]
+    D --> E[Overlapping Chunks]
+    E --> F[RTT Neutralization]
     F --> G[Train/Valid Split]
     G --> H[LoRA Training]
+    B --> I[Index ChromaDB]
+    I --> J[Used at Inference]
 ```
 
 #### Step 1: Curate Corpus (Recommended)
@@ -138,26 +147,7 @@ python scripts/curate_corpus.py \
 
 **Skip curation if:** corpus is already clean and <500KB.
 
-#### Step 2: Index Corpus in ChromaDB
-
-Index the curated corpus for retrieval during inference:
-
-```bash
-python scripts/load_corpus.py \
-    --input data/corpus/curated/author.txt \
-    --author "Author Name"
-```
-
-**What this creates:**
-- Paragraph embeddings for semantic search
-- Style metrics per paragraph (sentence length, complexity, POS ratios)
-- Rhetorical skeletons (argument structure like `[Observation] → [Analysis] → [Conclusion]`)
-
-The ChromaDB index is stored at `data/rag_index/` and used during inference for:
-- **Structural RAG**: Retrieving rhythm patterns
-- **Structural Grafting**: Finding similar passages and copying their argument structure
-
-#### Step 3: Generate Training Data
+#### Step 2: Generate Training Data
 
 ```bash
 python scripts/generate_flat_training.py \
@@ -232,6 +222,25 @@ The style tag provides structural hints:
 ```
 [STYLE: Varied Lengths | Complex Syntax | Em-Dashes]
 ```
+
+#### Step 3: Index Corpus in ChromaDB (for Inference)
+
+Index the curated corpus for retrieval **during inference** (not training):
+
+```bash
+python scripts/load_corpus.py \
+    --input data/corpus/curated/author.txt \
+    --author "Author Name"
+```
+
+**What this creates:**
+- Paragraph embeddings for semantic search
+- Style metrics per paragraph (sentence length, complexity, POS ratios)
+- Rhetorical skeletons (argument structure like `[Observation] → [Analysis] → [Conclusion]`)
+
+The ChromaDB index is stored at `data/rag_index/` and used during inference for:
+- **Structural RAG**: Retrieving rhythm patterns
+- **Structural Grafting**: Finding similar passages and copying their argument structure
 
 #### Step 4: Train LoRA Adapter
 
