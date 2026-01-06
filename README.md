@@ -5,6 +5,8 @@ Transform text to match a target author's writing style while preserving semanti
 ## Features
 
 - **LoRA-Based Generation**: Fine-tuned adapters capture author style in model weights
+- **Multiple Adapter Blending**: Combine multiple author styles with individual scales
+- **Checkpoint Support**: Test specific training checkpoints without overwriting finals
 - **RTT Neutralization**: Round-trip translation strips style before restyling
 - **Semantic Graph Validation**: Validates content preservation using proposition graphs
 - **Structural Grafting**: Copies rhetorical structure (argument flow) from author samples
@@ -381,9 +383,18 @@ cat test_output.txt
 Once you have a trained adapter, use it to transfer text:
 
 ```bash
-# Transfer a document
+# Transfer using config.json adapters (simplest)
+python restyle.py input.txt -o output.txt --author "H.P. Lovecraft"
+
+# Transfer with CLI adapter and scale
 python restyle.py input.txt -o output.txt \
-    --adapter lora_adapters/lovecraft \
+    --adapter lora_adapters/lovecraft:0.3 \
+    --author "H.P. Lovecraft"
+
+# Use a specific checkpoint
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft:0.3 \
+    --checkpoint 0000600_adapters.safetensors \
     --author "H.P. Lovecraft"
 
 # Interactive REPL mode (generates 5 variations per input)
@@ -463,20 +474,62 @@ python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecr
 ### Basic Usage
 
 ```bash
+# Using adapter from CLI
 python restyle.py <input> -o <output> --adapter <path> --author <name>
+
+# Using adapters from config.json (no --adapter needed)
+python restyle.py <input> -o <output> --author <name>
 ```
 
 ### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--adapter PATH` | - | Path to LoRA adapter (required) |
+| `--adapter PATH[:SCALE]` | - | Path to LoRA adapter with optional scale. Can be specified multiple times to blend styles. |
 | `--author NAME` | - | Author name (auto-detected from metadata) |
+| `--lora-scale` | 1.0 | Default scale for adapters without inline scale |
+| `--checkpoint` | - | Checkpoint file for first adapter (e.g., `0000600_adapters.safetensors`) |
 | `--temperature` | 0.4 | Generation temperature |
 | `--perspective` | preserve | Output perspective |
 | `--no-verify` | false | Skip entailment verification |
 | `--repl` | false | Start interactive REPL mode |
 | `-v, --verbose` | false | Verbose output |
+
+### Multiple Adapters
+
+Blend multiple author styles by specifying `--adapter` multiple times:
+
+```bash
+# Blend two styles with different weights
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft:0.4 \
+    --adapter lora_adapters/poe:0.3 \
+    --author "Blended Horror"
+
+# Use default scale from --lora-scale
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/sagan \
+    --lora-scale 0.5 \
+    --author "Carl Sagan"
+```
+
+### Using Checkpoints
+
+Test specific training checkpoints without overwriting the final adapter:
+
+```bash
+# Use a specific checkpoint
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft \
+    --checkpoint 0000600_adapters.safetensors \
+    --author "H.P. Lovecraft"
+
+# Or with inline scale
+python restyle.py input.txt -o output.txt \
+    --adapter lora_adapters/lovecraft:0.5 \
+    --checkpoint 0000600_adapters.safetensors \
+    --author "H.P. Lovecraft"
+```
 
 ### Perspective Options
 
@@ -661,7 +714,9 @@ Key settings in `config.json`:
     "max_repair_attempts": 3,
     "max_expansion_ratio": 2.5,
     "target_expansion_ratio": 1.0,
-    "lora_scale": 0.3,
+    "lora_adapters": {
+      "lora_adapters/lovecraft": {"scale": 0.3, "checkpoint": "0000600_adapters.safetensors"}
+    },
     "skip_neutralization": false,
     "reduce_repetition": true,
     "use_structural_rag": true,
@@ -673,11 +728,39 @@ Key settings in `config.json`:
 }
 ```
 
+### LoRA Adapters Configuration
+
+The `lora_adapters` setting defines default adapters to use when none are specified on the CLI:
+
+```json
+// Simple format (scale only)
+"lora_adapters": {
+  "lora_adapters/lovecraft": 0.3
+}
+
+// Full format (scale + checkpoint)
+"lora_adapters": {
+  "lora_adapters/lovecraft": {"scale": 0.3, "checkpoint": "0000600_adapters.safetensors"}
+}
+
+// Multiple adapters (blended styles)
+"lora_adapters": {
+  "lora_adapters/lovecraft": {"scale": 0.4},
+  "lora_adapters/poe": 0.3
+}
+```
+
+**Scale values:**
+- `0.0` = Base model only (no style)
+- `0.3-0.5` = Balanced (recommended starting point)
+- `1.0` = Full adapter influence
+- `>1.5` = Risks memorization/hallucination
+
 ### Key Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `lora_scale` | 0.3 | LoRA influence (0.0=base only, 1.0=full, >1.5 risks memorization) |
+| `lora_adapters` | `{}` | LoRA adapters with scales and optional checkpoints |
 | `use_structural_rag` | true | Enable rhythm/syntax guidance from corpus |
 | `use_structural_grafting` | true | Enable rhetorical skeleton grafting |
 | `use_persona` | true | Enable dense academic persona prompts |
@@ -693,17 +776,17 @@ Key settings in `config.json`:
 
 - Increase `entailment_threshold` to 0.9
 - Check for missing named entities in verbose output (`-v`)
-- Lower `lora_scale` if model is hallucinating
+- Lower adapter scale if model is hallucinating (use `--adapter path:0.2` or update config)
 
 ### Style Too Weak
 
-- Increase `lora_scale` to 0.5-1.0
+- Increase adapter scale to 0.5-1.0 (use `--adapter path:0.5` or update config)
 - Ensure corpus is indexed: `python scripts/load_corpus.py --list`
 
 ### Memorized Output (No Content Overlap)
 
-- Lower `lora_scale` to 0.2-0.3
-- Use earlier training checkpoint
+- Lower adapter scale to 0.2-0.3
+- Use earlier training checkpoint: `--checkpoint 0000600_adapters.safetensors`
 
 ### MLX Not Available
 

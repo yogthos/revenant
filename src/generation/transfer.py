@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
 import time
 
-from .lora_generator import LoRAStyleGenerator, GenerationConfig
+from .lora_generator import LoRAStyleGenerator, GenerationConfig, AdapterSpec
 from .document_context import DocumentContext, extract_document_context
 from ..utils.nlp import (
     split_into_paragraphs,
@@ -83,9 +83,6 @@ class TransferConfig:
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = 1.0  # Target for LoRA generation
-
-    # LoRA influence settings
-    lora_scale: float = 2.0  # Match training scale (alpha/rank = 128/64 = 2.0)
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
@@ -173,6 +170,7 @@ class StyleTransfer:
         config: Optional[TransferConfig] = None,
         verify_fn: Optional[Callable[[str, str], float]] = None,
         checkpoint: Optional[str] = None,
+        adapters: Optional[List[AdapterSpec]] = None,
     ):
         """Initialize the fast transfer pipeline.
 
@@ -183,6 +181,7 @@ class StyleTransfer:
             config: Transfer configuration.
             verify_fn: Optional verification function (original, output) -> score.
             checkpoint: Specific checkpoint file to use (e.g., "0000600_adapters.safetensors").
+            adapters: List of AdapterSpec for multiple adapters. If provided, adapter_path is ignored.
         """
         self.config = config or TransferConfig()
         self.author = author_name
@@ -190,18 +189,27 @@ class StyleTransfer:
         self.critic_provider = critic_provider
 
         # Initialize generator
+        # Note: lora_scale is now per-adapter in AdapterSpec, not in config
         gen_config = GenerationConfig(
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
-            lora_scale=self.config.lora_scale,
             skip_cleaning=False,  # Always clean output to remove garbage
         )
-        self.generator = LoRAStyleGenerator(
-            adapter_path=adapter_path,
-            config=gen_config,
-            checkpoint=checkpoint,
-        )
+
+        if adapters:
+            # Multiple adapters mode
+            self.generator = LoRAStyleGenerator(
+                config=gen_config,
+                adapters=adapters,
+            )
+        else:
+            # Single adapter mode (backward compatible)
+            self.generator = LoRAStyleGenerator(
+                adapter_path=adapter_path,
+                config=gen_config,
+                checkpoint=checkpoint,
+            )
 
         # Initialize repetition reducer for post-processing
         self.repetition_reducer = None

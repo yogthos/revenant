@@ -216,32 +216,29 @@ def list_adapters(adapters_dir: str = "lora_adapters") -> None:
 def transfer_file(
     input_path: str,
     output_path: str,
-    adapter_path: str,
+    adapters: list,
     author: str,
     config_path: str = "config.json",
     temperature: float = 0.2,
     perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
-    lora_scale: float = None,
-    checkpoint: str = None,
 ) -> None:
-    """Transfer a file using LoRA adapter.
+    """Transfer a file using LoRA adapter(s).
 
     Args:
         input_path: Path to input file.
         output_path: Path to output file.
-        adapter_path: Path to LoRA adapter.
+        adapters: List of AdapterSpec objects specifying adapters and their scales.
         author: Author name.
         config_path: Path to config file.
         temperature: Generation temperature.
         perspective: Output perspective (None uses config default).
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
-        lora_scale: LoRA influence scale (None uses config default).
-        checkpoint: Specific checkpoint file to use (None uses final adapter).
     """
     from src.generation.transfer import StyleTransfer, TransferConfig
+    from src.generation.lora_generator import AdapterSpec
     from src.config import load_config
     from src.llm.deepseek import DeepSeekProvider
 
@@ -270,8 +267,6 @@ def transfer_file(
 
     if app_config:
         gen = app_config.generation
-        # Use CLI lora_scale if provided, otherwise config value
-        effective_lora_scale = lora_scale if lora_scale is not None else gen.lora_scale
         config = TransferConfig(
             # Use CLI temperature if specified, otherwise config value
             temperature=temperature,
@@ -283,8 +278,6 @@ def transfer_file(
             entailment_threshold=gen.entailment_threshold,
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
-            # LoRA influence
-            lora_scale=effective_lora_scale,
             # Neutralization
             skip_neutralization=gen.skip_neutralization,
             # Post-processing
@@ -310,7 +303,6 @@ def transfer_file(
             verify_entailment=verify,
             perspective=effective_perspective,
             use_structural_rag=True,  # Default to enabled
-            lora_scale=lora_scale if lora_scale is not None else 1.0,
         )
 
     # Create critic provider for repairs
@@ -337,15 +329,23 @@ def transfer_file(
             print(f"Using DeepSeek for critic/repair (from env)")
 
     # Create transfer pipeline
-    print(f"\nInitializing LoRA adapter: {adapter_path}")
+    if len(adapters) == 1:
+        print(f"\nInitializing LoRA adapter: {adapters[0].path} (scale={adapters[0].scale})")
+        if adapters[0].checkpoint:
+            print(f"Checkpoint: {adapters[0].checkpoint}")
+    else:
+        print(f"\nInitializing {len(adapters)} LoRA adapters:")
+        for adapter in adapters:
+            ckpt = f" checkpoint={adapter.checkpoint}" if adapter.checkpoint else ""
+            print(f"  - {adapter.path} (scale={adapter.scale}){ckpt}")
     print(f"Author: {author}")
 
     transfer = StyleTransfer(
-        adapter_path=adapter_path,
+        adapter_path=None,
         author_name=author,
         critic_provider=critic_provider,
         config=config,
-        checkpoint=checkpoint,
+        adapters=adapters,
     )
 
     # Set up output file for streaming
@@ -450,7 +450,11 @@ def main():
     # Adapter settings
     parser.add_argument(
         "--adapter",
-        help="Path to LoRA adapter directory",
+        action="append",
+        dest="adapters",
+        metavar="PATH[:SCALE]",
+        help="Path to LoRA adapter directory with optional scale (e.g., 'lora_adapters/sagan:0.5'). "
+             "Can be specified multiple times to blend styles. Scale defaults to --lora-scale or 1.0.",
     )
     parser.add_argument(
         "--author",
@@ -565,15 +569,21 @@ def main():
         index_corpus(args.index_corpus, args.author, args.clear_rag)
         return
 
+    # Import AdapterSpec for parsing
+    from src.generation.lora_generator import AdapterSpec
+
     # REPL mode
     if args.repl:
-        if not args.adapter:
+        if not args.adapters:
             parser.error("--adapter is required for REPL mode")
+
+        # For REPL, use first adapter only
+        adapter_path = AdapterSpec.parse(args.adapters[0]).path
 
         # Load author from metadata if not provided
         author = args.author
         if not author:
-            metadata_path = Path(args.adapter) / "metadata.json"
+            metadata_path = Path(adapter_path) / "metadata.json"
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
@@ -583,7 +593,7 @@ def main():
             parser.error("--author is required (not found in adapter metadata)")
 
         run_repl_mode(
-            adapter_path=args.adapter,
+            adapter_path=adapter_path,
             author=author,
             config_path=args.config,
             temperature=args.temperature,
@@ -601,13 +611,49 @@ def main():
         input_path = Path(args.input)
         args.output = str(input_path.with_suffix(".styled" + input_path.suffix))
 
-    if not args.adapter:
-        parser.error("--adapter is required")
+    # Parse adapter specs from CLI or config
+    adapters = []
+
+    if args.adapters:
+        # CLI adapters specified - parse them
+        default_scale = args.lora_scale if args.lora_scale is not None else 1.0
+
+        for spec_str in args.adapters:
+            adapter = AdapterSpec.parse(spec_str)
+            # If no scale was specified in the spec string, use the default
+            if ':' not in spec_str:
+                adapter.scale = default_scale
+            # Apply checkpoint to first adapter if specified via --checkpoint
+            if len(adapters) == 0 and args.checkpoint:
+                adapter.checkpoint = args.checkpoint
+            adapters.append(adapter)
+    else:
+        # Try to load adapters from config file
+        from src.config import load_config
+        try:
+            app_config = load_config(args.config)
+            lora_adapters = app_config.generation.lora_adapters
+            if lora_adapters:
+                for path, value in lora_adapters.items():
+                    # Value can be a number (scale) or dict {scale, checkpoint}
+                    if isinstance(value, dict):
+                        scale = value.get("scale", 1.0)
+                        checkpoint = value.get("checkpoint")
+                        adapters.append(AdapterSpec(path=path, scale=scale, checkpoint=checkpoint))
+                    else:
+                        # Simple number format (scale only)
+                        adapters.append(AdapterSpec(path=path, scale=float(value)))
+                print(f"Using adapters from config: {args.config}")
+        except (FileNotFoundError, AttributeError):
+            pass
+
+    if not adapters:
+        parser.error("--adapter is required (or configure lora_adapters in config.json)")
 
     # Load author from metadata if not provided
     author = args.author
     if not author:
-        metadata_path = Path(args.adapter) / "metadata.json"
+        metadata_path = Path(adapters[0].path) / "metadata.json"
         if metadata_path.exists():
             with open(metadata_path, 'r') as f:
                 metadata = json.load(f)
@@ -620,15 +666,13 @@ def main():
     transfer_file(
         input_path=args.input,
         output_path=args.output,
-        adapter_path=args.adapter,
+        adapters=adapters,
         author=author,
         config_path=args.config,
         temperature=args.temperature,
         perspective=args.perspective,
         verify=not args.no_verify,
         verbose=args.verbose,
-        lora_scale=args.lora_scale,
-        checkpoint=args.checkpoint,
     )
 
 

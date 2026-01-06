@@ -13,9 +13,9 @@ import json
 import os
 import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
@@ -130,6 +130,33 @@ class AdapterMetadata:
         )
 
 
+@dataclass
+class AdapterSpec:
+    """Specification for a single LoRA adapter with its scale."""
+
+    path: str
+    scale: float = 1.0
+    checkpoint: Optional[str] = None
+
+    @classmethod
+    def parse(cls, spec: str) -> "AdapterSpec":
+        """Parse adapter spec from string format 'path:scale' or 'path'.
+
+        Examples:
+            'lora_adapters/sagan' -> AdapterSpec(path='lora_adapters/sagan', scale=1.0)
+            'lora_adapters/sagan:0.5' -> AdapterSpec(path='lora_adapters/sagan', scale=0.5)
+        """
+        if ':' in spec:
+            parts = spec.rsplit(':', 1)
+            try:
+                scale = float(parts[1])
+                return cls(path=parts[0], scale=scale)
+            except ValueError:
+                # Colon was part of path (e.g., Windows path)
+                return cls(path=spec, scale=1.0)
+        return cls(path=spec, scale=1.0)
+
+
 class LoRAStyleGenerator:
     """Fast style transfer using LoRA-adapted model.
 
@@ -157,15 +184,18 @@ class LoRAStyleGenerator:
         base_model: str = "mlx-community/Qwen3-8B-Base-bf16",
         config: Optional[GenerationConfig] = None,
         checkpoint: Optional[str] = None,
+        adapters: Optional[List[AdapterSpec]] = None,
     ):
         """Initialize the LoRA generator.
 
         Args:
-            adapter_path: Path to LoRA adapter directory.
+            adapter_path: Path to LoRA adapter directory (for single adapter, backward compatible).
             base_model: Base model (overridden by adapter metadata if available).
             config: Generation configuration.
             checkpoint: Specific checkpoint file to use (e.g., "0000600_adapters.safetensors").
                        If provided, creates a temp directory with symlinks to use this checkpoint.
+            adapters: List of AdapterSpec for multiple adapters. If provided, adapter_path is ignored.
+                     Each adapter can have its own scale for blending multiple styles.
         """
         if not MLX_AVAILABLE:
             raise RuntimeError(
@@ -174,19 +204,35 @@ class LoRAStyleGenerator:
             )
 
         self.config = config or GenerationConfig()
-        self.adapter_path = adapter_path
-        self.checkpoint = checkpoint
         self.base_model_name = base_model
         self.metadata: Optional[AdapterMetadata] = None
-        self._temp_dir = None  # For checkpoint symlink directory
+        self._temp_dirs: List[str] = []  # For checkpoint symlink directories
+
+        # Handle adapter specification
+        if adapters:
+            # Multiple adapters mode
+            self.adapters = adapters
+            self.adapter_path = None
+            self.checkpoint = None
+        elif adapter_path:
+            # Single adapter mode (backward compatible) - scale defaults to 1.0
+            self.adapters = [AdapterSpec(path=adapter_path, scale=1.0, checkpoint=checkpoint)]
+            self.adapter_path = adapter_path
+            self.checkpoint = checkpoint
+        else:
+            # No adapters (base model only)
+            self.adapters = []
+            self.adapter_path = None
+            self.checkpoint = None
 
         # Lazy load model
         self._model = None
         self._tokenizer = None
 
-        # Load metadata if adapter exists
-        if adapter_path:
-            metadata_path = Path(adapter_path) / "metadata.json"
+        # Load metadata from first adapter if available
+        if self.adapters:
+            first_adapter_path = Path(self.adapters[0].path)
+            metadata_path = first_adapter_path / "metadata.json"
             if metadata_path.exists():
                 self.metadata = AdapterMetadata.from_file(metadata_path)
                 self.base_model_name = self.metadata.base_model
@@ -202,21 +248,25 @@ class LoRAStyleGenerator:
         except Exception:
             return False
 
-    def _setup_checkpoint_adapter(self) -> str:
+    def _setup_checkpoint_adapter(self, adapter_spec: AdapterSpec) -> str:
         """Create temp directory with symlinks for checkpoint loading.
+
+        Args:
+            adapter_spec: Adapter specification with path and checkpoint.
 
         Returns:
             Path to use as adapter_path (temp dir with symlinks).
         """
-        adapter_dir = Path(self.adapter_path)
-        checkpoint_file = adapter_dir / self.checkpoint
+        adapter_dir = Path(adapter_spec.path)
+        checkpoint_file = adapter_dir / adapter_spec.checkpoint
 
         if not checkpoint_file.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_file}")
 
         # Create temp directory
-        self._temp_dir = tempfile.mkdtemp(prefix="lora_checkpoint_")
-        temp_path = Path(self._temp_dir)
+        temp_dir = tempfile.mkdtemp(prefix="lora_checkpoint_")
+        self._temp_dirs.append(temp_dir)
+        temp_path = Path(temp_dir)
 
         # Symlink the checkpoint as adapters.safetensors
         (temp_path / "adapters.safetensors").symlink_to(checkpoint_file.resolve())
@@ -226,8 +276,38 @@ class LoRAStyleGenerator:
         if config_file.exists():
             (temp_path / "adapter_config.json").symlink_to(config_file.resolve())
 
-        logger.info(f"Using checkpoint: {self.checkpoint}")
-        return self._temp_dir
+        logger.info(f"Using checkpoint: {adapter_spec.checkpoint}")
+        return temp_dir
+
+    def _get_effective_adapter_path(self, adapter_spec: AdapterSpec) -> str:
+        """Get effective adapter path, handling checkpoints.
+
+        Args:
+            adapter_spec: Adapter specification.
+
+        Returns:
+            Path to adapter directory (possibly temp dir with symlinks for checkpoints).
+        """
+        if adapter_spec.checkpoint:
+            return self._setup_checkpoint_adapter(adapter_spec)
+        return adapter_spec.path
+
+    def _load_adapter_weights(self, adapter_path: str) -> dict:
+        """Load adapter weights from safetensors file.
+
+        Args:
+            adapter_path: Path to adapter directory.
+
+        Returns:
+            Dictionary of weight name -> weight array.
+        """
+        import mlx.core as mx
+
+        weights_file = Path(adapter_path) / "adapters.safetensors"
+        if not weights_file.exists():
+            raise FileNotFoundError(f"Adapter weights not found: {weights_file}")
+
+        return mx.load(str(weights_file))
 
     def _ensure_loaded(self):
         """Ensure model is loaded."""
@@ -245,23 +325,8 @@ class LoRAStyleGenerator:
             old_hf_disable = None
 
         try:
-            if self.adapter_path:
-                # Determine effective adapter path (handle checkpoint if specified)
-                if self.checkpoint:
-                    effective_adapter_path = self._setup_checkpoint_adapter()
-                else:
-                    effective_adapter_path = self.adapter_path
-
-                lora_scale = self.config.lora_scale
-                logger.info(f"With LoRA adapter: {self.adapter_path} (scale={lora_scale})")
-                self._model, self._tokenizer = load(
-                    self.base_model_name,
-                    adapter_path=effective_adapter_path,
-                )
-                # Apply LoRA scale if not default (1.0)
-                # This scales the adapter weights to control style influence
-                if lora_scale != 1.0 and hasattr(self._model, 'model'):
-                    self._apply_lora_scale(lora_scale)
+            if self.adapters:
+                self._load_with_adapters()
             else:
                 self._model, self._tokenizer = load(self.base_model_name)
         finally:
@@ -273,6 +338,74 @@ class LoRAStyleGenerator:
                     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = old_hf_disable
 
         logger.info("Model loaded successfully")
+
+    def _load_with_adapters(self):
+        """Load model with one or more LoRA adapters."""
+        import mlx.core as mx
+
+        if len(self.adapters) == 1:
+            # Single adapter - use standard loading path
+            adapter = self.adapters[0]
+            effective_path = self._get_effective_adapter_path(adapter)
+
+            logger.info(f"With LoRA adapter: {adapter.path} (scale={adapter.scale})")
+            self._model, self._tokenizer = load(
+                self.base_model_name,
+                adapter_path=effective_path,
+            )
+
+            # Apply scale if not 1.0
+            if adapter.scale != 1.0:
+                self._apply_lora_scale(adapter.scale)
+        else:
+            # Multiple adapters - load base model, then combine adapter weights
+            logger.info(f"Loading {len(self.adapters)} adapters:")
+            for adapter in self.adapters:
+                logger.info(f"  - {adapter.path} (scale={adapter.scale})")
+
+            # Load first adapter to set up LoRA structure
+            first_adapter = self.adapters[0]
+            first_path = self._get_effective_adapter_path(first_adapter)
+
+            self._model, self._tokenizer = load(
+                self.base_model_name,
+                adapter_path=first_path,
+            )
+
+            # Get first adapter's weights (already loaded, but we need them for combining)
+            first_weights = self._load_adapter_weights(first_path)
+
+            # Scale first adapter's weights
+            combined_weights = {
+                k: v * first_adapter.scale for k, v in first_weights.items()
+            }
+
+            # Load and add remaining adapters
+            for adapter in self.adapters[1:]:
+                adapter_path = self._get_effective_adapter_path(adapter)
+                weights = self._load_adapter_weights(adapter_path)
+
+                for k, v in weights.items():
+                    if k in combined_weights:
+                        # Check shape compatibility
+                        if combined_weights[k].shape != v.shape:
+                            raise ValueError(
+                                f"Cannot blend adapters with different LoRA ranks.\n"
+                                f"  Weight '{k}':\n"
+                                f"    - {first_adapter.path}: shape {combined_weights[k].shape}\n"
+                                f"    - {adapter.path}: shape {v.shape}\n"
+                                f"Adapters must have the same rank to be blended. "
+                                f"Use adapters trained with matching configurations."
+                            )
+                        combined_weights[k] = combined_weights[k] + v * adapter.scale
+                    else:
+                        combined_weights[k] = v * adapter.scale
+
+            # Apply combined weights to model
+            self._model.load_weights(list(combined_weights.items()), strict=False)
+            mx.eval(self._model.parameters())
+
+            logger.info(f"Combined {len(self.adapters)} adapters")
 
     def _apply_lora_scale(self, scale: float) -> None:
         """Apply scaling factor to LoRA adapter weights.
@@ -585,10 +718,12 @@ class LoRAStyleGenerator:
         self._model = None
         self._tokenizer = None
 
-        # Clean up temp checkpoint directory if it exists
-        if self._temp_dir and os.path.exists(self._temp_dir):
+        # Clean up temp checkpoint directories if they exist
+        if self._temp_dirs:
             import shutil
-            shutil.rmtree(self._temp_dir, ignore_errors=True)
-            self._temp_dir = None
+            for temp_dir in self._temp_dirs:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+            self._temp_dirs = []
 
         logger.info("Model unloaded")

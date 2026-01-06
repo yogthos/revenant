@@ -33,7 +33,6 @@ class TestTransferConfig:
         assert config.entailment_threshold == 0.7
         assert config.max_repair_attempts == 3
         assert config.reduce_repetition is True
-        assert config.lora_scale == 2.0
 
     def test_custom_values(self):
         """Test that custom values are applied."""
@@ -42,12 +41,10 @@ class TestTransferConfig:
         config = TransferConfig(
             temperature=0.8,
             verify_entailment=False,
-            lora_scale=1.5,
         )
 
         assert config.temperature == 0.8
         assert config.verify_entailment is False
-        assert config.lora_scale == 1.5
 
     def test_perspective_options(self):
         """Test perspective configuration."""

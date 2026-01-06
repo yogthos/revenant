@@ -126,8 +126,9 @@ class GenerationConfig:
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = 1.0  # Target for LoRA generation
 
-    # LoRA influence settings
-    lora_scale: float = 1.0  # LoRA influence: 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
+    # LoRA adapter settings (path -> scale mapping)
+    # Scale: 0.0=base only, 0.5=balanced, 1.0=full, >1.0=amplified
+    lora_adapters: dict = field(default_factory=dict)  # {"path": scale, ...}
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
@@ -386,8 +387,8 @@ def load_config(config_path: str = "config.json") -> Config:
             # Length control
             max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
             target_expansion_ratio=gen.get("target_expansion_ratio", 1.0),
-            # LoRA influence
-            lora_scale=gen.get("lora_scale", 1.0),
+            # LoRA adapters (path -> scale mapping)
+            lora_adapters=gen.get("lora_adapters", {}),
             # Neutralization
             skip_neutralization=gen.get("skip_neutralization", False),
             # Style settings
