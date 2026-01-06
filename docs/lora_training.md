@@ -168,29 +168,57 @@ python scripts/neutralize_corpus.py \
 
 ## Step 3: Train LoRA Adapter
 
-```bash
-python scripts/train_mlx_lora.py \
-    --from-neutralized data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --train \
-    --output lora_adapters/author
+Create a config.yaml file for training (see `data/training/lovecraft/config.yaml` for a template):
+
+```yaml
+# data/training/author/config.yaml
+model: "mlx-community/Qwen3-8B-Base-bf16"
+train: true
+data: "data/training/author"
+
+batch_size: 1
+grad_accumulation: 2
+iters: 3000              # ~0.87 epochs
+learning_rate: 1e-5
+num_layers: -1
+
+lora_parameters:
+  rank: 64
+  scale: 2.0
+  dropout: 0.15
+  keys:
+    - "self_attn.q_proj"
+    - "self_attn.k_proj"
+    - "self_attn.v_proj"
+    - "self_attn.o_proj"
+    - "mlp.gate_proj"
+    - "mlp.up_proj"
+    - "mlp.down_proj"
+
+adapter_path: "lora_adapters/author"
+save_every: 500
+steps_per_report: 50
+steps_per_eval: 200
+seed: 42
 ```
 
-**Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--epochs` | 1 | Training epochs (1 is sufficient for ~0.9M tokens) |
-| `--batch-size` | 1 | Batch size (1 per research - learns individual examples better) |
-| `--learning-rate` | 1e-4 | Learning rate (2x aggressive per paper) |
-| `--rank` | 32 | LoRA rank (higher = more capacity for style) |
-| `--alpha` | 64 | LoRA alpha (scaling factor, typically 2x rank) |
-| `--model` | from config | Base model to fine-tune |
-| `--max-seq-length` | 2048 | Maximum sequence length in tokens |
-| `--resume` | false | Resume training from last checkpoint |
+Then run training:
+```bash
+mlx_lm.lora --config data/training/author/config.yaml
+```
+
+**Key Parameters:**
+| Parameter | Recommended | Description |
+|-----------|-------------|-------------|
+| `iters` | ~0.87 epochs | Prevents overfitting |
+| `batch_size` | 1 | Learns individual examples better |
+| `learning_rate` | 1e-5 | Lower with high rank for stability |
+| `rank` | 64 | Higher = more capacity for complex syntax |
+| `dropout` | 0.15 | Prevents keyword memorization |
 
 ### Training Format
 
-The script creates training examples in this format:
+The training data uses this format:
 ```
 Write a {word_count} word excerpt about the content below emulating the style and voice of {author}
 
@@ -201,45 +229,16 @@ Write a {word_count} word excerpt about the content below emulating the style an
 
 This teaches the model: given a description and target length, generate text in the author's style.
 
-### Recommended Settings by Corpus Size
-
-| Corpus Size | Epochs | Notes |
-|-------------|--------|-------|
-| < 500K tokens | 3 | More epochs to compensate for limited data |
-| 500K-1M tokens | 1-2 | Sweet spot, 1 epoch usually sufficient |
-| > 1M tokens | 1 | Risk of overfitting with more epochs |
-
-### Resuming Training
-
-If training is interrupted:
-```bash
-python scripts/train_mlx_lora.py \
-    --from-neutralized data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --train \
-    --output lora_adapters/author \
-    --resume
-```
-
 ### Validation Checkpoint
 - [ ] Training completes without errors
 - [ ] Validation loss decreases during training
 - [ ] `adapters.safetensors` file created in output directory
-- [ ] `metadata.json` contains correct author and model info
 
 ---
 
 ## Step 4: Test the Adapter
 
-```bash
-python scripts/train_mlx_lora.py \
-    --author "Author Name" \
-    --output lora_adapters/author \
-    --test \
-    --test-prompt "The universe holds mysteries we have yet to understand."
-```
-
-Or use the style transfer pipeline directly:
+Use the style transfer pipeline to test:
 ```bash
 python restyle.py test_input.md -o test_output.md \
     --adapter lora_adapters/author \
@@ -260,33 +259,27 @@ python restyle.py test_input.md -o test_output.md \
 Train a Carl Sagan adapter:
 
 ```bash
-# Step 1: Curate (if corpus is large)
+# Step 1: Curate corpus
 python scripts/curate_corpus.py \
     --input data/corpus/sagan_full.txt \
-    --output styles/sample_sagan.txt \
-    --target-tokens 900000 \
-    --verbose
+    --output data/corpus/sagan.txt \
+    --target-tokens 900000
 
-# Step 2: Generate training data
-python scripts/neutralize_corpus.py \
-    --input styles/sample_sagan.txt \
-    --output data/neutralized/sagan.jsonl \
+# Step 2: Index in ChromaDB
+python scripts/load_corpus.py \
+    --input data/corpus/sagan.txt \
     --author "Carl Sagan"
 
-# Step 3: Train LoRA
-python scripts/train_mlx_lora.py \
-    --from-neutralized data/neutralized/sagan.jsonl \
+# Step 3: Generate training data
+python scripts/generate_flat_training.py \
+    --corpus data/corpus/sagan.txt \
     --author "Carl Sagan" \
-    --train \
-    --output lora_adapters/sagan
+    --output data/training/sagan
 
-# Step 4: Test
-python scripts/train_mlx_lora.py \
-    --author "Carl Sagan" \
-    --output lora_adapters/sagan \
-    --test
+# Step 4: Train LoRA (create config.yaml first, see template above)
+mlx_lm.lora --config data/training/sagan/config.yaml
 
-# Step 5: Use for style transfer
+# Step 5: Test with style transfer
 python restyle.py input.md -o output.md \
     --adapter lora_adapters/sagan \
     --author "Carl Sagan"
@@ -301,10 +294,12 @@ python restyle.py input.md -o output.md \
 | Setting | Value | Reasoning |
 |---------|-------|-----------|
 | Batch Size | 1 | Prevents averaging gradients across diverse examples |
-| Learning Rate | 1e-4 (2x standard) | Strong style imprinting |
-| Epochs | 1 (standard), 3 (small corpus) | Avoid memorization |
-| LoRA Rank | 32 | Good balance of capacity vs. efficiency |
-| LoRA Alpha | 64 | Standard 2x multiplier |
+| Grad Accumulation | 2 | Effective batch size of 2 |
+| Learning Rate | 1e-5 | Lower with high rank for stability |
+| Iterations | ~0.87 epochs | Prevents overfitting |
+| LoRA Rank | 64 | Higher capacity for complex syntax |
+| LoRA Scale | 2.0 | Strong style signal |
+| Dropout | 0.15 | Forces structural learning over memorization |
 
 ### Chunk Size Parameters
 

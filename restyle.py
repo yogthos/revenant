@@ -20,16 +20,18 @@ Usage:
     python restyle.py --list-adapters
 
 To train a LoRA adapter for a new author:
-    # 1. Curate corpus (optional, for large corpuses)
+    # 1. Curate corpus
     python scripts/curate_corpus.py --input corpus.txt --output curated.txt
 
-    # 2. Generate training data
-    python scripts/neutralize_corpus.py --input curated.txt \\
-        --output data/neutralized/author.jsonl --author "Author"
+    # 2. Index in ChromaDB
+    python scripts/load_corpus.py --input curated.txt --author "Author"
 
-    # 3. Train the adapter
-    python scripts/train_mlx_lora.py --from-neutralized data/neutralized/author.jsonl \\
-        --author "Author" --train --output lora_adapters/author
+    # 3. Generate training data
+    python scripts/generate_flat_training.py --corpus curated.txt \\
+        --author "Author" --output data/training/author
+
+    # 4. Create config.yaml (see docs/architecture.md for template)
+    # 5. Train with mlx_lm.lora --config data/training/author/config.yaml
 """
 
 import argparse
@@ -169,11 +171,12 @@ def list_adapters(adapters_dir: str = "lora_adapters") -> None:
 
     if not adapters_path.exists():
         print(f"No adapters directory found at: {adapters_path}")
-        print("\nTo train an adapter, run:")
-        print("  python scripts/train_mlx_lora.py --prepare --train \\")
-        print("      --corpus styles/sample_author.txt \\")
-        print("      --author 'Author Name' \\")
-        print("      --output lora_adapters/author")
+        print("\nTo train an adapter, see the training workflow in README.md or run:")
+        print("  1. python scripts/curate_corpus.py --input corpus.txt --output curated.txt")
+        print("  2. python scripts/load_corpus.py --input curated.txt --author 'Author Name'")
+        print("  3. python scripts/generate_flat_training.py --corpus curated.txt \\")
+        print("         --author 'Author Name' --output data/training/author")
+        print("  4. mlx_lm.lora --config data/training/author/config.yaml")
         return
 
     adapters = []

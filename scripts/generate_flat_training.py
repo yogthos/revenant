@@ -262,24 +262,44 @@ def extract_paragraphs(text: str, config: CurationConfig) -> List[str]:
 
 # Topic pools for variation generation - MUNDANE topics to isolate style from content
 # Using everyday activities forces the model to learn structure, not subject matter
+# Includes ACTIONS, DESCRIPTIONS, and OPINIONS to cover all structural modes
 MUNDANE_TOPICS = [
-    # Domestic activities
+    # ACTIONS - Domestic activities
     "making toast for breakfast", "doing the weekly laundry", "organizing a closet",
     "washing dishes after dinner", "vacuuming the living room", "folding clean towels",
     "watering houseplants", "making the bed", "cleaning the bathroom mirror",
     "sorting through old mail", "replacing a lightbulb", "taking out the trash",
-    # Office/bureaucratic
+    # ACTIONS - Office/bureaucratic
     "filing tax returns", "attending a staff meeting", "writing a work email",
     "waiting in line at the DMV", "filling out insurance forms", "updating a spreadsheet",
     "scheduling a dentist appointment", "renewing a driver's license", "balancing a checkbook",
-    # Routine errands
+    # ACTIONS - Routine errands
     "grocery shopping on Saturday", "pumping gas at the station", "returning library books",
     "picking up dry cleaning", "waiting for a bus", "walking to the mailbox",
     "parallel parking downtown", "choosing produce at the market", "standing in the checkout line",
-    # Simple activities
+    # ACTIONS - Simple activities
     "brewing morning coffee", "tying shoelaces", "checking the weather forecast",
     "setting an alarm clock", "microwaving leftovers", "charging a phone overnight",
     "brushing teeth before bed", "packing a lunch", "feeding the cat",
+    # DESCRIPTIONS - Atmospheres and places (crucial for atmospheric styles)
+    "the smell of a clean hospital waiting room", "the appearance of a disorganized office desk",
+    "the texture of stale bread", "the quiet atmosphere of an empty parking lot at noon",
+    "the feeling of a warm laundromat on a cold day", "the sound of a refrigerator humming",
+    "the view from a suburban kitchen window", "the clutter of an old garage",
+    "the sterile brightness of a fluorescent-lit hallway", "the mustiness of an attic",
+    "the mundane geometry of a parking garage", "the particular silence of a library",
+    "the way dust collects on a computer monitor", "the peeling paint on an old fence",
+    # DESCRIPTIONS - Objects and textures
+    "the worn leather of an old office chair", "a slightly rusted garden hose",
+    "the scratched surface of a kitchen table", "faded wallpaper in a hallway",
+    "the particular weight of a full laundry basket", "cracked tiles in a bathroom",
+    # OPINIONS/ARGUMENTS - For essayist styles
+    "why coffee is better than tea", "a complaint about slow internet speeds",
+    "a review of a mediocre sandwich", "the case against reply-all emails",
+    "why waiting rooms should have better magazines", "the problem with self-checkout machines",
+    "an argument for alphabetizing spice racks", "why voicemail is obsolete",
+    "a defense of generic brand cereal", "the annoyance of printer paper jams",
+    "why takeout containers never stack properly", "the unfairness of parking meters",
 ]
 
 
@@ -925,7 +945,60 @@ def generate_style_tag(styled_text: str, nlp=None) -> str:
 # NEFTune adds noise to embeddings. We simulate this by:
 # 1. Randomizing the instruction prefix (Prompt Jitter)
 # 2. Adding typos/synonyms to neutral input (Input Perturbation)
+# 3. Tag dropout (20% chance to omit style tag)
+# 4. Adjective dropout (forces model to hallucinate stylistic details)
 # This forces the model to learn robust patterns, not memorize strings.
+
+# Common words to ignore in lexical analysis
+COMMON_WORDS = {
+    'the', 'and', 'of', 'to', 'a', 'in', 'is', 'that', 'for', 'it', 'was',
+    'with', 'as', 'be', 'on', 'not', 'this', 'but', 'by', 'from', 'or',
+    'have', 'an', 'they', 'which', 'one', 'you', 'were', 'her', 'all',
+    'she', 'there', 'would', 'their', 'we', 'him', 'been', 'has', 'when',
+    'who', 'will', 'more', 'if', 'no', 'out', 'so', 'said', 'what', 'up',
+    'its', 'about', 'into', 'than', 'them', 'can', 'only', 'other', 'new',
+    'some', 'could', 'time', 'these', 'two', 'may', 'then', 'do', 'first',
+    'any', 'my', 'now', 'such', 'like', 'our', 'over', 'man', 'me', 'even',
+    'most', 'made', 'after', 'also', 'did', 'many', 'before', 'must', 'through',
+    'back', 'years', 'where', 'much', 'your', 'way', 'well', 'down', 'should',
+    'because', 'each', 'just', 'those', 'people', 'how', 'too', 'little', 'state',
+    'good', 'very', 'make', 'world', 'still', 'own', 'see', 'men', 'work', 'long',
+    'get', 'here', 'between', 'both', 'life', 'being', 'under', 'never', 'day',
+    'same', 'another', 'know', 'while', 'last', 'might', 'us', 'great', 'old', 'year',
+}
+
+
+def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.6) -> Tuple[bool, float]:
+    """Check if neutral input retains too much distinctive vocabulary from styled output.
+
+    If the neutral text already contains most of the distinctive words from the output,
+    the model learns copy-paste rather than style transfer.
+
+    Args:
+        neutral: Neutralized input text
+        styled: Original styled text
+        max_overlap: Maximum allowed overlap ratio (default 0.6)
+
+    Returns:
+        Tuple of (is_valid, overlap_ratio)
+    """
+    neutral_words = set(neutral.lower().split())
+    styled_words = set(styled.lower().split())
+
+    # Find distinctive words in styled text (not common)
+    distinctive_styled = styled_words - COMMON_WORDS
+
+    if not distinctive_styled:
+        return True, 0.0
+
+    # Find shared distinctive words
+    shared = (neutral_words & styled_words) - COMMON_WORDS
+
+    overlap_ratio = len(shared) / len(distinctive_styled)
+
+    # Reject if overlap is too high
+    return overlap_ratio < max_overlap, overlap_ratio
+
 
 # Prompt templates for jitter - randomly select one per example
 PROMPT_TEMPLATES = [
@@ -954,17 +1027,23 @@ SYNONYMS = {
 }
 
 
-def perturb_text(text: str, perturbation_rate: float = 0.08) -> str:
+def perturb_text(
+    text: str,
+    perturbation_rate: float = 0.08,
+    drop_adjectives: bool = False
+) -> str:
     """Apply random perturbations to text (Poor Man's NEFTune).
 
     Applies 5-10% random changes:
     - Synonym swap: Replace word with synonym
     - Word drop: Remove non-essential words (the, a, an)
     - Typo: Swap adjacent characters
+    - Adjective drop (optional): Forces model to hallucinate stylistic details
 
     Args:
         text: Input text to perturb
         perturbation_rate: Probability of perturbing each word (default 8%)
+        drop_adjectives: If True, 30% chance to strip adjectives (forces style generation)
 
     Returns:
         Perturbed text
@@ -973,7 +1052,27 @@ def perturb_text(text: str, perturbation_rate: float = 0.08) -> str:
     result = []
     droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite'}
 
+    # Common adjectives to drop (forces model to regenerate them in author's style)
+    adjectives_to_drop = {
+        'great', 'small', 'large', 'old', 'new', 'good', 'bad', 'long', 'short',
+        'high', 'low', 'young', 'little', 'big', 'dark', 'light', 'strange',
+        'ancient', 'terrible', 'horrible', 'beautiful', 'ugly', 'quiet', 'loud',
+        'soft', 'hard', 'cold', 'hot', 'warm', 'cool', 'wet', 'dry', 'empty',
+        'full', 'deep', 'shallow', 'thick', 'thin', 'wide', 'narrow', 'vast',
+        'immense', 'enormous', 'tiny', 'massive', 'peculiar', 'odd', 'weird',
+    }
+
+    # Decide if we're dropping adjectives this time (30% chance when enabled)
+    should_drop_adjs = drop_adjectives and random.random() < 0.30
+
     for word in words:
+        word_lower = word.lower().rstrip('.,!?;:')
+
+        # Adjective dropping (Information Dropout)
+        if should_drop_adjs and word_lower in adjectives_to_drop:
+            # Drop the adjective, forcing model to hallucinate the author's preferred one
+            continue
+
         if random.random() > perturbation_rate:
             result.append(word)
             continue
@@ -983,7 +1082,6 @@ def perturb_text(text: str, perturbation_rate: float = 0.08) -> str:
 
         if choice < 0.4:
             # Synonym swap (40% of perturbations)
-            word_lower = word.lower().rstrip('.,!?;:')
             if word_lower in SYNONYMS:
                 synonym = random.choice(SYNONYMS[word_lower])
                 # Preserve case
@@ -1018,6 +1116,8 @@ def format_training_example(
     style_tag: str = None,
     variation_type: str = "original",
     use_jitter: bool = True,
+    tag_dropout_rate: float = 0.20,
+    use_adjective_dropout: bool = True,
 ) -> dict:
     """Format a training example for BASE model (not instruct).
 
@@ -1026,12 +1126,14 @@ def format_training_example(
 
     Applies NEFTune simulation based on variation_type:
     - Prompt Jitter: Random instruction prefix (all types)
+    - Tag Dropout: 20% chance to omit style tag (forces default style learning)
     - Light Perturbation: 8% rate for 'original' and 'snowflake'
     - Heavy Perturbation: 15% rate for 'robustness' (Entry 3 of Triad)
+    - Adjective Dropout: 30% chance to strip adjectives (forces style hallucination)
 
     Format:
         Rewrite in {author}'s style (~N words):
-        [STYLE: Varied Lengths | Complex Syntax]
+        [STYLE: Varied Lengths | Complex Syntax]  <-- may be omitted (tag dropout)
         [neutral text with perturbations]
         ###
         [styled text]
@@ -1044,18 +1146,28 @@ def format_training_example(
 
     instruction = template.format(author=author, word_count=word_count)
 
+    # Tag Dropout: 20% chance to omit style tag
+    # This forces the model to learn that the author's name alone implies the style
+    effective_style_tag = style_tag
+    if style_tag and random.random() < tag_dropout_rate:
+        effective_style_tag = None
+
     # Apply perturbation based on variation type
     # Robustness entries get HEAVY perturbation (Entry 3 of Triad)
-    # Other entries get light perturbation
+    # Other entries get light perturbation with optional adjective dropout
     if variation_type == "robustness":
         perturbed_input = create_heavy_perturbation(neutral_text)
     else:
-        perturbed_input = perturb_text(neutral_text)
+        perturbed_input = perturb_text(
+            neutral_text,
+            drop_adjectives=use_adjective_dropout
+        )
 
     # Build prompt with optional style tag
-    if style_tag:
-        prompt = f"{instruction}\n{style_tag}\n{perturbed_input}\n###\n"
+    if effective_style_tag:
+        prompt = f"{instruction}\n{effective_style_tag}\n{perturbed_input}\n###\n"
     else:
+        # Model must learn that this author's name alone implies the style
         prompt = f"{instruction}\n{perturbed_input}\n###\n"
 
     # For mlx_lm.lora with base models: {"text": "prompt + completion"}
@@ -1064,7 +1176,8 @@ def format_training_example(
         "text": prompt + styled_text,
         "prompt": prompt,  # For mask_prompt to know where to split
         "word_count": word_count,
-        "style_tag": style_tag,
+        "style_tag": effective_style_tag,  # Record actual tag used (after dropout)
+        "tag_dropped": style_tag is not None and effective_style_tag is None,
     }
 
 
@@ -1167,6 +1280,13 @@ def generate_training_data(
                 # Process results
                 for (idx, styled_text, vtype), neutral in zip(batch, neutrals):
                     if neutral:
+                        # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
+                        is_valid, overlap_ratio = check_lexical_bleed(neutral, styled_text)
+                        if not is_valid:
+                            failed_count += 1
+                            logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap)")
+                            continue
+
                         word_count = len(styled_text.split())
                         style_tag = generate_style_tag(styled_text)
 
@@ -1184,6 +1304,28 @@ def generate_training_data(
                         f.write(json.dumps(example) + '\n')
                         success_count += 1
                         type_counts[vtype] = type_counts.get(vtype, 0) + 1
+
+                        # Many-to-One: For "original" entries, generate a second example
+                        # with heavy perturbation on the SAME neutral input.
+                        # This forces the model to learn the transformation function,
+                        # not memorize input→output mappings.
+                        if vtype == "original":
+                            example2 = format_training_example(
+                                neutral_text=neutral,
+                                styled_text=styled_text,
+                                author=author,
+                                word_count=word_count,
+                                style_tag=style_tag,
+                                variation_type="original_alt",  # Alternate version
+                                use_adjective_dropout=True,  # Force adjective stripping
+                            )
+                            example2["variation_type"] = "original_alt"
+                            example2["source_idx"] = idx
+                            example2["many_to_one"] = True
+
+                            f.write(json.dumps(example2) + '\n')
+                            success_count += 1
+                            type_counts["original_alt"] = type_counts.get("original_alt", 0) + 1
                     else:
                         failed_count += 1
                         logger.warning(f"  [{idx}] ✗ Failed to neutralize ({len(styled_text.split())}w)")
@@ -1215,6 +1357,13 @@ def generate_training_data(
                     neutral = None
 
                 if neutral:
+                    # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
+                    is_valid, overlap_ratio = check_lexical_bleed(neutral, styled_text)
+                    if not is_valid:
+                        failed_count += 1
+                        logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap)")
+                        continue
+
                     word_count = len(styled_text.split())
                     style_tag = generate_style_tag(styled_text)
 
@@ -1233,6 +1382,29 @@ def generate_training_data(
                     f.flush()
                     success_count += 1
                     type_counts[vtype] = type_counts.get(vtype, 0) + 1
+
+                    # Many-to-One: For "original" entries, generate a second example
+                    # with heavy perturbation on the SAME neutral input.
+                    # This forces the model to learn the transformation function,
+                    # not memorize input→output mappings.
+                    if vtype == "original":
+                        example2 = format_training_example(
+                            neutral_text=neutral,
+                            styled_text=styled_text,
+                            author=author,
+                            word_count=word_count,
+                            style_tag=style_tag,
+                            variation_type="original_alt",  # Alternate version
+                            use_adjective_dropout=True,  # Force adjective stripping
+                        )
+                        example2["variation_type"] = "original_alt"
+                        example2["source_idx"] = idx
+                        example2["many_to_one"] = True
+
+                        f.write(json.dumps(example2) + '\n')
+                        f.flush()
+                        success_count += 1
+                        type_counts["original_alt"] = type_counts.get("original_alt", 0) + 1
                 else:
                     failed_count += 1
                     logger.warning(f"  [{idx}] ✗ Failed to neutralize ({len(styled_text.split())}w)")

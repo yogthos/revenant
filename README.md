@@ -40,82 +40,345 @@ pip install -r requirements.txt
 # Download spaCy model
 python -m spacy download en_core_web_lg
 
-# Copy config template
+# Copy config template and add your API key
 cp config.json.sample config.json
 # Edit config.json to add your DEEPSEEK_API_KEY
 ```
 
 ---
 
-## Quick Start
+## Building a LoRA Adapter from Scratch
+
+This section walks through the complete process of creating a style transfer adapter from author text. You'll need to complete these steps before you can use the style transfer system.
+
+```mermaid
+flowchart LR
+    A[1. Prepare Corpus] --> B[2. Index in ChromaDB]
+    B --> C[3. Generate Training Data]
+    C --> D[4. Train LoRA]
+    D --> E[5. Verify & Use]
+```
+
+### Step 1: Prepare Your Corpus
+
+Gather representative text samples from your target author. The corpus quality directly affects output quality.
+
+**Corpus Requirements:**
+
+| Requirement | Recommendation |
+|-------------|----------------|
+| **Size** | 50KB-500KB of text (~50-500 paragraphs) |
+| **Format** | Plain text, paragraphs separated by blank lines |
+| **Content** | Representative prose samples showing author's style |
+| **Quality** | Remove headers, footers, page numbers, excessive citations |
+
+**Example raw corpus:**
+
+```
+data/corpus/lovecraft_raw.txt
+```
+
+```text
+The oldest and strongest emotion of mankind is fear, and the
+oldest and strongest kind of fear is fear of the unknown.
+
+I have seen the dark universe yawning where the black planets
+roll without aim, where they roll in their horror unheeded...
+
+[more paragraphs separated by blank lines]
+```
+
+#### Curating the Corpus (Recommended)
+
+If your raw corpus is large or contains noise, use the curation script to filter and select the best passages:
 
 ```bash
-# Transfer text using an existing adapter
+python scripts/curate_corpus.py \
+    --input data/corpus/lovecraft_raw.txt \
+    --output data/corpus/lovecraft.txt \
+    --target-tokens 900000
+```
+
+**What curation does:**
+
+1. **Filters** low-quality text (short paragraphs, OCR artifacts, fragments)
+2. **Selects** diverse, representative passages using embedding clustering
+3. **Caps** output at target token budget (~900K tokens optimal)
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--target-tokens` | 900000 | Target corpus size in tokens |
+| `--min-words` | 40 | Minimum words per paragraph |
+| `--diversity-weight` | 0.3 | Balance between quality (0) and diversity (1) |
+
+**When to curate:**
+
+- Raw corpus > 500KB (will be trimmed to optimal size)
+- Corpus contains OCR'd books (removes artifacts)
+- Corpus has mixed quality (selects best passages)
+
+**When to skip curation:**
+
+- Corpus is already clean and well-formatted
+- Corpus is small (<100KB) - use directly
+
+**Tips for manual preparation:**
+
+- Include diverse samples (essays, books, articles) to capture style range
+- Ensure paragraphs are complete thoughts (not fragments)
+- Remove chapter headers, page numbers, and footnotes
+- Aim for paragraphs of 30-300 words each
+
+#### Chunking the Corpus (Optional)
+
+If you want explicit control over chunk boundaries, use `chunk_corpus.py` to create overlapping chunks:
+
+```bash
+python scripts/chunk_corpus.py \
+    --corpus data/corpus/lovecraft.txt \
+    --output data/training/lovecraft/chunks.json \
+    --target-words 150 \
+    --overlap 2
+```
+
+This creates ~150-word chunks with 2-sentence overlap (style lives in transitions). You can then pass these to `generate_flat_training.py` with `--resume-from-chunks`.
+
+**Note:** If you skip this step, `generate_flat_training.py` does chunking automatically.
+
+### Step 2: Index Corpus in ChromaDB
+
+The corpus indexer processes your text and stores it in ChromaDB for retrieval during inference. This enables Structural RAG (rhythm guidance) and Structural Grafting (argument structure copying).
+
+```bash
+python scripts/load_corpus.py \
+    --input data/corpus/lovecraft.txt \
+    --author "H.P. Lovecraft"
+```
+
+**What this does:**
+
+1. **Splits** corpus into paragraphs
+2. **Filters** for quality (removes short, broken, or repetitive paragraphs)
+3. **Deduplicates** using semantic similarity (removes near-duplicates)
+4. **Analyzes** style metrics per paragraph (sentence length, complexity, POS ratios)
+5. **Generates** embeddings for semantic search
+6. **Extracts** rhetorical skeletons via LLM (argument structure like `[Observation] → [Analysis] → [Conclusion]`)
+7. **Stores** everything in ChromaDB at `data/rag_index/`
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--min-words 30` | Minimum words per paragraph (default: 30) |
+| `--skip-skeletons` | Skip skeleton extraction (faster, but disables Structural Grafting) |
+| `--clear` | Clear existing data for this author before loading |
+| `--no-dedup` | Skip deduplication |
+| `-v` | Verbose output showing rejection reasons |
+
+**Verify indexing:**
+
+```bash
+# List all indexed authors and chunk counts
+python scripts/load_corpus.py --list
+```
+
+Output:
+```
+Indexed authors (1):
+--------------------------------------------------
+  H.P. Lovecraft: 127 chunks (98 with skeletons, 77%)
+```
+
+### Step 3: Generate Training Data
+
+This step creates training pairs by neutralizing the author's styled text. The training format is `(neutral_text → styled_text)`, teaching the model to add style while preserving content.
+
+```bash
+python scripts/generate_flat_training.py \
+    --corpus data/corpus/lovecraft.txt \
+    --author "H.P. Lovecraft" \
+    --output data/training/lovecraft
+```
+
+**What this does:**
+
+1. **Extracts** quality paragraphs from corpus
+2. **Creates variations** using the Triad Strategy (1:3 expansion):
+   - **Anchors**: Original author text
+   - **Snowflakes**: LLM-generated topic variations (same sentence structure, mundane topics like "making coffee" or "folding laundry")
+   - **Robustness**: Original text marked for heavy input perturbation
+3. **Chunks** into training-sized segments with overlapping context (150-400 words)
+4. **Neutralizes ALL chunks** (both originals AND snowflakes) via Round-Trip Translation
+5. **Creates** training pairs for EACH:
+   - Originals: `neutral(original) → styled(original)` — teaches vocabulary
+   - Snowflakes: `neutral(snowflake) → styled(snowflake)` — teaches structure
+6. **Splits** into train/validation/test sets (80/10/10)
+
+**Why Snowflakes Work:**
+
+The key insight is that snowflakes are **styled text first**, then neutralized. The model learns:
+- `neutral(tomato facts) → styled(tomato passage)` — author's vocabulary
+- `neutral(snowflake facts) → styled(snowflake passage)` — author's sentence structure
+
+Since the snowflake is about a mundane topic (not tomatoes), the model can't rely on content similarity—it must learn the **transformation function** itself. This prevents content overfitting.
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--min-words` | 150 | Minimum words per training chunk |
+| `--max-words` | 400 | Maximum words per training chunk |
+| `--overlap-sentences` | 2 | Sentence overlap between chunks for context |
+| `--skip-variation` | - | Skip Triad variation (faster, but less robust training) |
+| `--workers` | 1 | Parallel workers for variation generation |
+
+**Output files:**
+
+```
+data/training/lovecraft/
+├── all.jsonl         # All training data with metadata
+├── train.jsonl       # Training set (80%)
+├── valid.jsonl       # Validation set (10%)
+├── test.jsonl        # Test set (10%)
+├── paragraphs.json   # Intermediate: extracted paragraphs + variations
+└── chunks.json       # Intermediate: overlapping chunks
+```
+
+**Training data format (text completion for base models):**
+
+```json
+{
+  "text": "Write a 150 word excerpt about the content below emulating the style and voice of H.P. Lovecraft\n\n[neutralized text]\n\n[original styled text]"
+}
+```
+
+The model learns: given instruction + neutral content → generate styled output.
+
+### Step 4: Train the LoRA Adapter
+
+Train a LoRA adapter using MLX. First, create a configuration file, then run training.
+
+**Create `data/training/lovecraft/config.yaml`:**
+
+```yaml
+# MLX LoRA Configuration
+model: "mlx-community/Qwen3-8B-Base-bf16"
+train: true
+data: "data/training/lovecraft"
+
+# Training Strategy
+batch_size: 1
+grad_accumulation: 2
+iters: 3000              # Adjust based on dataset size (~0.87 epochs)
+learning_rate: 1e-5
+
+# Apply LoRA to all layers for deep style capture
+num_layers: -1
+
+# LoRA Architecture
+lora_parameters:
+  rank: 64               # High rank for complex sentence structures
+  scale: 2.0             # Strong style signal
+  dropout: 0.15          # Prevents overfitting to specific keywords
+  keys:                  # Target all attention + MLP layers
+    - "self_attn.q_proj"
+    - "self_attn.k_proj"
+    - "self_attn.v_proj"
+    - "self_attn.o_proj"
+    - "mlp.gate_proj"
+    - "mlp.up_proj"
+    - "mlp.down_proj"
+
+# Output
+adapter_path: "lora_adapters/lovecraft"
+save_every: 500
+steps_per_report: 50
+steps_per_eval: 200
+
+seed: 42
+```
+
+**Run training:**
+
+```bash
+mlx_lm.lora --config data/training/lovecraft/config.yaml
+```
+
+**Key configuration parameters:**
+
+| Parameter | Recommended | Description |
+|-----------|-------------|-------------|
+| `model` | Qwen3-8B-Base-bf16 | Base model (base models work best for style) |
+| `iters` | ~3000 | Total training steps (~0.87 epochs prevents overfitting) |
+| `batch_size` | 1 | Small batches learn individual style quirks |
+| `grad_accumulation` | 2 | Effective batch size = batch_size × grad_accumulation |
+| `learning_rate` | 1e-5 | Lower LR with high rank for stability |
+| `rank` | 64 | Higher rank captures complex syntactic patterns |
+| `dropout` | 0.15 | Forces model to learn structure, not memorize words |
+
+**Calculating iterations:**
+
+```
+train_examples = number of lines in train.jsonl
+iters_per_epoch = train_examples / batch_size
+target_iters = iters_per_epoch × 0.87  # ~87% of one epoch
+```
+
+**Training time:** ~1-2 hours on Apple Silicon M1/M2/M3.
+
+**Output structure:**
+
+```
+lora_adapters/lovecraft/
+├── adapters.safetensors    # LoRA weights
+└── adapter_config.json     # LoRA configuration
+```
+
+### Step 5: Verify and Test
+
+Verify the adapter was created and test it:
+
+```bash
+# List available adapters
+python restyle.py --list-adapters
+
+# Test with a sample file
+echo "The brain processes information through neural networks." > test_input.txt
+
+python restyle.py test_input.txt -o test_output.txt \
+    --adapter lora_adapters/lovecraft \
+    --author "H.P. Lovecraft" \
+    -v
+
+cat test_output.txt
+```
+
+**Expected output:** The neutral input should be transformed into Lovecraft's characteristic style with self-referential observations, playful analogies, and philosophical tangents.
+
+---
+
+## Quick Start
+
+Once you have a trained adapter, use it to transfer text:
+
+```bash
+# Transfer a document
 python restyle.py input.txt -o output.txt \
     --adapter lora_adapters/lovecraft \
     --author "H.P. Lovecraft"
 
-# Interactive REPL mode (generates 5 variations)
+# Interactive REPL mode (generates 5 variations per input)
 python restyle.py --repl \
     --adapter lora_adapters/lovecraft \
     --author "H.P. Lovecraft"
-
-# List available adapters
-python restyle.py --list-adapters
 
 # Skip verification for faster output
 python restyle.py input.txt -o output.txt \
     --adapter lora_adapters/lovecraft \
     --no-verify
 ```
-
----
-
-## Corpus Management
-
-### Loading a Corpus
-
-Use the unified corpus loading script to clean, analyze, and index author text:
-
-```bash
-# Full pipeline: clean, dedupe, extract skeletons, index
-python scripts/load_corpus.py \
-    --input data/corpus/author.txt \
-    --author "Author Name"
-
-# Fast mode (skip skeleton extraction)
-python scripts/load_corpus.py \
-    --input data/corpus/author.txt \
-    --author "Author Name" \
-    --skip-skeletons
-
-# Clear existing and reload
-python scripts/load_corpus.py \
-    --input data/corpus/author.txt \
-    --author "Author Name" \
-    --clear
-
-# List indexed authors
-python scripts/load_corpus.py --list
-```
-
-**What it does:**
-
-1. **Quality Filtering**: Removes short paragraphs, encoding artifacts, fragments
-2. **Deduplication**: Removes near-duplicate passages using semantic similarity
-3. **Style Metrics**: Extracts sentence length, complexity, POS ratios
-4. **Embeddings**: Generates vectors for semantic search
-5. **Rhetorical Skeletons**: Extracts argument structure via LLM (e.g., `[Observation] → [Paradox] → [Conclusion]`)
-6. **ChromaDB Indexing**: Stores everything for retrieval during inference
-
-### Corpus Requirements
-
-| Requirement | Recommendation |
-|-------------|----------------|
-| **Size** | 50KB-500KB (~0.9M tokens optimal) |
-| **Format** | Clean paragraphs separated by blank lines |
-| **Content** | Representative prose samples |
-| **Remove** | Headers, footnotes, citations |
 
 ---
 
@@ -129,29 +392,31 @@ python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecr
 
 ```
 ───────────────────────────────────────────────────────────────
-─────────────── Style Transfer: H.P. Lovecraft ────────────────
+────────────── Style Transfer: H.P. Lovecraft ─────────────
 ───────────────────────────────────────────────────────────────
 
   Enter a paragraph to transform (press Enter twice to submit)
   Generates 5 variations for comparison
   Commands: /help, /clear, /history, /quit
 
-│ The old house stood at the end of the street.
+│ The brain is a complex organ that processes information.
 │
 
 ───────────────────────────────────────────────────────────────
   5 Variations Generated:
 ───────────────────────────────────────────────────────────────
 
-  [1] (23 words)
+  [1] (28 words)
   ──────────────────────────────────────────────────────────────
-  The ancient edifice loomed at the terminus of that forgotten
-  thoroughfare, its gambrel roof silhouetted against a gibbous moon.
+  The brain—that most peculiar of organs—engages in what we might
+  call "information processing," though this term barely scratches
+  the surface of its strange loops.
 
-  [2] (21 words)
+  [2] (25 words)
   ──────────────────────────────────────────────────────────────
-  At the street's neglected end stood the house—ancient, decrepit,
-  and possessed of an atmosphere wholly its own.
+  Consider the brain: a tangled hierarchy of neurons, each blind
+  to meaning, yet collectively conjuring the very consciousness
+  pondering them.
 
   ...
 ───────────────────────────────────────────────────────────────
@@ -176,79 +441,7 @@ python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecr
 
 ---
 
-## Training a LoRA Adapter
-
-```mermaid
-flowchart LR
-    A[Author Corpus] --> B[Load & Index]
-    B --> C[RTT Neutralize]
-    C --> D[Generate Training Pairs]
-    D --> E[Train LoRA]
-    E --> F[Adapter Ready]
-```
-
-### Step 1: Load Corpus into ChromaDB
-
-```bash
-python scripts/load_corpus.py \
-    --input data/corpus/author.txt \
-    --author "Author Name"
-```
-
-### Step 2: Generate Training Data
-
-Creates training pairs using instruction back-translation. The script neutralizes styled text to create (neutral → styled) pairs:
-
-```bash
-python scripts/generate_flat_training.py \
-    --corpus data/corpus/author.txt \
-    --author "Author Name" \
-    --output data/training/author
-```
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--min-words` | 150 | Minimum words per chunk |
-| `--max-words` | 400 | Maximum words per chunk |
-| `--overlap-sentences` | 2 | Sentence overlap between chunks |
-
-**Output:** `data/training/author.jsonl` with training pairs.
-
-### Step 3: Train the LoRA Adapter
-
-```bash
-python scripts/train_mlx_lora.py \
-    --from-neutralized data/training/author.jsonl \
-    --author "Author Name" \
-    --train \
-    --output lora_adapters/author
-```
-
-**Options:**
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--epochs` | 1 | Training epochs (1 often sufficient) |
-| `--batch-size` | 1 | Batch size |
-| `--learning-rate` | 1e-5 | Learning rate |
-| `--rank` | 64 | LoRA rank |
-| `--alpha` | 128 | LoRA alpha (typically 2x rank) |
-| `--resume` | - | Resume from checkpoint |
-
-**Training time:** ~1-2 hours on Apple Silicon.
-
-### Step 4: Verify Adapter
-
-```bash
-python restyle.py --list-adapters
-python restyle.py test.txt -o output.txt --adapter lora_adapters/author -v
-```
-
----
-
-## Running Inference
+## CLI Reference
 
 ### Basic Usage
 
@@ -256,7 +449,7 @@ python restyle.py test.txt -o output.txt --adapter lora_adapters/author -v
 python restyle.py <input> -o <output> --adapter <path> --author <name>
 ```
 
-### CLI Options
+### Options
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -377,7 +570,8 @@ text-style-transfer/
 │   │
 │   ├── validation/               # Content preservation
 │   │   ├── semantic_graph.py    # Proposition graph analysis
-│   │   └── entailment.py        # NLI entailment checking
+│   │   ├── entailment.py        # NLI entailment checking
+│   │   └── reference_tracker.py # Footnote [^N] preservation
 │   │
 │   ├── rag/                      # Structural RAG system
 │   │   ├── style_analyzer.py    # spaCy style metrics
@@ -412,7 +606,6 @@ text-style-transfer/
 ├── scripts/                      # Training & data scripts
 │   ├── load_corpus.py           # Unified corpus loading
 │   ├── generate_flat_training.py # Generate training data via RTT
-│   ├── train_mlx_lora.py        # Train LoRA adapter
 │   ├── curate_corpus.py         # Filter corpus to optimal size
 │   └── update_skeletons.py      # Add skeletons to existing index
 │
@@ -512,17 +705,26 @@ Use 4-bit model in config.json:
 export DEEPSEEK_API_KEY="your-key"
 ```
 
+### ChromaDB Issues
+
+```bash
+# Reset the index
+rm -rf data/rag_index/
+python scripts/load_corpus.py --input data/corpus/author.txt --author "Author Name"
+```
+
 ---
 
 ## Performance
 
 | Metric | Value |
 |--------|-------|
-| Per-paragraph | 15-30 seconds |
+| Per-paragraph inference | 15-30 seconds |
 | Memory (inference) | ~8GB |
 | Memory (training) | ~50GB |
 | Training time | ~1-2 hours |
 | Corpus indexing | ~2s/chunk (with skeletons) |
+| Training data generation | ~5-10 min for 100 chunks |
 
 ---
 
