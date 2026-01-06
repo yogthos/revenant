@@ -384,6 +384,7 @@ class StyleTransfer:
             Tuple of (styled_paragraph, entailment_score).
         """
         from ..validation.semantic_graph import SemanticGraphBuilder, SemanticGraphComparator
+        from ..validation.reference_tracker import extract_references, reinject_references
 
         # Skip very short paragraphs
         if len(paragraph.split()) < self.config.min_paragraph_words:
@@ -394,15 +395,21 @@ class StyleTransfer:
         logger.debug(f"Translating paragraph: {word_count} words")
 
         # ========================================
+        # STEP 0: Extract and preserve references [^N]
+        # ========================================
+        # References are stripped before processing and reinjected at the end
+        paragraph_clean, ref_map = extract_references(paragraph)
+
+        # ========================================
         # STEP 1: Build source graph (ground truth)
         # ========================================
         builder = SemanticGraphBuilder(use_rebel=False)
-        source_graph = builder.build_from_text(paragraph)
+        source_graph = builder.build_from_text(paragraph_clean)
         logger.info(f"Source graph: {len(source_graph.nodes)} propositions, {len(source_graph.edges)} relationships")
 
         if not source_graph.nodes:
             logger.warning("Could not build source graph, passing through unchanged")
-            return paragraph, 1.0
+            return paragraph, 1.0  # Return original with references
 
         comparator = SemanticGraphComparator()
 
@@ -411,24 +418,25 @@ class StyleTransfer:
         # ========================================
         # Training used Round-Trip Translation via Mandarin to neutralize text
         # We must use the same process during inference for the LoRA to work
+        # Note: Use paragraph_clean (references stripped) for processing
         if self.config.skip_neutralization:
-            # Skip RTT - use original text directly
-            content_for_generation = paragraph
+            # Skip RTT - use cleaned text directly
+            content_for_generation = paragraph_clean
             logger.debug("RTT neutralization skipped (skip_neutralization=true)")
         else:
-            content_for_generation = self._rtt_neutralize(paragraph)
+            content_for_generation = self._rtt_neutralize(paragraph_clean)
             if not content_for_generation:
-                # Fall back to original text instead of crashing
+                # Fall back to cleaned text instead of crashing
                 logger.warning(
-                    f"RTT neutralization failed for paragraph: {paragraph[:50]}... "
+                    f"RTT neutralization failed for paragraph: {paragraph_clean[:50]}... "
                     "Falling back to original text. "
                     "Check config.json llm.provider.rtt setting."
                 )
-                content_for_generation = paragraph
+                content_for_generation = paragraph_clean
             else:
-                rtt_input_words = len(paragraph.split())
+                rtt_input_words = len(paragraph_clean.split())
                 rtt_output_words = len(content_for_generation.split())
-                logger.info(f"RTT INPUT ({rtt_input_words} words): {paragraph[:150]}...")
+                logger.info(f"RTT INPUT ({rtt_input_words} words): {paragraph_clean[:150]}...")
                 logger.info(f"RTT OUTPUT ({rtt_output_words} words): {content_for_generation[:150]}...")
 
         # ========================================
@@ -484,7 +492,7 @@ class StyleTransfer:
         logger.info(f"LORA OUTPUT ({lora_output_words} words, target={target_words}): {output[:150]}...")
 
         # Check if LoRA output matches input (indicates no transformation)
-        if output.strip() == paragraph.strip():
+        if output.strip() == paragraph_clean.strip():
             logger.warning("LoRA output identical to original paragraph - no transformation occurred")
 
         # Check for memorization (output has no semantic overlap with input)
@@ -520,10 +528,19 @@ class StyleTransfer:
         # Ensure output ends with complete sentence
         output = self._ensure_complete_ending(output)
 
+        # ========================================
+        # STEP 5: Reinject references [^N]
+        # ========================================
+        # References were extracted in STEP 0 and are now reattached
+        # based on entity matching (e.g., "Einstein" -> "Einstein[^1]")
+        if ref_map.has_references():
+            output = reinject_references(output, ref_map)
+            logger.debug(f"Reinjected {len(ref_map.references)} references")
+
         # Verify if configured
         score = 1.0
         if self.verify_fn:
-            score = self.verify_fn(paragraph, output)
+            score = self.verify_fn(paragraph_clean, output)
 
         return output, score
 
