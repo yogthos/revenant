@@ -123,9 +123,8 @@ class GenerationConfig:
     anchor_threshold: float = 0.8  # Min content anchor coverage (0.0-1.0)
 
     # Length control settings
-    max_expansion_ratio: float = 1.5  # Max output/input word ratio (1.5 = 50% longer)
-    target_expansion_ratio: float = 1.2  # Target for LoRA generation (1.2 = 20% longer)
-    truncate_over_expanded: bool = False  # If True, truncate; if False, allow longer
+    max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
+    target_expansion_ratio: float = 1.0  # Target for LoRA generation
 
     # LoRA influence settings
     lora_scale: float = 1.0  # LoRA influence: 0.0=base only, 0.5=half, 1.0=full, >1.0=amplified
@@ -160,11 +159,9 @@ class GenerationConfig:
     # RAG settings
     use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
 
-    # NLI Auditor settings (sentence-level verification)
-    use_sentence_nli: bool = False  # Enable sentence-level NLI verification (slower but more accurate)
-    nli_model: str = "cross-encoder/nli-deberta-v3-base"  # NLI model for sentence verification
-    nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
-    nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
+    # Grammar correction settings (final post-processing pass)
+    correct_grammar: bool = True  # Enable style-safe grammar correction
+    grammar_language: str = "en-US"  # Language variant: "en-US" or "en-GB"
 
 
 @dataclass
@@ -387,9 +384,8 @@ def load_config(config_path: str = "config.json") -> Config:
             proposition_threshold=gen.get("proposition_threshold", 0.7),
             anchor_threshold=gen.get("anchor_threshold", 0.8),
             # Length control
-            max_expansion_ratio=gen.get("max_expansion_ratio", 1.5),
-            target_expansion_ratio=gen.get("target_expansion_ratio", 1.2),
-            truncate_over_expanded=gen.get("truncate_over_expanded", False),
+            max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
+            target_expansion_ratio=gen.get("target_expansion_ratio", 1.0),
             # LoRA influence
             lora_scale=gen.get("lora_scale", 1.0),
             # Neutralization
@@ -415,11 +411,9 @@ def load_config(config_path: str = "config.json") -> Config:
             min_paragraph_words=gen.get("min_paragraph_words", 10),
             # RAG settings
             use_structural_rag=gen.get("use_structural_rag", True),
-            # NLI Auditor settings
-            use_sentence_nli=gen.get("use_sentence_nli", False),
-            nli_model=gen.get("nli_model", "cross-encoder/nli-deberta-v3-base"),
-            nli_recall_threshold=gen.get("nli_recall_threshold", 0.5),
-            nli_precision_threshold=gen.get("nli_precision_threshold", 0.5),
+            # Grammar correction settings
+            correct_grammar=gen.get("correct_grammar", True),
+            grammar_language=gen.get("grammar_language", "en-US"),
         )
 
     if "style" in data:

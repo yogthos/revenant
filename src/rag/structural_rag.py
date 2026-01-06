@@ -5,13 +5,17 @@ Instead of returning text examples that get copied, this returns:
 - Punctuation patterns
 - Syntactic templates (POS sequences)
 - Opening/transition patterns
+- Vocabulary clusters (author-specific word banks)
+- Transition inventory (author's connectives)
+- Emotional stance markers
 
 This addresses the core issues:
 - Mechanical Transitions → Natural transition rhythm from author
-- Impersonal Tone → Emotional punctuation patterns (!, —, ...)
-- Mechanical Precision → High variance in sentence lengths
+- Impersonal Tone → Vocabulary clusters + emotional stance markers
+- Mechanical Precision → Concrete syntactic templates (not just length categories)
 - Formulaic Flow → Actual author rhythm fingerprints
 - Robotic Formality → Fragment usage, informal punctuation
+- Sophisticated Clarity → Transition inventory + opening patterns
 """
 
 from dataclasses import dataclass
@@ -21,6 +25,10 @@ import random
 from .structural_analyzer import (
     RhythmFingerprint,
     get_structural_analyzer,
+)
+from .enhanced_analyzer import (
+    EnhancedStyleProfile,
+    get_enhanced_analyzer,
 )
 from .corpus_indexer import get_indexer
 from ..utils.logging import get_logger
@@ -36,6 +44,7 @@ class StructuralGuidance:
     length_guidance: str  # e.g., "Vary between 5 and 35 words per sentence"
     fragment_hint: str  # e.g., "Include 1-2 sentence fragments"
     opening_hint: str  # e.g., "Start with: determiner, noun, or adverb"
+    enhanced_profile: Optional[EnhancedStyleProfile] = None  # Enhanced patterns
 
     def format_for_prompt(self) -> str:
         """Format as prompt injection."""
@@ -57,6 +66,13 @@ class StructuralGuidance:
         if self.opening_hint:
             lines.append(f"OPENINGS: {self.opening_hint}")
 
+        # Add enhanced guidance if available
+        if self.enhanced_profile:
+            enhanced_guidance = self.enhanced_profile.format_for_prompt()
+            if enhanced_guidance:
+                lines.append("")  # Blank line separator
+                lines.append(enhanced_guidance)
+
         return "\n".join(lines)
 
 
@@ -66,8 +82,10 @@ class StructuralRAG:
     def __init__(self, author: str):
         self.author = author
         self.analyzer = get_structural_analyzer()
+        self.enhanced_analyzer = get_enhanced_analyzer()
         self.indexer = get_indexer()
         self._cached_rhythms: List[RhythmFingerprint] = []
+        self._enhanced_profile: Optional[EnhancedStyleProfile] = None
         self._loaded = False
 
     def load_patterns(self, sample_size: int = 50) -> int:
@@ -91,6 +109,15 @@ class StructuralRAG:
             except Exception as e:
                 logger.debug(f"Could not analyze chunk: {e}")
                 continue
+
+        # Run enhanced analysis on all chunks
+        if chunks:
+            try:
+                self._enhanced_profile = self.enhanced_analyzer.analyze(chunks)
+                logger.info(f"Enhanced analysis complete: {len(self._enhanced_profile.syntactic_templates)} templates")
+            except Exception as e:
+                logger.warning(f"Enhanced analysis failed: {e}")
+                self._enhanced_profile = None
 
         self._loaded = True
         logger.info(f"Loaded {len(self._cached_rhythms)} rhythm patterns for {self.author}")
@@ -206,12 +233,20 @@ class StructuralRAG:
         input_rhythm = self.analyzer.extract_rhythm(input_text)
         target_sentences = max(3, input_rhythm.sentence_count)
 
+        # Build opening hint from enhanced profile if available
+        opening_hint = ""
+        if self._enhanced_profile and self._enhanced_profile.openings.patterns:
+            top_patterns = list(self._enhanced_profile.openings.patterns.keys())[:3]
+            if top_patterns:
+                opening_hint = f"Vary: {', '.join(top_patterns)}"
+
         return StructuralGuidance(
             rhythm_pattern=self.get_rhythm_pattern(target_sentences),
             punctuation_hints=self.get_punctuation_hints(),
             length_guidance=self.get_length_guidance(),
             fragment_hint=self.get_fragment_hint(),
-            opening_hint="",  # Could add POS-based opening hints
+            opening_hint=opening_hint,
+            enhanced_profile=self._enhanced_profile,
         )
 
 

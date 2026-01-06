@@ -8,9 +8,8 @@ Addresses issues with LoRA output:
 - Robotic Formality → Capture informal punctuation patterns
 """
 
-import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List
 from collections import Counter
 
 from ..utils.nlp import get_nlp

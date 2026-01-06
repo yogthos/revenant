@@ -32,6 +32,22 @@ except ImportError:
     STRUCTURAL_RAG_AVAILABLE = False
     StructuralRAG = None
 
+# Optional Structural Grafter import
+try:
+    from ..rag import StructuralGrafter, get_structural_grafter
+    STRUCTURAL_GRAFTER_AVAILABLE = True
+except ImportError:
+    STRUCTURAL_GRAFTER_AVAILABLE = False
+    StructuralGrafter = None
+
+# Persona system for subjective style transfer
+try:
+    from ..persona import get_persona_config, build_persona_prompt
+    PERSONA_AVAILABLE = True
+except ImportError:
+    PERSONA_AVAILABLE = False
+    get_persona_config = None
+
 logger = get_logger(__name__)
 
 
@@ -65,9 +81,8 @@ class TransferConfig:
     # Input format (uses graph-based description matching training format)
 
     # Length control settings
-    max_expansion_ratio: float = 1.5  # Max output/input word ratio (1.5 = 50% longer)
-    target_expansion_ratio: float = 1.2  # Target for LoRA generation
-    truncate_over_expanded: bool = False  # If True, truncate; if False, allow longer output
+    max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
+    target_expansion_ratio: float = 1.0  # Target for LoRA generation
 
     # LoRA influence settings
     lora_scale: float = 2.0  # Match training scale (alpha/rank = 128/64 = 2.0)
@@ -80,12 +95,22 @@ class TransferConfig:
 
     # Structural RAG settings
     use_structural_rag: bool = True  # Enable Structural RAG for rhythm/syntax guidance
+    use_structural_grafting: bool = True  # Enable Structural Grafting for argument skeletons
 
-    # NLI Auditor settings (sentence-level verification)
-    use_sentence_nli: bool = False  # Enable sentence-level NLI verification
-    nli_model: str = "cross-encoder/nli-deberta-v3-base"  # NLI model for sentence verification
-    nli_recall_threshold: float = 0.5  # Min entailment probability for recall pass
-    nli_precision_threshold: float = 0.5  # Max contradiction probability for precision pass
+    # Sentence restructuring settings (convert mechanical patterns to organic)
+    restructure_sentences: bool = True  # Enable balanced→inverted restructuring
+
+    # Sentence splitting settings (break run-on sentences)
+    split_sentences: bool = True  # Enable sentence splitting at conjunction points
+    max_sentence_length: int = 50  # Words - split sentences longer than this
+    sentence_length_variance: float = 0.3  # Variance factor (0.3 = 70%-130% of max)
+
+    # Grammar correction settings (final post-processing pass)
+    correct_grammar: bool = True  # Enable style-safe grammar correction
+    grammar_language: str = "en-US"  # Language variant: "en-US" or "en-GB"
+
+    # Persona settings (subjective voice to defeat AI detection)
+    use_persona: bool = True  # Enable persona-based prompting
 
 
 @dataclass
@@ -95,38 +120,27 @@ class TransferStats:
     paragraphs_processed: int = 0
     paragraphs_repaired: int = 0
     words_replaced: int = 0
+    sentences_restructured: int = 0
+    sentences_split: int = 0
+    grammar_corrections: int = 0
     total_time_seconds: float = 0.0
     avg_time_per_paragraph: float = 0.0
     entailment_scores: List[float] = field(default_factory=list)
-    # NLI Audit stats
-    nli_recall_scores: List[float] = field(default_factory=list)
-    nli_precision_scores: List[float] = field(default_factory=list)
-    nli_repairs_made: int = 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
-        result = {
+        return {
             "paragraphs_processed": self.paragraphs_processed,
             "paragraphs_repaired": self.paragraphs_repaired,
             "words_replaced": self.words_replaced,
+            "sentences_split": self.sentences_split,
+            "grammar_corrections": self.grammar_corrections,
             "total_time_seconds": round(self.total_time_seconds, 2),
             "avg_time_per_paragraph": round(self.avg_time_per_paragraph, 2),
             "avg_entailment_score": round(
                 sum(self.entailment_scores) / len(self.entailment_scores), 3
             ) if self.entailment_scores else 0.0,
         }
-        # Add NLI stats if available
-        if self.nli_recall_scores:
-            result["avg_nli_recall"] = round(
-                sum(self.nli_recall_scores) / len(self.nli_recall_scores), 3
-            )
-        if self.nli_precision_scores:
-            result["avg_nli_precision"] = round(
-                sum(self.nli_precision_scores) / len(self.nli_precision_scores), 3
-            )
-        if self.nli_repairs_made > 0:
-            result["nli_repairs_made"] = self.nli_repairs_made
-        return result
 
 
 class StyleTransfer:
@@ -177,7 +191,7 @@ class StyleTransfer:
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
-            lora_scale=getattr(self.config, 'lora_scale', 2.0),
+            lora_scale=self.config.lora_scale,
             skip_cleaning=False,  # Always clean output to remove garbage
         )
         self.generator = LoRAStyleGenerator(
@@ -192,6 +206,29 @@ class StyleTransfer:
             self.repetition_reducer = RepetitionReducer(
                 threshold=self.config.repetition_threshold
             )
+
+        # Initialize sentence restructurer for organic complexity
+        self.sentence_restructurer = None
+        if self.config.restructure_sentences:
+            from ..vocabulary.sentence_restructurer import SentenceRestructurer
+            self.sentence_restructurer = SentenceRestructurer()
+
+        # Initialize sentence splitter for run-on sentences
+        self.sentence_splitter = None
+        if self.config.split_sentences:
+            from ..vocabulary.sentence_splitter import SentenceSplitter, SentenceSplitterConfig
+            splitter_config = SentenceSplitterConfig(
+                max_sentence_length=self.config.max_sentence_length,
+                length_variance=self.config.sentence_length_variance,
+            )
+            self.sentence_splitter = SentenceSplitter(splitter_config)
+
+        # Initialize grammar corrector for final post-processing
+        self.grammar_corrector = None
+        if self.config.correct_grammar:
+            from ..vocabulary.grammar_corrector import GrammarCorrector, GrammarCorrectorConfig
+            grammar_config = GrammarCorrectorConfig(language=self.config.grammar_language)
+            self.grammar_corrector = GrammarCorrector(grammar_config)
 
         # Set up entailment verifier if requested
         if self.config.verify_entailment and self.verify_fn is None:
@@ -218,21 +255,15 @@ class StyleTransfer:
                 logger.warning("Structural RAG not available (missing dependencies)")
                 self.config.use_structural_rag = False
 
-        # NLI Auditor for sentence-level verification
-        self.nli_auditor = None
-        if self.config.use_sentence_nli:
-            from ..validation.nli_auditor import NLIAuditor
-            self.nli_auditor = NLIAuditor(
-                model_name=self.config.nli_model,
-                recall_threshold=self.config.nli_recall_threshold,
-                precision_threshold=self.config.nli_precision_threshold,
-            )
-            logger.info(f"NLI Auditor enabled with model: {self.config.nli_model}")
-
-        if self.config.verify_entailment:
-            logger.info(f"Using critic provider for repairs: {self.critic_provider.provider_name}")
-        else:
-            logger.info("Verification disabled - using raw LoRA output (cleaning also disabled)")
+        # Structural Grafter for argument skeletons
+        self.structural_grafter: Optional[StructuralGrafter] = None
+        if self.config.use_structural_grafting:
+            if STRUCTURAL_GRAFTER_AVAILABLE:
+                self.structural_grafter = get_structural_grafter(self.author, critic_provider)
+                logger.info(f"Structural Grafter initialized for {self.author}")
+            else:
+                logger.warning("Structural Grafter not available (missing dependencies)")
+                self.config.use_structural_grafting = False
 
     def _rtt_neutralize(self, text: str, max_retries: int = 2) -> Optional[str]:
         """Round-Trip Translation neutralization via Mandarin pivot.
@@ -297,7 +328,7 @@ class StyleTransfer:
                 import numpy as np
 
                 # Check if output entails original content
-                scores = model.predict([(original, output)])
+                scores = model.predict([(original, output)], show_progress_bar=False)
 
                 # Model returns raw logits [contradiction, neutral, entailment]
                 # Apply softmax to convert to probabilities
@@ -416,12 +447,37 @@ class StyleTransfer:
             structural_guidance = guidance.format_for_prompt()
             logger.debug(f"Using structural guidance: {structural_guidance[:80]}...")
 
+        # Get grafting guidance if available
+        grafting_guidance = None
+        if self.structural_grafter:
+            grafting_guidance = self.structural_grafter.get_grafting_guidance(paragraph)
+            if grafting_guidance:
+                logger.debug(f"Using grafting skeleton: {grafting_guidance.skeleton.format_for_prompt()}")
+
+        # Build persona-injected prompt if enabled
+        final_content = content_for_generation
+        use_raw_prompt = False
+        if self.config.use_persona and PERSONA_AVAILABLE:
+            persona = get_persona_config(self.author)
+            final_content = build_persona_prompt(
+                content=content_for_generation,
+                author=self.author,
+                persona=persona,
+                vocabulary_palette=persona.adjective_themes[:10],
+                structural_guidance=structural_guidance,
+                grafting_guidance=grafting_guidance,
+            )
+            structural_guidance = None  # Already included in persona prompt
+            use_raw_prompt = True  # Skip format_prompt, use persona prompt directly
+            logger.debug(f"Using persona: {persona.archetype[:50]}...")
+
         output = self.generator.generate(
-            content=content_for_generation,
+            content=final_content,
             author=self.author,
             max_tokens=max_tokens,
             target_words=target_words,
             structural_guidance=structural_guidance,
+            raw_prompt=use_raw_prompt,
         )
         lora_output_words = len(output.split())
         lora_input_words = len(content_for_generation.split())
@@ -461,43 +517,8 @@ class StyleTransfer:
         else:
             is_valid = True  # Skip validation
 
-        # Track expansion and optionally truncate
-        final_words = len(output.split())
-        max_allowed_words = int(source_words * self.config.max_expansion_ratio)
-
-        if final_words > max_allowed_words:
-            expansion_pct = final_words / source_words
-            if self.config.truncate_over_expanded:
-                logger.warning(f"Output over-expanded: {final_words} words vs {source_words} source ({expansion_pct:.0%}), truncating")
-                # Truncate to allowed length at sentence boundary
-                sentences = split_into_sentences(output)
-                truncated = []
-                current_words = 0
-                for sent in sentences:
-                    sent_words = len(sent.split())
-                    if current_words + sent_words > max_allowed_words:
-                        break
-                    truncated.append(sent)
-                    current_words += sent_words
-
-                if truncated:
-                    output = ' '.join(truncated)
-                # If no complete sentences fit, keep at least the first sentence
-                elif sentences:
-                    output = sentences[0]
-            else:
-                logger.info(f"Output expanded: {final_words} words vs {source_words} source ({expansion_pct:.0%})")
-
         # Ensure output ends with complete sentence
         output = self._ensure_complete_ending(output)
-
-        # ========================================
-        # STEP 5: NLI Audit (if enabled)
-        # ========================================
-        if self.nli_auditor:
-            output, nli_passed = self._run_nli_audit(paragraph, output, stats)
-            if not nli_passed:
-                logger.warning("NLI audit failed after repair attempts")
 
         # Verify if configured
         score = 1.0
@@ -612,98 +633,6 @@ class StyleTransfer:
 
         # Fallback: add period to entire text
         return text + '.'
-
-    def _run_nli_audit(
-        self,
-        source: str,
-        output: str,
-        stats: Optional['TransferStats'] = None,
-    ) -> Tuple[str, bool]:
-        """Run NLI audit and repair loop on styled output.
-
-        Performs sentence-level verification:
-        1. RECALL: Check each source sentence is entailed by output
-        2. PRECISION: Check each output sentence doesn't contradict source
-        3. If issues found, use repair loop to fix
-
-        Args:
-            source: Original source text.
-            output: Styled output to audit.
-            stats: Optional stats object to update.
-
-        Returns:
-            Tuple of (repaired_output, passed).
-        """
-        if not self.nli_auditor:
-            return output, True
-
-        from ..utils.prompts import format_prompt
-
-        audit_result = self.nli_auditor.audit(source, output)
-
-        # Update stats
-        if stats:
-            stats.nli_recall_scores.append(audit_result.recall_score)
-            stats.nli_precision_scores.append(audit_result.precision_score)
-
-        if audit_result.passed:
-            logger.debug("NLI audit passed")
-            return output, True
-
-        # Run repair loop
-        logger.info(
-            f"NLI audit failed: recall={audit_result.recall_score:.2f}, "
-            f"precision={audit_result.precision_score:.2f}, "
-            f"issues={len(audit_result.all_issues)}"
-        )
-
-        current_output = output
-        for attempt in range(self.config.max_repair_attempts):
-            # Generate repair prompt with specific errors
-            error_summary = audit_result.error_summary
-            repair_prompt = format_prompt(
-                "nli_repair",
-                source=source,
-                draft=current_output,
-                error_list=error_summary,
-                author=self.author,
-            )
-
-            # Use critic provider for repair (lower temperature for precision)
-            try:
-                repaired = self.critic_provider.generate(
-                    repair_prompt,
-                    max_tokens=self.config.max_tokens * 2,
-                    temperature=0.2,  # Low temperature for precision
-                )
-                repaired = self._clean_repair_output(repaired)
-
-                if repaired and len(repaired) > 20:
-                    # Re-audit the repair
-                    new_audit = self.nli_auditor.audit(source, repaired)
-
-                    if stats:
-                        stats.nli_repairs_made += 1
-
-                    if new_audit.passed:
-                        logger.info(f"NLI repair succeeded on attempt {attempt + 1}")
-                        return repaired, True
-
-                    # Check if repair improved things
-                    if (new_audit.recall_score > audit_result.recall_score or
-                        new_audit.precision_score > audit_result.precision_score):
-                        current_output = repaired
-                        audit_result = new_audit
-                        logger.debug(f"NLI repair improved scores on attempt {attempt + 1}")
-                    else:
-                        logger.debug(f"NLI repair did not improve on attempt {attempt + 1}")
-
-            except Exception as e:
-                logger.warning(f"NLI repair failed: {e}")
-                break
-
-        logger.warning("NLI audit repair loop exhausted, returning best effort")
-        return current_output, False
 
     def _validate_styled_output(
         self,
@@ -896,6 +825,21 @@ class StyleTransfer:
                 output, reduction_stats = self.repetition_reducer.reduce(output)
                 self._transfer_stats.words_replaced += reduction_stats.replacements_made
 
+            # Apply sentence restructuring for organic complexity
+            if self.sentence_restructurer and not is_heading_para:
+                output, restructure_stats = self.sentence_restructurer.restructure(output)
+                self._transfer_stats.sentences_restructured += restructure_stats.inversions_applied
+
+            # Apply sentence splitting to break run-on sentences
+            if self.sentence_splitter and not is_heading_para:
+                output, split_stats = self.sentence_splitter.split(output)
+                self._transfer_stats.sentences_split += split_stats.total_splits
+
+            # Apply grammar correction as final step (after sentence splitting)
+            if self.grammar_corrector and not is_heading_para:
+                output, grammar_stats = self.grammar_corrector.correct(output)
+                self._transfer_stats.grammar_corrections += grammar_stats.corrections_applied
+
             para_time = time.time() - para_start
             logger.debug(f"Paragraph {i+1}: {para_time:.1f}s, score={score:.2f}")
 
@@ -927,6 +871,24 @@ class StyleTransfer:
                     f"Repetition reduction: {self._transfer_stats.words_replaced} replacements, "
                     f"top overused: {', '.join(w for w, _ in overused)}"
                 )
+
+        # Log sentence restructuring summary
+        if self.sentence_restructurer and self._transfer_stats.sentences_restructured > 0:
+            logger.info(
+                f"Sentence restructuring: {self._transfer_stats.sentences_restructured} inversions applied"
+            )
+
+        # Log sentence splitting summary
+        if self.sentence_splitter and self._transfer_stats.sentences_split > 0:
+            logger.info(
+                f"Sentence splitting: {self._transfer_stats.sentences_split} sentences split"
+            )
+
+        # Log grammar correction summary
+        if self.grammar_corrector and self._transfer_stats.grammar_corrections > 0:
+            logger.info(
+                f"Grammar correction: {self._transfer_stats.grammar_corrections} corrections applied"
+            )
 
         logger.info(
             f"Transfer complete: {self._transfer_stats.paragraphs_processed} paragraphs in "

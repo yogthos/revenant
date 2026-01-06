@@ -16,7 +16,7 @@ Requirements:
 
 import atexit
 import re
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Dict
 from dataclasses import dataclass
 import spacy
 

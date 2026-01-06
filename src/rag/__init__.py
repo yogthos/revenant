@@ -48,6 +48,30 @@ from .structural_rag import (
     get_structural_guidance,
 )
 
+from .enhanced_analyzer import (
+    EnhancedStructuralAnalyzer,
+    EnhancedStyleProfile,
+    SyntacticTemplate,
+    VocabularyCluster,
+    TransitionInventory,
+    StanceProfile,
+    OpeningPatterns,
+    get_enhanced_analyzer,
+)
+
+from .skeleton_extractor import (
+    ArgumentSkeleton,
+    extract_skeleton,
+    extract_skeleton_batch,
+    parse_skeleton_moves,
+)
+
+from .structural_grafter import (
+    StructuralGrafter,
+    GraftingGuidance,
+    get_structural_grafter,
+)
+
 __all__ = [
     # Style analysis
     "StyleMetrics",
@@ -70,4 +94,22 @@ __all__ = [
     "StructuralGuidance",
     "get_structural_rag",
     "get_structural_guidance",
+    # Enhanced analyzer
+    "EnhancedStructuralAnalyzer",
+    "EnhancedStyleProfile",
+    "SyntacticTemplate",
+    "VocabularyCluster",
+    "TransitionInventory",
+    "StanceProfile",
+    "OpeningPatterns",
+    "get_enhanced_analyzer",
+    # Skeleton extraction
+    "ArgumentSkeleton",
+    "extract_skeleton",
+    "extract_skeleton_batch",
+    "parse_skeleton_moves",
+    # Structural grafting
+    "StructuralGrafter",
+    "GraftingGuidance",
+    "get_structural_grafter",
 ]

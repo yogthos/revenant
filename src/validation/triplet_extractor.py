@@ -7,10 +7,8 @@ This provides more accurate entity-role extraction than hand-rolled
 spaCy-based extraction.
 """
 
-import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
-from functools import lru_cache
+from typing import List, Optional
 
 from ..utils.logging import get_logger
 

@@ -6,7 +6,7 @@ Extracts global document context once at the start of processing to:
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 import json
 
 from ..utils.logging import get_logger
