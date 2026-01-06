@@ -181,8 +181,9 @@ class OrganicComplexityProfile:
             lines.append(f"EM-DASH INTERRUPTIONS: ~{pct}% of sentences")
             lines.append("  Use em-dashes (—) for sudden asides, clarifications, or judgments")
 
-        # Anti-balanced structure warning
-        lines.append("AVOID BALANCED STRUCTURES: Do NOT start with 'A, and B' patterns")
+        # Anti-balanced structure warning (only if we have some complexity data)
+        if lines:
+            lines.append("AVOID BALANCED STRUCTURES: Do NOT start with 'A, and B' patterns")
 
         return "\n".join(lines) if lines else ""
 
