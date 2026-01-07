@@ -408,7 +408,15 @@ class SemanticVerifier:
         output: str,
         nlp,
     ) -> Tuple[float, List[str], List[str]]:
-        """Check named entity coverage and detect fabricated entities."""
+        """Check named entity coverage and detect fabricated entities.
+
+        Particularly strict on:
+        - Dates and years (common hallucination target)
+        - Citations and references (e.g., "(Smith 2023)")
+        - Proper nouns not in source
+        """
+        import re
+
         source_doc = nlp(source)
         output_doc = nlp(output)
 
@@ -425,14 +433,40 @@ class SemanticVerifier:
         source_ents = get_entities(source_doc)
         output_ents = get_entities(output_doc)
 
+        # Also extract years (4-digit numbers in parentheses or standalone)
+        # These are common hallucination targets for academic text
+        year_pattern = re.compile(r'\b(1[89]\d{2}|20[0-2]\d)\b')  # 1800-2029
+        source_years = set(year_pattern.findall(source))
+        output_years = set(year_pattern.findall(output))
+
+        # Extract citation-like patterns: (Author Year), (cf. X), etc.
+        citation_pattern = re.compile(r'\([^)]*(?:19|20)\d{2}[^)]*\)')
+        source_citations = set(citation_pattern.findall(source))
+        output_citations = set(citation_pattern.findall(output))
+
+        # Fabricated years are a strong hallucination signal
+        fabricated_years = output_years - source_years
+        fabricated_citations = output_citations - source_citations
+
+        if fabricated_years:
+            logger.warning(f"Fabricated years detected: {fabricated_years}")
+        if fabricated_citations:
+            logger.warning(f"Fabricated citations detected: {fabricated_citations}")
+
         if not source_ents:
             # No entities in source - check if output has fabricated ones
             fabricated = list(output_ents)
+            # Add fabricated years as pseudo-entities (high penalty signal)
+            fabricated.extend([f"year:{y}" for y in fabricated_years])
             return 1.0, [], fabricated
 
         covered = source_ents & output_ents
         missing = list(source_ents - output_ents)
         fabricated = list(output_ents - source_ents)
+
+        # Add fabricated years/citations to fabricated list (strong penalty)
+        fabricated.extend([f"year:{y}" for y in fabricated_years])
+        fabricated.extend([f"citation:{c[:30]}" for c in fabricated_citations])
 
         coverage = len(covered) / len(source_ents)
 

@@ -77,6 +77,22 @@ ALWAYS_CONSTRAINTS = [
     "Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly.",
 ]
 
+# POSITIVE STYLE GUIDANCE (100%) - What human authors DO
+POSITIVE_STYLE_GUIDANCE = [
+    "START some sentences mid-thought: 'And yet—', 'Strange, how...', 'But here the matter grows darker.'",
+    "EMBED your emotional reaction in the prose: 'horrible to relate', 'I confess with some reluctance', 'what words can capture'.",
+    "INTERRUPT yourself with em-dashes for sudden asides—like this—revealing your inner turmoil.",
+    "VARY sentence length wildly: a 5-word fragment. Then a sprawling 40-word sentence that winds through multiple subordinate clauses before arriving at its grim conclusion.",
+]
+
+# ANTI-AI-TELL CONSTRAINTS (100%) - Critical patterns that reveal AI authorship
+ANTI_AI_TELL_CONSTRAINTS = [
+    "NEVER use topic sentences. Do not start paragraphs with 'This demonstrates...' or 'It is clear that...'",
+    "NEVER use balanced 'A, B, and C' lists. Break into separate sentences or asymmetric phrasing.",
+    "LIMIT subordinate clauses: one 'which' or 'that' per sentence maximum.",
+    "END decisively. No trailing '...and which could be' or '...or become' clauses.",
+]
+
 # FREQUENT (70%) - strong anti-patterns
 FREQUENT_CONSTRAINTS = [
     "Do not start with a topic sentence. Start with a sensory detail, a question, or mid-thought.",
@@ -161,8 +177,14 @@ def _build_constraints(deterministic: bool = False) -> str:
     """
     constraints = []
 
+    # POSITIVE guidance FIRST (100%) - more effective than negatives
+    constraints.extend(POSITIVE_STYLE_GUIDANCE)
+
     # ALWAYS constraints (100%)
     constraints.extend(ALWAYS_CONSTRAINTS)
+
+    # ANTI-AI-TELL constraints (100%) - Critical for avoiding AI detection
+    constraints.extend(ANTI_AI_TELL_CONSTRAINTS)
 
     if deterministic:
         # Include all for testing/consistency
@@ -293,8 +315,13 @@ def build_persona_prompt(
     if target_words is None:
         target_words = len(content.split())
 
-    # Build word count instruction
-    word_count_section = f"\nWrite approximately {target_words} words.\n"
+    # Build word count instruction - encourage expansion with author flourish
+    word_count_section = f"""
+Write approximately {target_words} words. You may write MORE if the content demands it.
+IMPORTANT: You are ROLE-PLAYING as this author. Do not merely transcribe—TRANSFORM the content.
+Add sensory details, emotional resonance, and stylistic flourishes that this author would use.
+Express the ideas AS IF YOU ARE THE AUTHOR writing about this subject for the first time.
+"""
 
     # Build skeleton structure section (from grafting if available)
     skeleton_section = ""
@@ -305,7 +332,14 @@ def build_persona_prompt(
     # This is the CRITICAL section that provides author-specific patterns from ChromaDB
     structural_section = ""
     if structural_guidance:
-        structural_section = f"\n[AUTHOR STYLE PATTERNS - Follow these closely]:\n{structural_guidance}\n"
+        structural_section = f"""
+[CRITICAL - AUTHOR STYLE PATTERNS - MANDATORY]:
+These patterns are extracted from the author's actual writing. Follow them precisely to achieve authentic style:
+
+{structural_guidance}
+
+[END AUTHOR PATTERNS]
+"""
 
     # Build constraints block (matching training tiered system)
     constraints_section = "\n" + _build_constraints(deterministic_constraints) + "\n"

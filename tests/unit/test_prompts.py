@@ -8,7 +8,6 @@ import os
 from src.utils.prompts import (
     load_prompt,
     format_prompt,
-    get_prompt_with_fallback,
     list_prompts,
     clear_prompt_cache,
     PROMPTS_DIR,
@@ -72,30 +71,6 @@ class TestFormatPrompt:
         assert "H.P. Lovecraft" in prompt
         assert "A strange creature appeared." in prompt
         assert "RHYTHM" in prompt
-
-
-class TestGetPromptWithFallback:
-    """Tests for get_prompt_with_fallback function."""
-
-    def test_returns_file_content_when_exists(self):
-        """Test that it returns file content when file exists."""
-        fallback = "This is a fallback"
-        prompt = get_prompt_with_fallback(
-            "style_transfer",
-            fallback,
-        )
-        assert fallback not in prompt
-        assert len(prompt) > 0
-
-    def test_returns_fallback_when_not_exists(self):
-        """Test that it returns fallback when file doesn't exist."""
-        fallback = "This is a fallback for {author}"
-        prompt = get_prompt_with_fallback(
-            "nonexistent_prompt_xyz",
-            fallback,
-            author="Test Author"
-        )
-        assert "This is a fallback for Test Author" in prompt
 
 
 class TestListPrompts:

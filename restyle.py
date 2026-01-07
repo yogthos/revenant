@@ -34,6 +34,10 @@ To train a LoRA adapter for a new author:
     # 5. Train with mlx_lm.lora --config data/training/author/config.yaml
 """
 
+import os
+# Disable tokenizers parallelism warning (must be set before importing transformers)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import argparse
 import json
 import sys

@@ -24,7 +24,6 @@ from ..utils.nlp import (
     is_heading,
 )
 from ..utils.logging import get_logger
-from ..utils.prompts import format_prompt
 
 # Optional Structural RAG import
 try:
@@ -106,7 +105,7 @@ class TransferConfig:
 
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
-    target_expansion_ratio: float = 1.0  # Target for LoRA generation
+    target_expansion_ratio: float = 1.5  # Target for LoRA generation (1.5 = 50% expansion for author flourish)
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
@@ -439,7 +438,7 @@ class StyleTransfer:
         # ========================================
         # STEP 1: Build source graph (ground truth)
         # ========================================
-        builder = SemanticGraphBuilder(use_rebel=False)
+        builder = SemanticGraphBuilder()
         source_graph = builder.build_from_text(paragraph_clean)
         logger.info(f"Source graph: {len(source_graph.nodes)} propositions, {len(source_graph.edges)} relationships")
 
@@ -516,7 +515,7 @@ class StyleTransfer:
                 target_words=target_words,  # Pass word count to match training format
             )
             structural_guidance = None  # Already included in persona prompt
-            use_raw_prompt = True  # Skip format_prompt, use persona prompt directly
+            use_raw_prompt = True  # Use persona prompt directly without additional formatting
             logger.debug(f"Using persona prompt (target={target_words} words)")
 
         output = self.generator.generate(
@@ -553,15 +552,51 @@ class StyleTransfer:
         # STEP 4: Validate styled output against source graph (if enabled)
         # ========================================
         if self.config.verify_entailment:
-            output, is_valid = self._validate_styled_output(
-                source=paragraph,
+            # First, run semantic verification to catch hallucinations
+            from ..validation.semantic_verifier import verify_semantic_preservation
+            semantic_result = verify_semantic_preservation(
+                source=paragraph_clean,
                 output=output,
-                source_graph=source_graph,
-                builder=builder,
-                comparator=comparator,
-                stats=stats,
-                max_attempts=self.config.max_repair_attempts,
+                threshold=self.config.entailment_threshold,
             )
+
+            # Log any issues detected
+            issues = semantic_result.get_issues()
+            if issues:
+                logger.warning(f"Semantic issues detected: {', '.join(issues)}")
+
+            # Check for fabricated content (years, citations)
+            if semantic_result.fabricated_entities:
+                fabricated_str = ', '.join(semantic_result.fabricated_entities[:5])
+                logger.warning(f"Fabricated content: {fabricated_str}")
+
+            # If too many hallucinations, try graph-based repair
+            max_hallucinations = _VALIDATION_CONFIG.get("max_hallucinations_before_reject", 2)
+            if semantic_result.hallucination_count > max_hallucinations:
+                logger.warning(
+                    f"High hallucination count ({semantic_result.hallucination_count}), "
+                    f"triggering graph-based repair"
+                )
+                output, is_valid = self._validate_styled_output(
+                    source=paragraph,
+                    output=output,
+                    source_graph=source_graph,
+                    builder=builder,
+                    comparator=comparator,
+                    stats=stats,
+                    max_attempts=self.config.max_repair_attempts,
+                )
+            else:
+                # Run standard graph validation for entity preservation
+                output, is_valid = self._validate_styled_output(
+                    source=paragraph,
+                    output=output,
+                    source_graph=source_graph,
+                    builder=builder,
+                    comparator=comparator,
+                    stats=stats,
+                    max_attempts=self.config.max_repair_attempts,
+                )
         else:
             is_valid = True  # Skip validation
 

@@ -296,8 +296,10 @@ def _find_injection_point(text: str, attached: str, context: str) -> Optional[in
 def _find_fuzzy_injection_point(text: str, attached: str) -> Optional[int]:
     """Find injection point using fuzzy matching.
 
-    Handles cases where the word was transformed during style transfer
-    (e.g., "Einstein" -> "the physicist Einstein").
+    Handles cases where the word was transformed during style transfer:
+    - "Einstein" -> "the physicist Einstein"
+    - "scales" -> "scale" (lemmatization)
+    - "running" -> "ran" (verb forms)
 
     Args:
         text: Output text to search.
@@ -337,6 +339,72 @@ def _find_fuzzy_injection_point(text: str, attached: str) -> Optional[int]:
         match = pattern.search(text)
         if match:
             return match.end()
+
+    # Third try: lemmatization to match word forms (scales -> scale)
+    lemma_match = _find_lemma_match(text, attached)
+    if lemma_match is not None:
+        return lemma_match
+
+    return None
+
+
+def _find_lemma_match(text: str, attached: str) -> Optional[int]:
+    """Find injection point using lemmatization.
+
+    Handles morphological variations like:
+    - "scales" -> "scale"
+    - "running" -> "run"
+    - "theories" -> "theory"
+
+    Args:
+        text: Output text to search.
+        attached: Original attached word.
+
+    Returns:
+        Character position to inject at, or None if not found.
+    """
+    try:
+        # Lazy import to avoid circular dependency
+        from ..utils.nlp import get_nlp
+        nlp = get_nlp()
+
+        # Get lemma of attached word
+        attached_doc = nlp(attached)
+        if not attached_doc:
+            return None
+
+        attached_lemma = attached_doc[0].lemma_.lower()
+
+        # Search text for words with matching lemma
+        text_doc = nlp(text)
+
+        for token in text_doc:
+            if token.lemma_.lower() == attached_lemma:
+                # Found a match - return position at end of this token
+                return token.idx + len(token.text)
+
+        # Also try without lemmatization but with common suffixes stripped
+        # Handles cases where spaCy lemmatization differs
+        common_suffixes = ['s', 'es', 'ed', 'ing', 'ly']
+        attached_stem = attached.lower()
+        for suffix in common_suffixes:
+            if attached_stem.endswith(suffix) and len(attached_stem) > len(suffix) + 2:
+                attached_stem = attached_stem[:-len(suffix)]
+                break
+
+        if attached_stem != attached.lower():
+            # Try to find stem in text
+            for token in text_doc:
+                token_stem = token.text.lower()
+                for suffix in common_suffixes:
+                    if token_stem.endswith(suffix) and len(token_stem) > len(suffix) + 2:
+                        token_stem = token_stem[:-len(suffix)]
+                        break
+                if token_stem == attached_stem:
+                    return token.idx + len(token.text)
+
+    except Exception as e:
+        logger.debug(f"Lemma matching failed: {e}")
 
     return None
 
