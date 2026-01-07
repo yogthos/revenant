@@ -410,28 +410,38 @@ class SemanticVerifier:
     ) -> Tuple[float, List[str], List[str]]:
         """Check named entity coverage and detect fabricated entities.
 
-        Particularly strict on:
+        Uses fuzzy matching to handle morphological variations:
+        - marxist/marxism, german/germanic (shared stems)
+        - plural/singular forms
+        - lemmatized forms
+
+        Strict only on:
         - Dates and years (common hallucination target)
         - Citations and references (e.g., "(Smith 2023)")
-        - Proper nouns not in source
         """
         import re
 
         source_doc = nlp(source)
         output_doc = nlp(output)
 
-        # Extract named entities
-        def get_entities(doc) -> Set[str]:
+        # Extract named entities with lemmas for fuzzy matching
+        def get_entities_with_stems(doc) -> Tuple[Set[str], Set[str]]:
+            """Return (entities, stems) for fuzzy matching."""
             entities = set()
+            stems = set()
             for ent in doc.ents:
-                # Normalize entity text
                 ent_text = ent.text.strip().lower()
                 if len(ent_text) > 1:
                     entities.add(ent_text)
-            return entities
+                    # Add stem (first 4+ chars) for fuzzy matching
+                    # This handles marxist/marxism, german/germanic
+                    stem = self._get_entity_stem(ent_text)
+                    if stem:
+                        stems.add(stem)
+            return entities, stems
 
-        source_ents = get_entities(source_doc)
-        output_ents = get_entities(output_doc)
+        source_ents, source_stems = get_entities_with_stems(source_doc)
+        output_ents, output_stems = get_entities_with_stems(output_doc)
 
         # Also extract years (4-digit numbers in parentheses or standalone)
         # These are common hallucination targets for academic text
@@ -455,22 +465,86 @@ class SemanticVerifier:
 
         if not source_ents:
             # No entities in source - check if output has fabricated ones
-            fabricated = list(output_ents)
-            # Add fabricated years as pseudo-entities (high penalty signal)
-            fabricated.extend([f"year:{y}" for y in fabricated_years])
-            return 1.0, [], fabricated
+            # But filter out entities that share stems with source text words
+            source_text_stems = self._get_text_stems(source, nlp)
+            truly_fabricated = [
+                e for e in output_ents
+                if not self._entity_matches_any_stem(e, source_text_stems)
+            ]
+            truly_fabricated.extend([f"year:{y}" for y in fabricated_years])
+            return 1.0, [], truly_fabricated
 
-        covered = source_ents & output_ents
-        missing = list(source_ents - output_ents)
-        fabricated = list(output_ents - source_ents)
+        # Use fuzzy matching: entity is covered if exact match OR stem match
+        covered = set()
+        for src_ent in source_ents:
+            if src_ent in output_ents:
+                covered.add(src_ent)
+            elif self._entity_matches_any_stem(src_ent, output_stems):
+                covered.add(src_ent)
+
+        missing = list(source_ents - covered)
+
+        # Fabricated = output entities not matching any source entity or stem
+        fabricated = []
+        for out_ent in output_ents:
+            if out_ent not in source_ents:
+                if not self._entity_matches_any_stem(out_ent, source_stems):
+                    fabricated.append(out_ent)
 
         # Add fabricated years/citations to fabricated list (strong penalty)
         fabricated.extend([f"year:{y}" for y in fabricated_years])
         fabricated.extend([f"citation:{c[:30]}" for c in fabricated_citations])
 
-        coverage = len(covered) / len(source_ents)
+        coverage = len(covered) / len(source_ents) if source_ents else 1.0
 
         return coverage, missing, fabricated
+
+    def _get_entity_stem(self, entity: str) -> Optional[str]:
+        """Get stem of entity for fuzzy matching.
+
+        Returns first 4+ characters, handling common suffixes.
+        """
+        if len(entity) < 4:
+            return None
+
+        # Common suffixes to strip for stem matching
+        suffixes = ['ism', 'ist', 'ists', 'ic', 'ics', 'ian', 'ians', 'ese', 'ish', 's']
+
+        stem = entity.lower()
+        for suffix in sorted(suffixes, key=len, reverse=True):
+            if stem.endswith(suffix) and len(stem) - len(suffix) >= 4:
+                stem = stem[:-len(suffix)]
+                break
+
+        return stem if len(stem) >= 4 else entity[:4]
+
+    def _entity_matches_any_stem(self, entity: str, stems: Set[str]) -> bool:
+        """Check if entity matches any stem in the set."""
+        entity_stem = self._get_entity_stem(entity)
+        if not entity_stem:
+            return False
+
+        # Direct stem match
+        if entity_stem in stems:
+            return True
+
+        # Check if any stem is a prefix of entity or vice versa
+        for stem in stems:
+            if stem.startswith(entity_stem) or entity_stem.startswith(stem):
+                return True
+
+        return False
+
+    def _get_text_stems(self, text: str, nlp) -> Set[str]:
+        """Extract stems from all content words in text."""
+        doc = nlp(text)
+        stems = set()
+        for token in doc:
+            if token.pos_ in {'NOUN', 'PROPN', 'ADJ'} and len(token.text) >= 4:
+                stem = self._get_entity_stem(token.text.lower())
+                if stem:
+                    stems.add(stem)
+        return stems
 
     def _check_bidirectional_entailment(
         self,
