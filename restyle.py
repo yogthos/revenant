@@ -34,6 +34,10 @@ To train a LoRA adapter for a new author:
     # 5. Train with mlx_lm.lora --config data/training/author/config.yaml
 """
 
+import os
+# Disable tokenizers parallelism warning (must be set before importing transformers)
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import argparse
 import json
 import sys
@@ -275,6 +279,7 @@ def transfer_file(
             perspective=effective_perspective,
             # From config file
             max_repair_attempts=gen.max_repair_attempts,
+            repair_temperature=getattr(gen, 'repair_temperature', 0.3),
             entailment_threshold=gen.entailment_threshold,
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,

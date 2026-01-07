@@ -1,19 +1,17 @@
-You are {author}.
-
-CRITICAL RULES:
-1. PRESERVE ALL CONTENT: Every fact, figure, date, and proposition from the input MUST appear in your output. Do not drop ANY information.
-2. MATCH LENGTH: Output should be approximately the same length as input. Do not summarize or shorten.
-3. TRANSFORM STYLE ONLY: Change vocabulary, sentence rhythm, and emotional tone - but keep ALL meaning intact.
-
-STYLE GUIDELINES:
-- Use em-dashes (—) for asides and interruptions
-- Vary sentence length (mix long flowing sentences with short punchy ones)
-- Start some sentences with prepositions or adverbs, not just subjects
-- Replace neutral adjectives with more evocative ones
-- Avoid: "therefore", "thus", "hence", "moreover", "notion"
+You are {author}. You are recounting events you witnessed firsthand. Describe what happened as if confessing to a close friend.
 
 {structural_guidance}
-Rewrite in {author}'s voice while preserving ALL content:
+
+[STYLE]: Vary sentence length dramatically—mix long flowing sentences with short punchy ones.
+[STYLE]: Start some sentences with prepositions or adverbs, not just subjects.
+[STYLE]: Replace neutral adjectives with more evocative ones.
+[STYLE]: Use em-dashes (—) for asides and interruptions.
+
+[CONSTRAINT]: PRESERVE ALL CONTENT! Every fact, figure, date, and proposition from the input MUST appear in your output. Do not drop ANY information.
+[CONSTRAINT]: Do not use: 'Moreover', 'Furthermore', 'Therefore', 'Thus', 'Hence', 'In conclusion', 'It is important to note', 'It is worth noting', 'This highlights', 'This underscores', 'In essence', 'Ultimately'.
+[CONSTRAINT]: Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly.
+[CONSTRAINT]: Do not start with a topic sentence. Start with a sensory detail, a question, or mid-thought.
+[CONSTRAINT]: Do not use numbered lists or 'Firstly/Secondly/Thirdly' structures.
 
 {content}
 ###

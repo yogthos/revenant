@@ -12,6 +12,8 @@ Pipeline:
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
+from pathlib import Path
+import json
 import time
 
 from .lora_generator import LoRAStyleGenerator, GenerationConfig, AdapterSpec
@@ -22,7 +24,6 @@ from ..utils.nlp import (
     is_heading,
 )
 from ..utils.logging import get_logger
-from ..utils.prompts import format_prompt
 
 # Optional Structural RAG import
 try:
@@ -51,6 +52,27 @@ except ImportError:
 logger = get_logger(__name__)
 
 
+def _load_validation_config() -> dict:
+    """Load validation config from config.json."""
+    config_paths = [
+        Path("config.json"),
+        Path(__file__).parent.parent.parent / "config.json",
+    ]
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    full_config = json.load(f)
+                return full_config.get("validation", {})
+            except Exception:
+                pass
+    return {}
+
+
+# Load config once at module level
+_VALIDATION_CONFIG = _load_validation_config()
+
+
 @dataclass
 class TransferConfig:
     """Configuration for style transfer."""
@@ -66,6 +88,7 @@ class TransferConfig:
 
     # Repair settings
     max_repair_attempts: int = 3
+    repair_temperature: float = 0.3  # Lower temperature for repair attempts
 
     # Post-processing settings
     reduce_repetition: bool = True
@@ -82,7 +105,7 @@ class TransferConfig:
 
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
-    target_expansion_ratio: float = 1.0  # Target for LoRA generation
+    target_expansion_ratio: float = 1.5  # Target for LoRA generation (1.5 = 50% expansion for author flourish)
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
@@ -415,7 +438,7 @@ class StyleTransfer:
         # ========================================
         # STEP 1: Build source graph (ground truth)
         # ========================================
-        builder = SemanticGraphBuilder(use_rebel=False)
+        builder = SemanticGraphBuilder()
         source_graph = builder.build_from_text(paragraph_clean)
         logger.info(f"Source graph: {len(source_graph.nodes)} propositions, {len(source_graph.edges)} relationships")
 
@@ -460,12 +483,14 @@ class StyleTransfer:
         # Use 2.5x target words to ensure complete sentences
         max_tokens = max(150, int(target_words * 2.5))
 
-        # Get structural guidance if available
+        # Get structural guidance from AUTHOR'S CORPUS (not source text)
+        # This is the key to adopting the author's style - their rhythm patterns,
+        # sentence lengths, punctuation usage, etc. come from ChromaDB
         structural_guidance = None
         if self.structural_rag:
             guidance = self.structural_rag.get_guidance(paragraph)
             structural_guidance = guidance.format_for_prompt()
-            logger.debug(f"Using structural guidance: {structural_guidance[:80]}...")
+            logger.debug(f"Using author structural guidance: {structural_guidance[:100]}...")
 
         # Get grafting guidance if available
         grafting_guidance = None
@@ -475,6 +500,7 @@ class StyleTransfer:
                 logger.debug(f"Using grafting skeleton: {grafting_guidance.skeleton.format_for_prompt()}")
 
         # Build persona-injected prompt if enabled
+        # CRITICAL: Prompt format must match training format exactly
         final_content = content_for_generation
         use_raw_prompt = False
         if self.config.use_persona and PERSONA_AVAILABLE:
@@ -486,10 +512,11 @@ class StyleTransfer:
                 vocabulary_palette=persona.adjective_themes[:10],
                 structural_guidance=structural_guidance,
                 grafting_guidance=grafting_guidance,
+                target_words=target_words,  # Pass word count to match training format
             )
             structural_guidance = None  # Already included in persona prompt
-            use_raw_prompt = True  # Skip format_prompt, use persona prompt directly
-            logger.debug(f"Using persona: {persona.archetype[:50]}...")
+            use_raw_prompt = True  # Use persona prompt directly without additional formatting
+            logger.debug(f"Using persona prompt (target={target_words} words)")
 
         output = self.generator.generate(
             content=final_content,
@@ -525,15 +552,51 @@ class StyleTransfer:
         # STEP 4: Validate styled output against source graph (if enabled)
         # ========================================
         if self.config.verify_entailment:
-            output, is_valid = self._validate_styled_output(
-                source=paragraph,
+            # First, run semantic verification to catch hallucinations
+            from ..validation.semantic_verifier import verify_semantic_preservation
+            semantic_result = verify_semantic_preservation(
+                source=paragraph_clean,
                 output=output,
-                source_graph=source_graph,
-                builder=builder,
-                comparator=comparator,
-                stats=stats,
-                max_attempts=self.config.max_repair_attempts,
+                threshold=self.config.entailment_threshold,
             )
+
+            # Log any issues detected
+            issues = semantic_result.get_issues()
+            if issues:
+                logger.warning(f"Semantic issues detected: {', '.join(issues)}")
+
+            # Check for fabricated content (years, citations)
+            if semantic_result.fabricated_entities:
+                fabricated_str = ', '.join(semantic_result.fabricated_entities[:5])
+                logger.warning(f"Fabricated content: {fabricated_str}")
+
+            # If too many hallucinations, try graph-based repair
+            max_hallucinations = _VALIDATION_CONFIG.get("max_hallucinations_before_reject", 2)
+            if semantic_result.hallucination_count > max_hallucinations:
+                logger.warning(
+                    f"High hallucination count ({semantic_result.hallucination_count}), "
+                    f"triggering graph-based repair"
+                )
+                output, is_valid = self._validate_styled_output(
+                    source=paragraph,
+                    output=output,
+                    source_graph=source_graph,
+                    builder=builder,
+                    comparator=comparator,
+                    stats=stats,
+                    max_attempts=self.config.max_repair_attempts,
+                )
+            else:
+                # Run standard graph validation for entity preservation
+                output, is_valid = self._validate_styled_output(
+                    source=paragraph,
+                    output=output,
+                    source_graph=source_graph,
+                    builder=builder,
+                    comparator=comparator,
+                    stats=stats,
+                    max_attempts=self.config.max_repair_attempts,
+                )
         else:
             is_valid = True  # Skip validation
 
@@ -625,11 +688,49 @@ class StyleTransfer:
 
         return text.strip()
 
+    def _clean_punctuation_artifacts(self, text: str) -> str:
+        """Clean up punctuation artifacts from LoRA output and post-processing.
+
+        Fixes common issues like:
+        - "—," or ",—" (em-dash combined with comma)
+        - ".—" or "—." (em-dash combined with period)
+        - Double punctuation
+        """
+        import re
+
+        # Fix em-dash + punctuation combinations
+        text = re.sub(r'—\s*,', ',', text)  # "—," -> ","
+        text = re.sub(r',\s*—', ',', text)  # ",—" -> ","
+        text = re.sub(r'—\s*\.', '.', text)  # "—." -> "."
+        text = re.sub(r'\.\s*—', '.', text)  # ".—" -> "."
+        text = re.sub(r'—\s*;', ';', text)  # "—;" -> ";"
+        text = re.sub(r';\s*—', ';', text)  # ";—" -> ";"
+        text = re.sub(r'—\s*:', ':', text)  # "—:" -> ":"
+        text = re.sub(r':\s*—', ':', text)  # ":—" -> ":"
+
+        # Fix double punctuation
+        text = re.sub(r',\s*,', ',', text)
+        text = re.sub(r'\.\s*\.', '.', text)
+        text = re.sub(r';\s*;', ';', text)
+        text = re.sub(r':\s*:', ':', text)
+
+        # Fix spacing around punctuation
+        text = re.sub(r'\s+([.,;:!?])', r'\1', text)  # No space before
+        text = re.sub(r'([.,;:!?])([A-Za-z])', r'\1 \2', text)  # Space after
+
+        # Normalize multiple spaces
+        text = re.sub(r'\s+', ' ', text)
+
+        return text.strip()
+
     def _ensure_complete_ending(self, text: str) -> str:
         """Ensure text ends with a complete sentence.
 
         If text ends mid-sentence, remove the incomplete part.
         """
+        # First clean punctuation artifacts
+        text = self._clean_punctuation_artifacts(text)
+
         text = text.strip()
         if not text:
             return text

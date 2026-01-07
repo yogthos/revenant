@@ -492,11 +492,19 @@ class RepetitionReducer:
             stats.replacements_made += changes
             stats.replacements_detail["punctuation simplified"] = f"({changes} changes)"
 
-        # Clean up spacing issues
+        # Clean up spacing and punctuation artifacts
+        text = re.sub(r'—\s*,', ',', text)  # Fix "—," artifact -> ","
+        text = re.sub(r',\s*—', ',', text)  # Fix ",—" artifact -> ","
+        text = re.sub(r'—\s*\.', '.', text)  # Fix "—." artifact -> "."
+        text = re.sub(r'\.\s*—', '.', text)  # Fix ".—" artifact -> "."
+        text = re.sub(r'—\s*;', ';', text)  # Fix "—;" artifact -> ";"
+        text = re.sub(r';\s*—', ';', text)  # Fix ";—" artifact -> ";"
         text = re.sub(r'\s*,\s*', ', ', text)  # Normalize comma spacing
         text = re.sub(r',\s*,', ',', text)  # Remove double commas
+        text = re.sub(r'\.\s*\.', '.', text)  # Remove double periods
         text = re.sub(r'\s+', ' ', text)  # Normalize spaces
         text = re.sub(r'\s+\.', '.', text)  # No space before period
+        text = re.sub(r'\s+,', ',', text)  # No space before comma
 
         return text
 

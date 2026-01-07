@@ -25,7 +25,6 @@ from .nlp import (
 from .prompts import (
     load_prompt,
     format_prompt,
-    get_prompt_with_fallback,
     list_prompts,
     clear_prompt_cache,
 )
@@ -54,7 +53,6 @@ __all__ = [
     # Prompts
     "load_prompt",
     "format_prompt",
-    "get_prompt_with_fallback",
     "list_prompts",
     "clear_prompt_cache",
 ]

@@ -945,14 +945,16 @@ class TestEnhancedStyleProfileFormatting:
         assert "SENTENCE OPENINGS" in formatted
 
     def test_format_with_empty_components(self):
-        """Test formatting with empty components."""
+        """Test formatting with empty components still includes anti-AI guidance."""
         from src.rag.enhanced_analyzer import EnhancedStyleProfile
 
         profile = EnhancedStyleProfile()
         formatted = profile.format_for_prompt()
 
-        # Should return empty string for completely empty profile
-        assert formatted == ""
+        # Even empty profiles should include critical anti-AI-tell guidance
+        assert "CRITICAL" in formatted
+        assert "AVOID" in formatted
+        assert "INVERTED OPENINGS" in formatted
 
     def test_format_partial_components(self):
         """Test formatting with only some components populated."""

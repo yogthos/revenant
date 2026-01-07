@@ -161,13 +161,36 @@ class OrganicComplexityProfile:
         """Format as prompt instruction."""
         lines = []
 
+        # POSITIVE patterns FIRST - what TO DO (more effective than negatives)
+        lines.append("=== DO THIS: HUMAN WRITING PATTERNS ===")
+        lines.append("• START sentences mid-thought: 'And yet—', 'But here—', 'Strange, that...'")
+        lines.append("• USE sensory anchors: 'The cold seeped...', 'A faint odor of...'")
+        lines.append("• INTERRUPT yourself with em-dashes: 'The truth—if truth it was—'")
+        lines.append("• VARY wildly: one 5-word fragment, then a 40-word sprawl")
+        lines.append("• EMBED your reaction: 'horrible to relate', 'I shudder to recall'")
+        lines.append("• END abruptly sometimes. Just stop.")
+        lines.append("")
+
+        # NEGATIVE patterns - what to AVOID
+        lines.append("=== AVOID: AI-TELL PATTERNS ===")
+        lines.append("• NO balanced 'A, B, and C' lists — break into separate sentences")
+        lines.append("• NO parallel 'X or Y' constructions — use asymmetric phrasing")
+        lines.append("• NO chained 'which...which' or 'that...that' clauses — one per sentence MAX")
+        lines.append("• NO topic sentences — never start with 'This shows...' or 'It is clear...'")
+        lines.append("• NO over-explained endings — end decisively, leave implications")
+        lines.append("")
+
         # Inverted openings guidance
         if self.inverted_opening_rate > 0.05:
             pct = int(self.inverted_opening_rate * 100)
             lines.append(f"INVERTED OPENINGS: ~{pct}% of sentences")
             lines.append("  Start with prepositions, adverbs, or subordinating conjunctions")
             if self.inverted_examples:
-                lines.append(f"  Examples: \"{self.inverted_examples[0][:50]}...\"")
+                lines.append(f"  Example: \"{self.inverted_examples[0][:60]}...\"")
+        else:
+            # Even if corpus rate is low, recommend some for human-likeness
+            lines.append("INVERTED OPENINGS: Use ~20% of sentences")
+            lines.append("  Start with: 'Before...', 'Upon...', 'Throughout...', 'Beneath...'")
 
         # Periodic sentence guidance
         if self.periodic_sentence_rate > 0.2:
@@ -180,12 +203,11 @@ class OrganicComplexityProfile:
             pct = int(self.em_dash_rate * 100)
             lines.append(f"EM-DASH INTERRUPTIONS: ~{pct}% of sentences")
             lines.append("  Use em-dashes (—) for sudden asides, clarifications, or judgments")
+        else:
+            lines.append("EM-DASH INTERRUPTIONS: Use occasionally")
+            lines.append("  Insert sudden asides mid-sentence with em-dashes (—)")
 
-        # Anti-balanced structure warning (only if we have some complexity data)
-        if lines:
-            lines.append("AVOID BALANCED STRUCTURES: Do NOT start with 'A, and B' patterns")
-
-        return "\n".join(lines) if lines else ""
+        return "\n".join(lines)
 
 
 @dataclass

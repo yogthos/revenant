@@ -20,7 +20,9 @@ Transform text to match a target author's writing style while preserving semanti
 
 - Python 3.9+
 - Apple Silicon Mac (for MLX-based training/inference)
-- ~8GB RAM for inference, ~50GB for training
+- Memory requirements (depends on model size):
+  - 14B model (recommended): ~16GB for inference, ~40GB for training
+  - 7B model: ~8GB for inference, ~20GB for training
 - DeepSeek API key (for RTT neutralization and skeleton extraction)
 
 ---
@@ -46,6 +48,39 @@ python -m spacy download en_core_web_lg
 cp config.json.sample config.json
 # Edit config.json to add your DEEPSEEK_API_KEY
 ```
+
+## Create MLX 4-bit Model
+
+Download and quantize a base model for training and inference. The 14B model offers the best balance of quality and memory usage.
+
+```bash
+mkdir -p models
+
+# Recommended: 14B model (~40GB memory for training, ~16GB for inference)
+mlx_lm.convert --hf-path Qwen/Qwen2.5-14B \
+    --q-bits 4 \
+    --mlx-path models/Qwen2.5-14B-Base-4bit-MLX
+
+# Alternative: 32B model (~64GB memory, higher quality)
+mlx_lm.convert --hf-path Qwen/Qwen2.5-32B \
+    --q-bits 4 \
+    --mlx-path models/Qwen2.5-32B-Base-4bit-MLX
+
+# Alternative: 8B model (~16GB memory, fastest)
+mlx_lm.convert --hf-path Qwen/Qwen2.5-7B \
+    --q-bits 4 \
+    --mlx-path models/Qwen2.5-7B-Base-4bit-MLX
+```
+
+**Model selection guide:**
+
+| Model | Training Memory | Inference Memory | Quality |
+|-------|-----------------|------------------|---------|
+| Qwen2.5-7B-4bit | ~20GB | ~8GB | Good |
+| **Qwen2.5-14B-4bit** | ~40GB | ~16GB | **Recommended** |
+| Qwen2.5-32B-4bit | ~64GB+ | ~24GB | Highest |
+
+**Important:** Use base models (not Instruct) for style training - they learn style patterns better without instruction-following biases.
 
 ---
 
@@ -283,25 +318,26 @@ Train a LoRA adapter using MLX. First, create a configuration file, then run tra
 
 ```yaml
 # MLX LoRA Configuration
-model: "mlx-community/Qwen3-8B-Base-bf16"
+model: "./models/Qwen2.5-14B-Base-4bit-MLX"  # Local 4-bit model
 train: true
 data: "data/training/lovecraft"
 
 # Training Strategy
 batch_size: 1
-grad_accumulation: 2
-iters: 3000              # Adjust based on dataset size (~0.87 epochs)
+grad_accumulation: 4     # Effective batch = 4
+grad_checkpoint: true    # Required for larger models
+iters: 2100              # Adjust based on dataset size (~0.6 epochs)
 learning_rate: 1e-5
 
-# Apply LoRA to all layers for deep style capture
-num_layers: -1
+# Apply LoRA to layers (-1 = all, or use 16 for memory constraints)
+num_layers: -1           # Use 16 if running out of memory
 
 # LoRA Architecture
 lora_parameters:
   rank: 64               # High rank for complex sentence structures
   scale: 2.0             # Strong style signal
-  dropout: 0.15          # Prevents overfitting to specific keywords
-  keys:                  # Target all attention + MLP layers
+  dropout: 0.1           # Prevents overfitting to specific keywords
+  keys:                  # Target attention + MLP layers
     - "self_attn.q_proj"
     - "self_attn.k_proj"
     - "self_attn.v_proj"
@@ -312,8 +348,8 @@ lora_parameters:
 
 # Output
 adapter_path: "lora_adapters/lovecraft"
-save_every: 500
-steps_per_report: 50
+save_every: 200          # Save checkpoints frequently
+steps_per_report: 10
 steps_per_eval: 200
 
 seed: 42
@@ -329,13 +365,15 @@ mlx_lm.lora --config data/training/lovecraft/config.yaml
 
 | Parameter | Recommended | Description |
 |-----------|-------------|-------------|
-| `model` | Qwen3-8B-Base-bf16 | Base model (base models work best for style) |
-| `iters` | ~3000 | Total training steps (~0.87 epochs prevents overfitting) |
+| `model` | `./models/Qwen2.5-14B-Base-4bit-MLX` | Local 4-bit model (base models work best) |
+| `iters` | ~2000-3000 | Training steps (~0.6-0.9 epochs prevents overfitting) |
 | `batch_size` | 1 | Small batches learn individual style quirks |
-| `grad_accumulation` | 2 | Effective batch size = batch_size × grad_accumulation |
+| `grad_accumulation` | 4 | Effective batch size = batch_size × grad_accumulation |
+| `grad_checkpoint` | true | Required for 14B+ models to fit in memory |
 | `learning_rate` | 1e-5 | Lower LR with high rank for stability |
+| `num_layers` | -1 or 16 | All layers (-1) or last 16 if memory constrained |
 | `rank` | 64 | Higher rank captures complex syntactic patterns |
-| `dropout` | 0.15 | Forces model to learn structure, not memorize words |
+| `dropout` | 0.1 | Forces model to learn structure, not memorize words |
 
 **Calculating iterations:**
 
@@ -345,15 +383,34 @@ iters_per_epoch = train_examples / batch_size
 target_iters = iters_per_epoch × 0.87  # ~87% of one epoch
 ```
 
-**Training time:** ~1-2 hours on Apple Silicon M1/M2/M3.
+**Training time:** ~2-4 hours on Apple Silicon M1/M2/M3 (14B model).
 
 **Output structure:**
 
 ```
 lora_adapters/lovecraft/
-├── adapters.safetensors    # LoRA weights
-└── adapter_config.json     # LoRA configuration
+├── adapters.safetensors       # Final LoRA weights
+├── 0000200_adapters.safetensors  # Checkpoint at iter 200
+├── 0000400_adapters.safetensors  # Checkpoint at iter 400
+├── ...
+└── adapter_config.json        # LoRA configuration (auto-generated)
 ```
+
+**Create metadata.json (required for inference):**
+
+After training, create `lora_adapters/lovecraft/metadata.json`:
+
+```json
+{
+    "author": "H.P. Lovecraft",
+    "base_model": "./models/Qwen2.5-14B-Base-4bit-MLX",
+    "lora_rank": 64,
+    "lora_alpha": 128,
+    "training_examples": 3770
+}
+```
+
+This file tells the inference pipeline which base model to load with the adapter. Without it, the system defaults to the wrong model and fails.
 
 ### Step 5: Verify and Test
 
@@ -687,11 +744,15 @@ text-style-transfer/
 │   ├── training/                 # Generated training data
 │   └── rag_index/                # ChromaDB persistent index
 │
+├── models/                       # Local MLX models
+│   └── Qwen2.5-14B-Base-4bit-MLX/
+│
 └── lora_adapters/                # Trained LoRA adapters
     └── <author>/
-        ├── adapters.safetensors # LoRA weights
-        ├── adapter_config.json  # LoRA config
-        └── metadata.json        # Training metadata
+        ├── adapters.safetensors      # Final LoRA weights
+        ├── 0000200_adapters.safetensors  # Checkpoints
+        ├── adapter_config.json       # LoRA config (auto-generated)
+        └── metadata.json             # **Required** for inference
 ```
 
 ---
@@ -792,11 +853,43 @@ The `lora_adapters` setting defines default adapters to use when none are specif
 
 Requires Apple Silicon. For other platforms, use Ollama provider.
 
-### Out of Memory
+### Out of Memory During Training
 
-Use 4-bit model in config.json:
+If training runs out of memory:
+
+1. **Reduce `num_layers`** (biggest impact):
+   ```yaml
+   num_layers: 16  # Only train last 16 layers instead of all
+   ```
+
+2. **Enable gradient checkpointing**:
+   ```yaml
+   grad_checkpoint: true
+   ```
+
+3. **Use a smaller model**:
+   ```yaml
+   model: "./models/Qwen2.5-7B-Base-4bit-MLX"
+   ```
+
+4. **Reduce LoRA targets** (remove MLP layers):
+   ```yaml
+   keys:
+     - "self_attn.q_proj"
+     - "self_attn.v_proj"
+     - "self_attn.o_proj"
+   ```
+
+### Out of Memory During Inference
+
+Use a smaller model in `config.json`:
 ```json
-"mlx": { "model": "mlx-community/Qwen3-8B-4bit" }
+"mlx": { "model": "./models/Qwen2.5-7B-Base-4bit-MLX" }
+```
+
+Or use a Hub model:
+```json
+"mlx": { "model": "mlx-community/Qwen2.5-7B-Instruct-4bit" }
 ```
 
 ### Missing API Key
@@ -817,12 +910,15 @@ python scripts/load_corpus.py --input data/corpus/author.txt --author "Author Na
 
 ## Performance
 
+| Metric | 7B Model | 14B Model | 32B Model |
+|--------|----------|-----------|-----------|
+| Per-paragraph inference | 10-20s | 15-30s | 30-60s |
+| Memory (inference) | ~8GB | ~16GB | ~24GB |
+| Memory (training) | ~20GB | ~40GB | ~64GB+ |
+| Training time (2000 iters) | ~1h | ~2-4h | ~6-8h |
+
 | Metric | Value |
 |--------|-------|
-| Per-paragraph inference | 15-30 seconds |
-| Memory (inference) | ~8GB |
-| Memory (training) | ~50GB |
-| Training time | ~1-2 hours |
 | Corpus indexing | ~2s/chunk (with skeletons) |
 | Training data generation | ~5-10 min for 100 chunks |
 

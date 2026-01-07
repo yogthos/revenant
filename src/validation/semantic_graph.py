@@ -481,22 +481,15 @@ class GraphDiff:
 
 
 class SemanticGraphBuilder:
-    """Builds semantic graphs from text using REBEL triplet extraction.
+    """Builds semantic graphs from text using spaCy dependency parsing.
 
-    Uses the REBEL model for accurate (subject, relation, object) triplet
-    extraction, with spaCy as fallback for entity/discourse detection.
+    Extracts propositions and discourse relations from text for
+    semantic verification of style-transferred content.
     """
 
-    def __init__(self, use_rebel: bool = False):
-        """Initialize the builder.
-
-        Args:
-            use_rebel: Whether to use REBEL model (slower, often less accurate for complex sentences).
-                       Default is False - use spaCy which is faster and handles passive voice better.
-        """
+    def __init__(self):
+        """Initialize the builder."""
         self._nlp = None
-        self._use_rebel = use_rebel
-        self._triplet_extractor = None
 
     @property
     def nlp(self):
@@ -505,22 +498,10 @@ class SemanticGraphBuilder:
             self._nlp = get_nlp()
         return self._nlp
 
-    @property
-    def triplet_extractor(self):
-        if self._triplet_extractor is None:
-            try:
-                from .triplet_extractor import get_triplet_extractor
-                self._triplet_extractor = get_triplet_extractor(use_rebel=self._use_rebel)
-            except Exception as e:
-                logger.warning(f"Triplet extractor not available: {e}")
-                self._triplet_extractor = None
-        return self._triplet_extractor
-
     def build_from_text(self, text: str) -> SemanticGraph:
         """Build a semantic graph from paragraph text.
 
-        Uses REBEL for triplet extraction when available, falls back to
-        spaCy-based extraction otherwise.
+        Uses spaCy dependency parsing for proposition extraction.
 
         Args:
             text: Paragraph text to analyze.
@@ -528,98 +509,10 @@ class SemanticGraphBuilder:
         Returns:
             SemanticGraph representing the paragraph's meaning structure.
         """
-        graph = SemanticGraph()
-
         if not text or not text.strip():
-            return graph
+            return SemanticGraph()
 
-        # Use spaCy-based extraction by default (faster, handles complex sentences better)
-        if not self._use_rebel:
-            return self._build_from_spacy(text)
-
-        # Try REBEL-based extraction if explicitly requested
-        if self.triplet_extractor:
-            try:
-                return self._build_from_triplets(text)
-            except Exception as e:
-                logger.warning(f"REBEL extraction failed, falling back to spaCy: {e}")
-
-        # Fallback to spaCy-based extraction
         return self._build_from_spacy(text)
-
-    def _build_from_triplets(self, text: str) -> SemanticGraph:
-        """Build graph using REBEL triplet extraction.
-
-        This produces more accurate entity-role assignments.
-        """
-        graph = SemanticGraph()
-        doc = self.nlp(text)
-
-        # Extract triplets using REBEL
-        triplets = self.triplet_extractor.extract(text)
-
-        if not triplets:
-            # Fallback if REBEL returns nothing
-            return self._build_from_spacy(text)
-
-        logger.debug(f"REBEL extracted {len(triplets)} triplets")
-
-        # Create nodes from triplets
-        for i, triplet in enumerate(triplets):
-            node_id = f"P{i + 1}"
-
-            # Find the sentence containing this triplet for context
-            sent_text = self._find_sentence_for_triplet(doc, triplet)
-
-            # Detect negation and epistemic from sentence context
-            is_negated = False
-            epistemic = "factual"
-            if sent_text:
-                sent_doc = self.nlp(sent_text)
-                for sent in sent_doc.sents:
-                    is_negated = self._detect_negation(sent)
-                    epistemic = self._detect_epistemic(sent)
-                    break
-
-            # Collect entities associated with this triplet
-            entities = []
-            for ent in doc.ents:
-                if ent.label_ in ("PERSON", "ORG", "GPE", "WORK_OF_ART"):
-                    # Check if entity appears in subject or object
-                    ent_lower = ent.text.lower()
-                    if (ent_lower in triplet.subject.lower() or
-                        ent_lower in triplet.object.lower()):
-                        entities.append(ent.text)
-
-            node = PropositionNode(
-                id=node_id,
-                text=sent_text or f"{triplet.subject} {triplet.relation} {triplet.object}",
-                subject=triplet.subject,
-                predicate=triplet.relation,
-                object=triplet.object,
-                entities=entities,
-                is_negated=is_negated,
-                epistemic=epistemic,
-            )
-            graph.add_node(node)
-
-        # Add discourse relationships between nodes
-        self._add_discourse_edges(doc, graph)
-
-        return graph
-
-    def _find_sentence_for_triplet(self, doc, triplet) -> Optional[str]:
-        """Find the sentence that contains a triplet's subject and object."""
-        subj_lower = triplet.subject.lower()
-        obj_lower = triplet.object.lower()
-
-        for sent in doc.sents:
-            sent_lower = sent.text.lower()
-            # Check if both subject and object appear in sentence
-            if subj_lower in sent_lower or obj_lower in sent_lower:
-                return sent.text.strip()
-
-        return None
 
     def _add_discourse_edges(self, doc, graph: SemanticGraph) -> None:
         """Add discourse relationship edges between graph nodes."""

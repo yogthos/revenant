@@ -854,100 +854,10 @@ def neutralize_batch(texts: list, monotone: bool = True, on_progress=None) -> li
 
 
 # =============================================================================
-# Step 5: Structural Analysis and Control Tokens
+# Lexical Bleed Filter
 # =============================================================================
-# Style tags tell the model WHAT structural pattern to produce.
-# This turns "vibe" into concrete instructions.
-
-def analyze_structure(text: str, nlp=None) -> dict:
-    """Analyze structural features of text for style tagging.
-
-    Returns dict with:
-        - sentence_lengths: list of word counts per sentence
-        - avg_length: average sentence length
-        - length_variance: how varied the lengths are
-        - has_complex_syntax: semicolons, em-dashes, nested clauses
-        - connectives: conjunctions used (and, but, yet, for, etc.)
-    """
-    if nlp is None:
-        nlp = get_nlp()
-
-    sentences = split_into_sentences(text, nlp)
-    if not sentences:
-        return {"tag": "[STYLE: Simple]"}
-
-    lengths = [len(s.split()) for s in sentences]
-    avg_length = sum(lengths) / len(lengths)
-
-    # Calculate variance
-    if len(lengths) > 1:
-        variance = sum((x - avg_length) ** 2 for x in lengths) / len(lengths)
-        std_dev = variance ** 0.5
-    else:
-        std_dev = 0
-
-    # Detect complex syntax markers
-    complex_markers = [';', '—', '--', ':', '(', ')']
-    has_complex = any(m in text for m in complex_markers)
-
-    # Detect connectives
-    connective_words = ['however', 'although', 'yet', 'moreover', 'furthermore',
-                        'nevertheless', 'whilst', 'whereas']
-    has_literary_connectives = any(w in text.lower() for w in connective_words)
-
-    return {
-        "avg_length": avg_length,
-        "std_dev": std_dev,
-        "has_complex": has_complex,
-        "has_literary_connectives": has_literary_connectives,
-        "sentence_count": len(sentences),
-    }
-
-
-def generate_style_tag(styled_text: str, nlp=None) -> str:
-    """Generate a structural style tag based on text analysis.
-
-    Tags describe the structural features the model should produce:
-    - Length pattern: Short & Punchy, Varied Lengths, Long & Flowing
-    - Complexity: Simple Syntax, Complex Syntax, Baroque Syntax
-
-    Example: [STYLE: Varied Lengths | Complex Syntax]
-    """
-    analysis = analyze_structure(styled_text, nlp)
-
-    # Determine length pattern
-    avg = analysis.get("avg_length", 15)
-    std = analysis.get("std_dev", 0)
-
-    if avg < 12:
-        length_tag = "Short & Punchy"
-    elif avg > 25:
-        length_tag = "Long & Flowing"
-    elif std > 8:
-        length_tag = "Varied Lengths"
-    else:
-        length_tag = "Medium Length"
-
-    # Determine complexity
-    if analysis.get("has_complex") and analysis.get("has_literary_connectives"):
-        complexity_tag = "Baroque Syntax"
-    elif analysis.get("has_complex"):
-        complexity_tag = "Complex Syntax"
-    else:
-        complexity_tag = "Simple Syntax"
-
-    return f"[STYLE: {length_tag} | {complexity_tag}]"
-
-
-# =============================================================================
-# Step 6: Prompt Jitter and Input Perturbation (NEFTune Simulation)
-# =============================================================================
-# NEFTune adds noise to embeddings. We simulate this by:
-# 1. Randomizing the instruction prefix (Prompt Jitter)
-# 2. Adding typos/synonyms to neutral input (Input Perturbation)
-# 3. Tag dropout (20% chance to omit style tag)
-# 4. Adjective dropout (forces model to hallucinate stylistic details)
-# This forces the model to learn robust patterns, not memorize strings.
+# Prevents the model from learning copy-paste by rejecting training pairs
+# where the neutral input retains too much distinctive vocabulary.
 
 # Common words to ignore in lexical analysis
 COMMON_WORDS = {
@@ -968,7 +878,7 @@ COMMON_WORDS = {
 }
 
 
-def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.6) -> Tuple[bool, float]:
+def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) -> Tuple[bool, float]:
     """Check if neutral input retains too much distinctive vocabulary from styled output.
 
     If the neutral text already contains most of the distinctive words from the output,
@@ -1000,14 +910,185 @@ def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.6) -> 
     return overlap_ratio < max_overlap, overlap_ratio
 
 
-# Prompt templates for jitter - randomly select one per example
-PROMPT_TEMPLATES = [
-    "Rewrite in {author}'s style (~{word_count} words):",
-    "Transform this text into {author}'s voice (~{word_count} words):",
-    "Convert to {author}'s style (~{word_count} words):",
-    "Apply {author}'s style (~{word_count} words):",
-    "Rewrite the following in {author}'s voice (~{word_count} words):",
-    "Style transfer to {author} (~{word_count} words):",
+# =============================================================================
+# Persona-Based Training (Acting Directions, not Translation Instructions)
+# =============================================================================
+# Instead of "Rewrite X as Y", we put the model inside a scene.
+# Formula: [ROLE] + [CONTEXT] + [EMOTIONAL STATE] + [CONSTRAINT]
+#
+# CRITICAL: Frames are split into NARRATIVE vs CONCEPTUAL to avoid
+# instruction-content mismatch. A narrative about "Jervas Dudley" should not
+# use "Explain the concept..." prompts, or the model learns that "concepts"
+# are stories about people.
+
+from enum import Enum
+
+class ContentType(Enum):
+    """Type of content for prompt selection."""
+    NARRATIVE = "narrative"      # Stories, events, characters, sequences
+    CONCEPTUAL = "conceptual"    # Ideas, explanations, mechanisms, definitions
+
+
+def classify_content_type(text: str) -> ContentType:
+    """Classify text as NARRATIVE or CONCEPTUAL.
+
+    NARRATIVE indicators:
+    - Named entities (PERSON, GPE, LOC)
+    - Past tense verbs
+    - Temporal markers (then, after, before, when)
+    - Third-person pronouns with actions (he went, she saw)
+    - Sequence words (first, next, finally)
+
+    CONCEPTUAL indicators:
+    - Abstract nouns (concept, theory, mechanism, process)
+    - Definition patterns (X is defined as, X refers to)
+    - Present tense generalizations
+    - Impersonal constructions (it is, there are)
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+
+    narrative_score = 0
+    conceptual_score = 0
+
+    # Check for named entities (strong narrative signal)
+    person_entities = sum(1 for ent in doc.ents if ent.label_ in ['PERSON', 'GPE', 'LOC', 'FAC'])
+    if person_entities >= 2:
+        narrative_score += 3
+    elif person_entities >= 1:
+        narrative_score += 1
+
+    # Check for temporal markers
+    temporal_markers = {'then', 'after', 'before', 'when', 'while', 'during', 'later',
+                       'earlier', 'soon', 'finally', 'eventually', 'suddenly', 'once'}
+    text_lower = text.lower()
+    temporal_count = sum(1 for marker in temporal_markers if f' {marker} ' in f' {text_lower} ')
+    narrative_score += min(temporal_count, 3)
+
+    # Check for past tense verbs (narrative signal)
+    past_tense_count = sum(1 for token in doc if token.tag_ in ['VBD', 'VBN'])
+    if past_tense_count >= 5:
+        narrative_score += 2
+    elif past_tense_count >= 2:
+        narrative_score += 1
+
+    # Check for sequence words
+    sequence_words = {'first', 'second', 'third', 'next', 'finally', 'began', 'started', 'ended'}
+    sequence_count = sum(1 for word in sequence_words if word in text_lower)
+    narrative_score += min(sequence_count, 2)
+
+    # Check for abstract/conceptual vocabulary
+    conceptual_words = {'concept', 'theory', 'mechanism', 'process', 'system', 'principle',
+                       'function', 'method', 'approach', 'technique', 'structure', 'pattern',
+                       'relationship', 'connection', 'effect', 'cause', 'result', 'factor',
+                       'element', 'component', 'aspect', 'nature', 'essence', 'phenomenon'}
+    conceptual_count = sum(1 for word in conceptual_words if word in text_lower)
+    conceptual_score += min(conceptual_count * 2, 4)
+
+    # Check for definition patterns
+    definition_patterns = ['is defined as', 'refers to', 'means that', 'is called',
+                          'can be described as', 'is characterized by', 'consists of']
+    if any(pattern in text_lower for pattern in definition_patterns):
+        conceptual_score += 3
+
+    # Check for impersonal/generalizing constructions
+    if text_lower.startswith(('it is', 'there are', 'there is', 'this is', 'these are')):
+        conceptual_score += 1
+
+    # Present tense generalizations (weaker signal)
+    present_tense_count = sum(1 for token in doc if token.tag_ in ['VBZ', 'VBP'] and token.dep_ == 'ROOT')
+    conceptual_score += min(present_tense_count, 2)
+
+    # Return classification
+    if narrative_score > conceptual_score + 1:
+        return ContentType.NARRATIVE
+    elif conceptual_score > narrative_score + 1:
+        return ContentType.CONCEPTUAL
+    else:
+        # Default to narrative for fiction authors, conceptual for non-fiction
+        return ContentType.NARRATIVE
+
+
+# Persona frames split by content type to avoid instruction-content mismatch
+PERSONA_FRAMES = {
+    "default": {
+        "narrative": [
+            "You are recounting events you witnessed firsthand. Describe what happened as if confessing to a close friend.",
+            "You are a chronicler recording history. Narrate the sequence of events with weight and significance.",
+            "Tell this story as if you're sitting by a fire, speaking to someone who needs to understand what happened.",
+        ],
+        "conceptual": [
+            "You are reverse-engineering an alien device. Describe the hidden logic as 'invisible machinery'.",
+            "You are a coroner analyzing a system crash. Treat the failure as the universe reclaiming order.",
+            "Describe this complex system as a mindless 'Leviathan' made of billions of dumb parts.",
+            "State these facts with the absolute, pitiless precision of a machine.",
+        ],
+    },
+    "H.P. Lovecraft": {
+        "narrative": [
+            # The "Journal" Frame (narrative)
+            "You are writing in a diary by candlelight. Your hand is shaking. You must record what happened, but you are terrified to write it down. Do not summarize; confess.",
+            # The "Testimony" Frame
+            "You are giving testimony about events you witnessed. Narrate what occurred, but let your dread seep through the clinical details.",
+            # The "Letter to a Friend" Frame
+            "You are writing a letter to a trusted friend, recounting a sequence of disturbing events. You need them to understand what happened, even if they won't believe you.",
+        ],
+        "conceptual": [
+            # The "Warning" Frame (conceptual)
+            "You are writing a desperate letter to a colleague, urging them to destroy their research. Explain this forbidden knowledge as dangerous, something that should not be known.",
+            # The "Scholarly Discovery" Frame
+            "You are a researcher in the Miskatonic University archives who has found something unsettling. Document this discovery as if the knowledge itself is a threat.",
+            # The "Forbidden Text" Frame
+            "You are translating an ancient text that reveals terrible truths. Explain the mechanism or principle, but frame it as knowledge that corrupts the knower.",
+        ],
+    },
+    "Douglas Hofstadter": {
+        "narrative": [
+            # The "Anecdote" Frame
+            "You are telling a story to illustrate a point. Narrate the sequence of events, but let your playful voice shine through.",
+            # The "Personal Discovery" Frame
+            "You are recounting how you personally came to understand something. Tell the story of your realization.",
+        ],
+        "conceptual": [
+            # The "Skeptical Professor" Frame
+            "You are a cognitive scientist arguing with a stubborn student during office hours. Explain this concept, but show your frustration at how counter-intuitive it is. Use analogies. Do not lecture; converse.",
+            # The "Margin Note" Frame
+            "You are scribbling notes in the margins of a dry textbook. Criticize the text for being too rigid. Rephrase the core idea with wit, playfulness, and self-referential humor.",
+            # The "Dinner Party" Frame
+            "You are explaining a complex idea to a friend at a loud dinner party. Be vivid and punchy. Avoid academic jargon. Use physical objects on the table as metaphors.",
+        ],
+    },
+}
+
+# =============================================================================
+# Negative Constraints (Anti-AI Writing Markers)
+# =============================================================================
+# Tiered constraint system to force human-like writing patterns.
+
+# ALWAYS included (100%) - these are clear AI tells
+ALWAYS_CONSTRAINTS = [
+    "Do not use: 'Moreover', 'Furthermore', 'Therefore', 'Thus', 'Hence', 'In conclusion', 'It is important to note', 'It is worth noting', 'This highlights', 'This underscores', 'In essence', 'Ultimately'.",
+    "Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly.",
+]
+
+# FREQUENT (70%) - strong anti-pattern
+FREQUENT_CONSTRAINTS = [
+    "Do not start with a topic sentence. Start with a sensory detail, a question, or mid-thought.",
+    "Do not use numbered lists or 'Firstly/Secondly/Thirdly' structures.",
+]
+
+# ROTATING (one random, 40%) - stylistic variety
+ROTATING_CONSTRAINTS = [
+    "Use fragments. Interrupt yourself with dashes (—).",
+    "Let ideas collide without transition words.",
+    "Do not explain. Imply.",
+    "Use at least one rhetorical question.",
+    "Interrupt yourself with a parenthetical thought.",
+    "Start the paragraph with a conjunction (But, And, Yet, So).",
+    "Be biased. Be opinionated. Do not balance your argument.",
+    "Vary sentence lengths dramatically. Follow a long sentence with a short one.",
+    "Use concrete nouns instead of abstractions. Not 'the concept' but the thing itself.",
+    "End on an image or action, not a summary.",
 ]
 
 # Simple synonym map for input perturbation
@@ -1025,6 +1106,248 @@ SYNONYMS = {
     "very": ["quite", "rather", "extremely"],
     "really": ["truly", "actually", "indeed"],
 }
+
+# Common concrete nouns to replace with placeholders in Abstract Summary
+CONCRETE_NOUNS = {
+    'house', 'car', 'tree', 'door', 'window', 'table', 'chair', 'book', 'phone',
+    'computer', 'screen', 'keyboard', 'mouse', 'desk', 'floor', 'wall', 'ceiling',
+    'room', 'building', 'street', 'road', 'city', 'town', 'village', 'country',
+    'mountain', 'river', 'lake', 'ocean', 'sea', 'forest', 'field', 'garden',
+    'hand', 'face', 'eye', 'head', 'body', 'arm', 'leg', 'foot', 'finger',
+    'sun', 'moon', 'star', 'sky', 'cloud', 'rain', 'snow', 'wind', 'fire',
+    'water', 'earth', 'stone', 'rock', 'metal', 'wood', 'glass', 'paper',
+    'food', 'bread', 'meat', 'fruit', 'vegetable', 'drink', 'wine', 'beer',
+    'man', 'woman', 'child', 'person', 'people', 'animal', 'dog', 'cat', 'bird',
+    'machine', 'engine', 'wheel', 'tool', 'weapon', 'knife', 'gun', 'sword',
+}
+
+
+# =============================================================================
+# Rhetorical Structure Analysis
+# =============================================================================
+
+def classify_rhetorical_move(sentence: str) -> str:
+    """Classify the rhetorical move of a sentence.
+
+    Returns one of: Metaphor, Personal Observation, Technical Definition,
+    Rhetorical Question, Contrast, Consequence, or Observation (default).
+    """
+    sent_lower = sentence.lower()
+
+    # Detect patterns
+    if any(w in sent_lower for w in ['like', 'as if', 'resembles', 'similar to', 'as though']):
+        return "Metaphor"
+    if sent_lower.startswith(('i ', 'we ', 'one ', "i'm ", "we're ")):
+        return "Personal Observation"
+    if any(w in sent_lower for w in ['defined as', 'refers to', 'means that', 'is called']):
+        return "Technical Definition"
+    if '?' in sentence:
+        return "Rhetorical Question"
+    if any(w in sent_lower.split()[:3] for w in ['however', 'but', 'yet', 'although', 'while']):
+        return "Contrast"
+    if any(w in sent_lower for w in ['because', 'therefore', 'thus', 'hence', 'consequently']):
+        return "Consequence"
+
+    return "Observation"
+
+
+def extract_rhetorical_skeleton(text: str) -> str:
+    """Extract rhetorical structure from text.
+
+    Returns skeleton like: [Observation] -> [Metaphor] -> [Technical Definition]
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+    sentences = list(doc.sents)
+
+    if not sentences:
+        return "[Observation]"
+
+    skeleton_parts = []
+    for sent in sentences:
+        move = classify_rhetorical_move(sent.text)
+        skeleton_parts.append(f"[{move}]")
+
+    return " -> ".join(skeleton_parts)
+
+
+# =============================================================================
+# Many-to-One Input Variants
+# =============================================================================
+
+def strip_modifiers(text: str) -> str:
+    """Strip adjectives and adverbs, leaving only nouns/verbs (Information Dropout).
+
+    Forces the model to hallucinate stylistic details rather than copy them.
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+    tokens = []
+
+    for token in doc:
+        # Keep nouns, verbs, and essential function words
+        if token.pos_ in ['NOUN', 'VERB', 'PROPN', 'AUX', 'DET', 'ADP', 'CCONJ', 'SCONJ', 'PUNCT', 'PRON', 'NUM']:
+            tokens.append(token.text)
+        elif token.pos_ in ['ADJ', 'ADV']:
+            continue  # Drop modifiers
+        else:
+            # Keep other tokens (particles, etc.)
+            tokens.append(token.text)
+
+    # Clean up whitespace around punctuation
+    result = ' '.join(tokens)
+    result = re.sub(r'\s+([.,!?;:])', r'\1', result)
+    result = re.sub(r'\s+', ' ', result)
+    return result.strip()
+
+
+def is_concrete_noun(word: str) -> bool:
+    """Check if a word is a concrete noun."""
+    return word.lower() in CONCRETE_NOUNS
+
+
+def remove_concrete_nouns(text: str) -> str:
+    """Remove specific concrete nouns to force metaphor hallucination (Abstract Summary).
+
+    Replaces concrete nouns with [THING] placeholder, forcing the model
+    to generate the author's characteristic metaphors and imagery.
+    """
+    nlp = get_nlp()
+    doc = nlp(text)
+    tokens = []
+
+    for token in doc:
+        # Replace concrete nouns with generic placeholders
+        if token.pos_ == 'NOUN' and token.ent_type_ == '':
+            # Keep abstract nouns, replace concrete ones
+            if is_concrete_noun(token.text):
+                tokens.append('[THING]')
+            else:
+                tokens.append(token.text)
+        else:
+            tokens.append(token.text)
+
+    # Clean up whitespace
+    result = ' '.join(tokens)
+    result = re.sub(r'\s+([.,!?;:])', r'\1', result)
+    result = re.sub(r'\s+', ' ', result)
+    return result.strip()
+
+
+def create_input_variants(styled_text: str, standard_neutral: str) -> List[Tuple[str, str]]:
+    """Create 3 input variants for Many-to-One mapping.
+
+    Prevents the model from memorizing 1:1 input→output mappings by providing
+    multiple different inputs that all map to the same styled output.
+
+    Returns:
+        List of (neutral_input, variant_type) tuples:
+        - ("standard neutral text", "standard")
+        - ("text without adjectives/adverbs", "info_dropout")
+        - ("text with [THING] placeholders", "abstract")
+    """
+    variants = []
+
+    # Input A: Standard Neutralization (existing RTT)
+    variants.append((standard_neutral, "standard"))
+
+    # Input B: Information Dropout (strip adjectives/adverbs)
+    stripped = strip_modifiers(standard_neutral)
+    if stripped and len(stripped.split()) >= 10:  # Ensure not too short
+        variants.append((stripped, "info_dropout"))
+
+    # Input C: Abstract Summary (remove concrete nouns)
+    abstract = remove_concrete_nouns(standard_neutral)
+    if abstract and len(abstract.split()) >= 10:  # Ensure not too short
+        variants.append((abstract, "abstract"))
+
+    return variants
+
+
+# =============================================================================
+# Persona Instruction Generation
+# =============================================================================
+
+def get_persona_instruction(
+    author: str,
+    word_count: int,
+    styled_text: str = None,
+    use_skeleton: bool = True,
+) -> str:
+    """Generate persona-based instruction with tiered constraints.
+
+    Formula: [ROLE] + [CONTEXT] + [EMOTIONAL STATE] + [CONSTRAINTS]
+
+    Instead of "Rewrite X as Y" (translation), this puts the model inside a scene
+    (acting direction), forcing it to learn the PERSONA not just a prompt string.
+
+    CRITICAL: Classifies content as NARRATIVE or CONCEPTUAL to avoid instruction-
+    content mismatch. A story about "Jervas Dudley" uses narrative frames like
+    "Narrate the sequence of events...", while explanatory content uses conceptual
+    frames like "Explain the mechanism...".
+
+    Constraint tiers:
+    - ALWAYS_CONSTRAINTS: 100% - ban clear AI tells (Moreover, hedging, etc.)
+    - FREQUENT_CONSTRAINTS: 70% each - strong anti-patterns (topic sentences, lists)
+    - ROTATING_CONSTRAINTS: 40% - one random stylistic constraint
+
+    Args:
+        author: Author name to get persona frames for
+        word_count: Target word count
+        styled_text: Original styled text (for skeleton extraction and content classification)
+        use_skeleton: If True, 50% chance to include rhetorical skeleton
+
+    Returns:
+        Persona-based instruction string
+    """
+    # Classify content type (NARRATIVE vs CONCEPTUAL)
+    if styled_text:
+        content_type = classify_content_type(styled_text)
+    else:
+        content_type = ContentType.NARRATIVE  # Default for missing text
+
+    # Get author-specific frames or fall back to default
+    author_frames = PERSONA_FRAMES.get(author, PERSONA_FRAMES["default"])
+
+    # Select frames matching content type
+    type_key = content_type.value  # "narrative" or "conceptual"
+    frames = author_frames.get(type_key, author_frames.get("narrative", []))
+
+    if not frames:
+        # Fallback to default frames
+        frames = PERSONA_FRAMES["default"].get(type_key, PERSONA_FRAMES["default"]["narrative"])
+
+    persona_frame = random.choice(frames)
+
+    # Add word count constraint
+    instruction = f"{persona_frame}\n\nWrite approximately {word_count} words."
+
+    # Add structural skeleton 50% of the time (Grafting Prep)
+    if use_skeleton and styled_text and random.random() < 0.50:
+        skeleton = extract_rhetorical_skeleton(styled_text)
+        instruction = f"{instruction}\n\nFollow this structure: {skeleton}"
+
+    # Build constraints section
+    constraints = []
+
+    # ALWAYS constraints (100%) - clear AI tells
+    constraints.extend(ALWAYS_CONSTRAINTS)
+
+    # FREQUENT constraints (70% each)
+    for constraint in FREQUENT_CONSTRAINTS:
+        if random.random() < 0.70:
+            constraints.append(constraint)
+
+    # ROTATING constraints (one random, 40%)
+    if random.random() < 0.40:
+        constraints.append(random.choice(ROTATING_CONSTRAINTS))
+
+    # Add constraints to instruction
+    if constraints:
+        constraints_text = "\n".join(f"[CONSTRAINT]: {c}" for c in constraints)
+        instruction = f"{instruction}\n\n{constraints_text}"
+
+    return instruction
 
 
 def perturb_text(
@@ -1113,71 +1436,51 @@ def format_training_example(
     styled_text: str,
     author: str,
     word_count: int,
-    style_tag: str = None,
     variation_type: str = "original",
-    use_jitter: bool = True,
-    tag_dropout_rate: float = 0.20,
-    use_adjective_dropout: bool = True,
 ) -> dict:
     """Format a training example for BASE model (not instruct).
 
     Base models need raw text completion format, not chat roles.
     The model learns: given neutral text + instruction → produce styled text.
 
-    Applies NEFTune simulation based on variation_type:
-    - Prompt Jitter: Random instruction prefix (all types)
-    - Tag Dropout: 20% chance to omit style tag (forces default style learning)
-    - Light Perturbation: 8% rate for 'original' and 'snowflake'
-    - Heavy Perturbation: 15% rate for 'robustness' (Entry 3 of Triad)
-    - Adjective Dropout: 30% chance to strip adjectives (forces style hallucination)
+    Uses Acting Directions (not Translation Instructions):
+    - Persona Frame: Random scenario trigger from PERSONA_FRAMES
+    - Structural Skeleton: 50% chance to include rhetorical structure
+    - Negative Constraints: 30% chance to add ONE anti-AI-writing rule
 
     Format:
-        Rewrite in {author}'s style (~N words):
-        [STYLE: Varied Lengths | Complex Syntax]  <-- may be omitted (tag dropout)
+        [Persona Frame with word count, skeleton, constraint]
         [neutral text with perturbations]
         ###
         [styled text]
     """
-    # Select random prompt template (Prompt Jitter)
-    if use_jitter:
-        template = random.choice(PROMPT_TEMPLATES)
-    else:
-        template = PROMPT_TEMPLATES[0]
-
-    instruction = template.format(author=author, word_count=word_count)
-
-    # Tag Dropout: 20% chance to omit style tag
-    # This forces the model to learn that the author's name alone implies the style
-    effective_style_tag = style_tag
-    if style_tag and random.random() < tag_dropout_rate:
-        effective_style_tag = None
+    # Persona-based instruction (Acting Direction)
+    instruction = get_persona_instruction(
+        author=author,
+        word_count=word_count,
+        styled_text=styled_text,
+    )
 
     # Apply perturbation based on variation type
-    # Robustness entries get HEAVY perturbation (Entry 3 of Triad)
-    # Other entries get light perturbation with optional adjective dropout
+    # info_dropout and abstract variants are already processed
     if variation_type == "robustness":
         perturbed_input = create_heavy_perturbation(neutral_text)
+    elif variation_type in ("info_dropout", "abstract"):
+        # These variants are already processed, just apply light perturbation
+        perturbed_input = perturb_text(neutral_text, perturbation_rate=0.05)
     else:
-        perturbed_input = perturb_text(
-            neutral_text,
-            drop_adjectives=use_adjective_dropout
-        )
+        perturbed_input = perturb_text(neutral_text, drop_adjectives=True)
 
-    # Build prompt with optional style tag
-    if effective_style_tag:
-        prompt = f"{instruction}\n{effective_style_tag}\n{perturbed_input}\n###\n"
-    else:
-        # Model must learn that this author's name alone implies the style
-        prompt = f"{instruction}\n{perturbed_input}\n###\n"
+    # Build prompt
+    prompt = f"{instruction}\n\n{perturbed_input}\n###\n"
 
     # For mlx_lm.lora with base models: {"text": "prompt + completion"}
     # With mask_prompt=true, only the completion (after prompt) is trained
     return {
         "text": prompt + styled_text,
-        "prompt": prompt,  # For mask_prompt to know where to split
+        "prompt": prompt,
         "word_count": word_count,
-        "style_tag": effective_style_tag,  # Record actual tag used (after dropout)
-        "tag_dropped": style_tag is not None and effective_style_tag is None,
+        "variation_type": variation_type,
     }
 
 
@@ -1193,6 +1496,12 @@ def generate_training_data(
 
     Processes chunks sequentially (MLX requires single-threaded access) and
     writes each result immediately. Progress is saved on interrupt.
+
+    Uses persona-based training:
+    - Acting Directions (not Translation Instructions)
+    - Many-to-One mapping: 3 variants per anchor (standard, info_dropout, abstract)
+    - Structural skeletons: 50% chance to include rhetorical structure
+    - Negative constraints: 30% chance to add ONE anti-AI-writing rule
 
     Args:
         chunks: List of (styled_text, variation_type) tuples
@@ -1232,13 +1541,18 @@ def generate_training_data(
     type_counts = {}
     start_time = time.time()
 
-    # Get batch size from neutralizer
+    # Get batch size and concurrent batches from neutralizer
     neutralizer, _ = get_rtt_neutralizer()
     batch_size = getattr(neutralizer, 'batch_size', 1)
+    concurrent_batches = getattr(neutralizer, 'concurrent_batches', 1)
     use_batching = batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
 
+    # Super-batch = batch_size * concurrent_batches (to fully utilize parallelism)
+    # e.g., batch_size=10, concurrent_batches=4 → send 40 texts at once
+    super_batch_size = batch_size * concurrent_batches
+
     if use_batching:
-        logger.info(f"Using batched RTT with batch_size={batch_size}")
+        logger.info(f"Using batched RTT with batch_size={batch_size}, concurrent={concurrent_batches}, super_batch={super_batch_size}")
     else:
         logger.info("Using sequential RTT (batch_size=1)")
 
@@ -1250,9 +1564,9 @@ def generate_training_data(
     file_mode = 'a' if resume and processed_indices else 'w'
     with open(output_path, file_mode, encoding='utf-8') as f:
         if use_batching:
-            # Process in batches
-            for batch_start in range(0, len(pending_chunks), batch_size):
-                batch_end = min(batch_start + batch_size, len(pending_chunks))
+            # Process in super-batches (batch_size * concurrent_batches)
+            for batch_start in range(0, len(pending_chunks), super_batch_size):
+                batch_end = min(batch_start + super_batch_size, len(pending_chunks))
                 batch = pending_chunks[batch_start:batch_end]
 
                 # Extract texts for batch neutralization
@@ -1267,10 +1581,10 @@ def generate_training_data(
                     logger.info(
                         f"[{processed}/{total}] ({processed*100//total}%) | "
                         f"✓{success_count} ✗{failed_count} | "
-                        f"{rate:.2f}/s | ETA: {eta/60:.1f}m | batch {batch_start//batch_size + 1}"
+                        f"{rate:.2f}/s | ETA: {eta/60:.1f}m | super_batch {batch_start//super_batch_size + 1}"
                     )
 
-                # Batch neutralization
+                # Batch neutralization (retries handled internally by queue-based pipeline)
                 try:
                     neutrals = neutralize_batch(batch_texts, monotone=monotone)
                 except Exception as e:
@@ -1280,55 +1594,39 @@ def generate_training_data(
                 # Process results
                 for (idx, styled_text, vtype), neutral in zip(batch, neutrals):
                     if neutral:
-                        # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
-                        is_valid, overlap_ratio = check_lexical_bleed(neutral, styled_text)
-                        if not is_valid:
-                            failed_count += 1
-                            logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap)")
-                            continue
-
                         word_count = len(styled_text.split())
-                        style_tag = generate_style_tag(styled_text)
 
-                        example = format_training_example(
-                            neutral_text=neutral,
-                            styled_text=styled_text,
-                            author=author,
-                            word_count=word_count,
-                            style_tag=style_tag,
-                            variation_type=vtype,  # Controls perturbation level
-                        )
-                        example["variation_type"] = vtype
-                        example["source_idx"] = idx
-
-                        f.write(json.dumps(example) + '\n')
-                        success_count += 1
-                        type_counts[vtype] = type_counts.get(vtype, 0) + 1
-
-                        # Many-to-One: For "original" entries, generate a second example
-                        # with heavy perturbation on the SAME neutral input.
-                        # This forces the model to learn the transformation function,
-                        # not memorize input→output mappings.
+                        # Many-to-One: Create 3 input variants per anchor
+                        # (standard, info_dropout, abstract)
                         if vtype == "original":
-                            example2 = format_training_example(
-                                neutral_text=neutral,
+                            variants = create_input_variants(styled_text, neutral)
+                        else:
+                            # For non-original types, just use standard neutral
+                            variants = [(neutral, vtype)]
+
+                        for variant_neutral, variant_type in variants:
+                            # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
+                            is_valid, overlap_ratio = check_lexical_bleed(variant_neutral, styled_text)
+                            if not is_valid:
+                                failed_count += 1
+                                logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap) for {variant_type}")
+                                continue
+
+                            example = format_training_example(
+                                neutral_text=variant_neutral,
                                 styled_text=styled_text,
                                 author=author,
                                 word_count=word_count,
-                                style_tag=style_tag,
-                                variation_type="original_alt",  # Alternate version
-                                use_adjective_dropout=True,  # Force adjective stripping
+                                variation_type=variant_type,
                             )
-                            example2["variation_type"] = "original_alt"
-                            example2["source_idx"] = idx
-                            example2["many_to_one"] = True
+                            example["source_idx"] = idx
+                            example["many_to_one"] = len(variants) > 1
 
-                            f.write(json.dumps(example2) + '\n')
+                            f.write(json.dumps(example) + '\n')
                             success_count += 1
-                            type_counts["original_alt"] = type_counts.get("original_alt", 0) + 1
+                            type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
                     else:
                         failed_count += 1
-                        logger.warning(f"  [{idx}] ✗ Failed to neutralize ({len(styled_text.split())}w)")
 
                 f.flush()  # Flush after each batch
         else:
@@ -1349,65 +1647,57 @@ def generate_training_data(
                     else:
                         logger.info(f"[{processed}/{total}] Starting...")
 
-                # RTT neutralization
-                try:
-                    neutral = neutralize_text(styled_text, monotone=monotone)
-                except Exception as e:
-                    logger.warning(f"  [{idx}] RTT error: {e}")
-                    neutral = None
+                # RTT neutralization with retries
+                neutral = None
+                max_individual_retries = 3
+                for retry in range(max_individual_retries):
+                    try:
+                        neutral = neutralize_text(styled_text, monotone=monotone)
+                        if neutral:
+                            break
+                    except Exception as e:
+                        logger.debug(f"  [{idx}] RTT attempt {retry + 1} error: {e}")
+                    if retry < max_individual_retries - 1:
+                        logger.debug(f"  [{idx}] Retrying... ({retry + 2}/{max_individual_retries})")
+
+                if not neutral:
+                    logger.warning(f"  [{idx}] ✗ All {max_individual_retries} retries exhausted ({len(styled_text.split())}w)")
 
                 if neutral:
-                    # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
-                    is_valid, overlap_ratio = check_lexical_bleed(neutral, styled_text)
-                    if not is_valid:
-                        failed_count += 1
-                        logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap)")
-                        continue
-
                     word_count = len(styled_text.split())
-                    style_tag = generate_style_tag(styled_text)
 
-                    example = format_training_example(
-                        neutral_text=neutral,
-                        styled_text=styled_text,
-                        author=author,
-                        word_count=word_count,
-                        style_tag=style_tag,
-                        variation_type=vtype,  # Controls perturbation level
-                    )
-                    example["variation_type"] = vtype
-                    example["source_idx"] = idx
-
-                    f.write(json.dumps(example) + '\n')
-                    f.flush()
-                    success_count += 1
-                    type_counts[vtype] = type_counts.get(vtype, 0) + 1
-
-                    # Many-to-One: For "original" entries, generate a second example
-                    # with heavy perturbation on the SAME neutral input.
-                    # This forces the model to learn the transformation function,
-                    # not memorize input→output mappings.
+                    # Many-to-One: Create 3 input variants per anchor
+                    # (standard, info_dropout, abstract)
                     if vtype == "original":
-                        example2 = format_training_example(
-                            neutral_text=neutral,
+                        variants = create_input_variants(styled_text, neutral)
+                    else:
+                        # For non-original types, just use standard neutral
+                        variants = [(neutral, vtype)]
+
+                    for variant_neutral, variant_type in variants:
+                        # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
+                        is_valid, overlap_ratio = check_lexical_bleed(variant_neutral, styled_text)
+                        if not is_valid:
+                            failed_count += 1
+                            logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap) for {variant_type}")
+                            continue
+
+                        example = format_training_example(
+                            neutral_text=variant_neutral,
                             styled_text=styled_text,
                             author=author,
                             word_count=word_count,
-                            style_tag=style_tag,
-                            variation_type="original_alt",  # Alternate version
-                            use_adjective_dropout=True,  # Force adjective stripping
+                            variation_type=variant_type,
                         )
-                        example2["variation_type"] = "original_alt"
-                        example2["source_idx"] = idx
-                        example2["many_to_one"] = True
+                        example["source_idx"] = idx
+                        example["many_to_one"] = len(variants) > 1
 
-                        f.write(json.dumps(example2) + '\n')
+                        f.write(json.dumps(example) + '\n')
                         f.flush()
                         success_count += 1
-                        type_counts["original_alt"] = type_counts.get("original_alt", 0) + 1
+                        type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
                 else:
                     failed_count += 1
-                    logger.warning(f"  [{idx}] ✗ Failed to neutralize ({len(styled_text.split())}w)")
 
     elapsed = time.time() - start_time
     logger.info(
@@ -1449,6 +1739,8 @@ def main():
     parser.add_argument("--save-intermediate", type=str, default=None, help="Save intermediate paragraphs")
     parser.add_argument("--from-selected", type=str, default=None,
                         help="Load from selected paragraphs JSON (from select_diverse_paragraphs.py)")
+    parser.add_argument("--skip-curation", action="store_true",
+                        help="Skip curation step (corpus is already curated, one paragraph per double-newline)")
 
     args = parser.parse_args()
 
@@ -1562,13 +1854,23 @@ def main():
         with open(args.corpus, 'r', encoding='utf-8') as f:
             raw_text = f.read()
 
-        # Step 1: Curate corpus
-        logger.info("=" * 60)
-        logger.info("STEP 1: Curating corpus")
-        logger.info("=" * 60)
+        if args.skip_curation:
+            # Skip curation - corpus is already curated (one paragraph per double-newline)
+            logger.info("=" * 60)
+            logger.info("STEP 1: Skipping curation (--skip-curation flag)")
+            logger.info("=" * 60)
 
-        curation_config = CurationConfig(min_words=args.min_para_words, max_words=args.max_para_words)
-        paragraphs = extract_paragraphs(raw_text, curation_config)
+            # Just split by double-newlines and strip
+            paragraphs = [p.strip() for p in raw_text.split('\n\n') if p.strip()]
+            logger.info(f"Loaded {len(paragraphs)} pre-curated paragraphs")
+        else:
+            # Step 1: Curate corpus
+            logger.info("=" * 60)
+            logger.info("STEP 1: Curating corpus")
+            logger.info("=" * 60)
+
+            curation_config = CurationConfig(min_words=args.min_para_words, max_words=args.max_para_words)
+            paragraphs = extract_paragraphs(raw_text, curation_config)
 
         if args.max_paragraphs:
             paragraphs = paragraphs[:args.max_paragraphs]
@@ -1619,6 +1921,7 @@ def main():
     logger.info("=" * 60)
 
     all_output_path = output_dir / "all.jsonl"
+    logger.info("Using PERSONA-based training (Acting Directions + Many-to-One)")
     num_examples = generate_training_data(
         chunks, args.author, all_output_path,
         workers=args.workers, monotone=not args.no_monotone,

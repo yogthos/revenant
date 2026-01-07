@@ -65,30 +65,6 @@ def format_prompt(name: str, **kwargs) -> str:
     return template.format(**kwargs)
 
 
-def get_prompt_with_fallback(name: str, fallback: str, **kwargs) -> str:
-    """Load a prompt with fallback if file doesn't exist.
-
-    Useful for graceful degradation when prompt files are missing.
-
-    Args:
-        name: Prompt name (without .txt extension).
-        fallback: Fallback prompt template if file not found.
-        **kwargs: Variables to substitute in the template.
-
-    Returns:
-        Formatted prompt string.
-    """
-    try:
-        template = load_prompt(name)
-    except FileNotFoundError:
-        logger.warning(f"Prompt file not found: {name}.txt, using fallback")
-        template = fallback
-
-    if kwargs:
-        return template.format(**kwargs)
-    return template
-
-
 def list_prompts(prompts_dir: Optional[Path] = None) -> Dict[str, Path]:
     """List all available prompts.
 

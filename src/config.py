@@ -124,7 +124,7 @@ class GenerationConfig:
 
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
-    target_expansion_ratio: float = 1.0  # Target for LoRA generation
+    target_expansion_ratio: float = 1.5  # Target for LoRA generation (1.5 = 50% expansion for flourish)
 
     # LoRA adapter settings (path -> scale mapping)
     # Scale: 0.0=base only, 0.5=balanced, 1.0=full, >1.0=amplified
@@ -136,9 +136,6 @@ class GenerationConfig:
     # Style settings
     style_temperature: float = 0.7  # Temperature for style generation (higher = more creative)
     neutralization_temperature: float = 0.3  # Temperature for neutralization (lower = more consistent)
-    # Neutralization token settings (legacy, now uses graph-based descriptions)
-    neutralization_min_tokens: int = 300  # Minimum tokens for neutralization output
-    neutralization_token_multiplier: float = 1.2  # Multiplier: tokens = max(min, words * multiplier)
 
     # Content anchor detection settings
     analogy_min_length: int = 10  # Minimum chars for detected analogies
@@ -386,7 +383,7 @@ def load_config(config_path: str = "config.json") -> Config:
             anchor_threshold=gen.get("anchor_threshold", 0.8),
             # Length control
             max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
-            target_expansion_ratio=gen.get("target_expansion_ratio", 1.0),
+            target_expansion_ratio=gen.get("target_expansion_ratio", 1.5),
             # LoRA adapters (path -> scale mapping)
             lora_adapters=gen.get("lora_adapters", {}),
             # Neutralization
@@ -394,9 +391,6 @@ def load_config(config_path: str = "config.json") -> Config:
             # Style settings
             style_temperature=gen.get("style_temperature", 0.7),
             neutralization_temperature=gen.get("neutralization_temperature", 0.3),
-            # Neutralization token settings (legacy, now uses graph-based descriptions)
-            neutralization_min_tokens=gen.get("neutralization_min_tokens", 300),
-            neutralization_token_multiplier=gen.get("neutralization_token_multiplier", 1.2),
             # Content anchor detection
             analogy_min_length=gen.get("analogy_min_length", 10),
             detect_phase_transitions=gen.get("detect_phase_transitions", True),

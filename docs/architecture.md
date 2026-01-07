@@ -248,20 +248,21 @@ Create a config.yaml file for training:
 
 ```yaml
 # data/training/author/config.yaml
-model: "mlx-community/Qwen3-8B-Base-bf16"
+model: "./models/Qwen2.5-14B-Base-4bit-MLX"  # Local 4-bit model
 train: true
 data: "data/training/author"
 
 batch_size: 1
-grad_accumulation: 2
-iters: 3000              # ~0.87 epochs (prevents overfitting)
+grad_accumulation: 4     # Effective batch = 4
+grad_checkpoint: true    # Required for 14B+ models
+iters: 2100              # ~0.6 epochs (prevents overfitting)
 learning_rate: 1e-5
-num_layers: -1           # Apply LoRA to all layers
+num_layers: -1           # All layers (-1) or 16 if memory constrained
 
 lora_parameters:
   rank: 64               # High rank for syntactic patterns
   scale: 2.0             # Strong style override
-  dropout: 0.15          # Forces structural learning over memorization
+  dropout: 0.1           # Forces structural learning over memorization
   keys:
     - "self_attn.q_proj"
     - "self_attn.k_proj"
@@ -272,8 +273,8 @@ lora_parameters:
     - "mlp.down_proj"
 
 adapter_path: "lora_adapters/author"
-save_every: 500
-steps_per_report: 50
+save_every: 200          # Save checkpoints frequently
+steps_per_report: 10
 steps_per_eval: 200
 seed: 42
 ```
@@ -289,24 +290,42 @@ mlx_lm.lora --config data/training/author/config.yaml
 |-----------|-------------|-------|
 | `rank` | 64 | Higher = more capacity for complex syntax |
 | `scale` | 2.0 | Strong style signal (alpha/rank ratio) |
-| `dropout` | 0.15 | Prevents keyword memorization |
+| `dropout` | 0.1 | Prevents keyword memorization |
 | `learning_rate` | 1e-5 | Lower for style (not factual) learning |
-| `iters` | ~0.87 epochs | Prevents overfitting |
+| `iters` | ~0.6-0.9 epochs | Prevents overfitting |
 | `batch_size` | 1 | Small batches learn individual quirks |
+| `num_layers` | -1 or 16 | All layers or last 16 if memory constrained |
 
 **Base model selection:**
 
-| Model | Memory | Quality |
-|-------|--------|---------|
-| `Qwen3-8B-4bit` | ~8GB | Good balance |
-| `Qwen3-8B-Base-bf16` | ~16GB | Higher quality (recommended) |
+| Model | Training Memory | Inference Memory | Quality |
+|-------|-----------------|------------------|---------|
+| `Qwen2.5-7B-Base-4bit` | ~20GB | ~8GB | Good |
+| **`Qwen2.5-14B-Base-4bit`** | ~40GB | ~16GB | **Recommended** |
+| `Qwen2.5-32B-Base-4bit` | ~64GB+ | ~24GB | Highest |
 
 Training produces:
 ```
 lora_adapters/author/
-├── adapters.safetensors  # LoRA weights
-└── adapter_config.json   # LoRA config
+├── adapters.safetensors       # Final LoRA weights
+├── 0000200_adapters.safetensors  # Checkpoints
+├── adapter_config.json        # LoRA config (auto-generated)
+└── metadata.json              # **Required** - create manually
 ```
+
+**Create metadata.json (required for inference):**
+
+```json
+{
+    "author": "Author Name",
+    "base_model": "./models/Qwen2.5-14B-Base-4bit-MLX",
+    "lora_rank": 64,
+    "lora_alpha": 128,
+    "training_examples": 3770
+}
+```
+
+This file tells the inference pipeline which base model to load.
 
 ### Validation During Training
 
@@ -628,7 +647,7 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
         "timeout": 120
       },
       "mlx": {
-        "model": "mlx-community/Qwen3-8B-Base-bf16",
+        "model": "./models/Qwen2.5-14B-Base-4bit-MLX",
         "temperature": 0.2,
         "top_p": 0.9
       },
@@ -789,6 +808,8 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
+| **Model mismatch error** | Missing metadata.json | Create `metadata.json` in adapter directory with correct `base_model` path |
+| **IndexError: list index out of range** | Adapter trained on different model | Ensure `metadata.json` specifies the same model used for training |
 | Output matches training data | Memorization | Reduce epochs, lower rank, add more training data |
 | Style too weak | Underfitting | Train longer, increase lora_scale |
 | Facts being changed | Over-styling | Lower lora_scale, increase entailment_threshold |
@@ -799,3 +820,5 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
 | No structural guidance | Empty RAG | Verify corpus indexed in ChromaDB |
 | Grammar errors introduced | Over-correction | Adjust grammar_corrector whitelist |
 | Run-on sentences | LLM tendency | Enable split_sentences |
+| Out of memory (training) | Model too large | Set `num_layers: 16` instead of -1, enable `grad_checkpoint: true` |
+| Out of memory (inference) | Model too large | Use 7B model in config.json |
