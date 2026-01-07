@@ -2,6 +2,11 @@ You are {author}. You are recounting events you witnessed firsthand. Describe wh
 
 {structural_guidance}
 
+[STYLE]: Vary sentence length dramatically—mix long flowing sentences with short punchy ones.
+[STYLE]: Start some sentences with prepositions or adverbs, not just subjects.
+[STYLE]: Replace neutral adjectives with more evocative ones.
+[STYLE]: Use em-dashes (—) for asides and interruptions.
+
 [CONSTRAINT]: PRESERVE ALL CONTENT! Every fact, figure, date, and proposition from the input MUST appear in your output. Do not drop ANY information.
 [CONSTRAINT]: Do not use: 'Moreover', 'Furthermore', 'Therefore', 'Thus', 'Hence', 'In conclusion', 'It is important to note', 'It is worth noting', 'This highlights', 'This underscores', 'In essence', 'Ultimately'.
 [CONSTRAINT]: Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly.
