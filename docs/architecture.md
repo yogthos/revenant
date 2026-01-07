@@ -647,7 +647,7 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
         "timeout": 120
       },
       "mlx": {
-        "model": "mlx-community/Qwen3-8B-Base-bf16",
+        "model": "./models/Qwen2.5-14B-Base-4bit-MLX",
         "temperature": 0.2,
         "top_p": 0.9
       },
@@ -808,6 +808,8 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
 
 | Issue | Cause | Solution |
 |-------|-------|----------|
+| **Model mismatch error** | Missing metadata.json | Create `metadata.json` in adapter directory with correct `base_model` path |
+| **IndexError: list index out of range** | Adapter trained on different model | Ensure `metadata.json` specifies the same model used for training |
 | Output matches training data | Memorization | Reduce epochs, lower rank, add more training data |
 | Style too weak | Underfitting | Train longer, increase lora_scale |
 | Facts being changed | Over-styling | Lower lora_scale, increase entailment_threshold |
@@ -818,3 +820,5 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
 | No structural guidance | Empty RAG | Verify corpus indexed in ChromaDB |
 | Grammar errors introduced | Over-correction | Adjust grammar_corrector whitelist |
 | Run-on sentences | LLM tendency | Enable split_sentences |
+| Out of memory (training) | Model too large | Set `num_layers: 16` instead of -1, enable `grad_checkpoint: true` |
+| Out of memory (inference) | Model too large | Use 7B model in config.json |
