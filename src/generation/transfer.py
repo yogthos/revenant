@@ -395,43 +395,6 @@ class StyleTransfer:
 
         return compute_semantic_similarity(original, output)
 
-    def _compute_bidirectional_entailment(self, source: str, output: str) -> Tuple[float, float, float]:
-        """Compute bidirectional entailment scores for semantic parity.
-
-        Bidirectional entailment ensures:
-        - Forward (source→output): Output preserves source content (nothing lost)
-        - Backward (output→source): Output doesn't add hallucinations (nothing fabricated)
-
-        Args:
-            source: Original source text.
-            output: Generated output text.
-
-        Returns:
-            Tuple of (combined_score, forward_score, backward_score).
-            Combined score is min(forward, backward) for strict semantic parity.
-        """
-        if not self.verify_fn:
-            return 1.0, 1.0, 1.0  # No verifier available
-
-        # Forward: Does output preserve source content?
-        # If source entails output, the output hasn't lost meaning
-        forward_score = self.verify_fn(source, output)
-
-        # Backward: Does output stay faithful to source?
-        # If output entails source, the output hasn't added hallucinations
-        backward_score = self.verify_fn(output, source)
-
-        # Combined score: use minimum for strict semantic parity
-        # Both directions must be high for true equivalence
-        combined_score = min(forward_score, backward_score)
-
-        logger.debug(
-            f"Bidirectional entailment: forward={forward_score:.3f}, "
-            f"backward={backward_score:.3f}, combined={combined_score:.3f}"
-        )
-
-        return combined_score, forward_score, backward_score
-
     def transfer_paragraph(
         self,
         paragraph: str,
