@@ -538,6 +538,7 @@ class StyleTransfer:
                 logger.debug(f"Using grafting skeleton: {grafting_guidance.skeleton.format_for_prompt()}")
 
         # Build persona-injected prompt if enabled
+        # CRITICAL: Prompt format must match training format exactly
         final_content = content_for_generation
         use_raw_prompt = False
         if self.config.use_persona and PERSONA_AVAILABLE:
@@ -549,10 +550,11 @@ class StyleTransfer:
                 vocabulary_palette=persona.adjective_themes[:10],
                 structural_guidance=structural_guidance,
                 grafting_guidance=grafting_guidance,
+                target_words=target_words,  # Pass word count to match training format
             )
             structural_guidance = None  # Already included in persona prompt
             use_raw_prompt = True  # Skip format_prompt, use persona prompt directly
-            logger.debug(f"Using persona: {persona.archetype[:50]}...")
+            logger.debug(f"Using persona prompt (target={target_words} words)")
 
         output = self.generator.generate(
             content=final_content,
