@@ -301,6 +301,12 @@ def build_persona_prompt(
     if grafting_guidance and hasattr(grafting_guidance, 'skeleton') and grafting_guidance.skeleton:
         skeleton_section = f"\nFollow this structure: {grafting_guidance.skeleton}\n"
 
+    # Build structural RAG guidance section (rhythm, vocabulary, transitions, organic complexity)
+    # This is the CRITICAL section that provides author-specific patterns from ChromaDB
+    structural_section = ""
+    if structural_guidance:
+        structural_section = f"\n[AUTHOR STYLE PATTERNS - Follow these closely]:\n{structural_guidance}\n"
+
     # Build constraints block (matching training tiered system)
     constraints_section = "\n" + _build_constraints(deterministic_constraints) + "\n"
 
@@ -314,9 +320,9 @@ def build_persona_prompt(
         vocab_hint = f"\n[VOCABULARY HINT]: Consider words like: {vocab_items}\n"
 
     # Assemble prompt matching training format
-    # Order: persona frame → word count → skeleton → constraints → style hints → vocab → content
+    # Order: persona frame → word count → skeleton → structural RAG → constraints → style hints → vocab → content
     prompt = f"""{persona_frame}
-{word_count_section}{skeleton_section}{constraints_section}{stylistic_hints}{vocab_hint}
+{word_count_section}{skeleton_section}{structural_section}{constraints_section}{stylistic_hints}{vocab_hint}
 {content}
 ###
 """
