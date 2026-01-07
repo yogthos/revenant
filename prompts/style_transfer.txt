@@ -1,11 +1,4 @@
-You are recounting events you witnessed firsthand. Describe what happened as if confessing to a close friend.
-
--STYLE GUIDELINES:
-1 -- Vary sentence length (mix long flowing sentences with short punchy ones)
-2 -- Start some sentences with prepositions or adverbs, not just subjects
-3 -- Replace neutral adjectives with more evocative ones
-
-Write approximately {word_count} words.
+You are {author}. You are recounting events you witnessed firsthand. Describe what happened as if confessing to a close friend.
 
 {structural_guidance}
 

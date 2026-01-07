@@ -90,6 +90,60 @@ ROTATING_CONSTRAINTS = [
     "Do not explain. Imply.",
 ]
 
+# =============================================================================
+# Stylistic Hints (Add variety across paragraphs)
+# =============================================================================
+
+# PUNCTUATION_HINTS (30%) - vary punctuation emphasis
+PUNCTUATION_HINTS = [
+    "Use semicolons to connect related clauses; let thoughts flow together.",
+    "Interrupt yourself with em-dashes—asides that reveal inner thought—mid-sentence.",
+    "Use parentheticals (qualifications, doubts, afterthoughts) to add texture.",
+    "Deploy colons to introduce: revelations, lists, or explanations.",
+    "Let ellipses trail off into implication...",
+]
+
+# RHYTHM_HINTS (30%) - vary sentence rhythm emphasis
+RHYTHM_HINTS = [
+    "Vary sentence length dramatically. Short punch. Then sprawling complexity that winds through multiple clauses before finally arriving at its destination.",
+    "Build momentum: short sentence, longer sentence, longest sentence with cascading clauses.",
+    "Alternate between staccato declarations and flowing elaborations.",
+    "Use repetition for emphasis. Use repetition for rhythm. Use repetition.",
+    "Let one long sentence do the work of three, connected by semicolons and conjunctions.",
+]
+
+# OPENING_HINTS (30%) - vary how paragraphs begin
+OPENING_HINTS = [
+    "Begin with a concrete image or physical sensation.",
+    "Start mid-action, as if continuing a thought already begun.",
+    "Open with a question that the paragraph will circle around.",
+    "Begin with a date, time, or specific number.",
+    "Start with 'I' or 'We' for immediacy and personal witness.",
+    "Open with a subordinate clause: 'Although...', 'When...', 'Before...'",
+]
+
+# EMOTIONAL_REGISTERS (25%) - vary emotional framing
+EMOTIONAL_REGISTERS = {
+    "H.P. Lovecraft": [
+        "Write with mounting unease—each sentence should increase the dread.",
+        "Maintain clinical detachment even as horror accumulates.",
+        "Let reluctance seep through: you don't want to write this, but you must.",
+        "Convey the weight of forbidden knowledge pressing on the narrator.",
+    ],
+    "Douglas Hofstadter": [
+        "Let playful curiosity bubble through the explanation.",
+        "Show visible frustration at the difficulty of conveying the idea.",
+        "Write with the joy of someone sharing a favorite puzzle.",
+        "Be self-deprecating about the inadequacy of language.",
+    ],
+    "default": [
+        "Write with conviction, as if these truths must be recorded.",
+        "Let personal investment show through professional distance.",
+        "Convey the struggle to articulate something important.",
+        "Write as if confessing something you've been reluctant to admit.",
+    ],
+}
+
 
 def _get_persona_frame(author: str, is_narrative: bool) -> str:
     """Get a persona frame for the author matching the training format."""
@@ -125,6 +179,51 @@ def _build_constraints(deterministic: bool = False) -> str:
             constraints.append(random.choice(ROTATING_CONSTRAINTS))
 
     return "\n".join(f"[CONSTRAINT]: {c}" for c in constraints)
+
+
+def _build_stylistic_hints(author: str, deterministic: bool = False) -> str:
+    """Build stylistic hints section to add variety across paragraphs.
+
+    These hints are probabilistically selected to ensure each paragraph
+    gets slightly different guidance, preventing monotonous output.
+
+    Args:
+        author: Author name for author-specific emotional registers.
+        deterministic: If True, include one of each type (for testing).
+    """
+    hints = []
+
+    if deterministic:
+        # Include one of each for testing
+        hints.append(PUNCTUATION_HINTS[0])
+        hints.append(RHYTHM_HINTS[0])
+        hints.append(OPENING_HINTS[0])
+        registers = EMOTIONAL_REGISTERS.get(author, EMOTIONAL_REGISTERS["default"])
+        hints.append(registers[0])
+    else:
+        # Probabilistic selection for variety
+
+        # Punctuation hint (30%)
+        if random.random() < 0.30:
+            hints.append(random.choice(PUNCTUATION_HINTS))
+
+        # Rhythm hint (30%)
+        if random.random() < 0.30:
+            hints.append(random.choice(RHYTHM_HINTS))
+
+        # Opening hint (30%)
+        if random.random() < 0.30:
+            hints.append(random.choice(OPENING_HINTS))
+
+        # Emotional register (25%) - author-specific
+        if random.random() < 0.25:
+            registers = EMOTIONAL_REGISTERS.get(author, EMOTIONAL_REGISTERS["default"])
+            hints.append(random.choice(registers))
+
+    if not hints:
+        return ""
+
+    return "\n[STYLE HINT]: " + "\n[STYLE HINT]: ".join(hints)
 
 
 def _detect_content_type(content: str) -> bool:
@@ -205,6 +304,9 @@ def build_persona_prompt(
     # Build constraints block (matching training tiered system)
     constraints_section = "\n" + _build_constraints(deterministic_constraints) + "\n"
 
+    # Build stylistic hints (probabilistically selected for variety)
+    stylistic_hints = _build_stylistic_hints(author, deterministic_constraints)
+
     # Build vocabulary hint (optional, subtle)
     vocab_hint = ""
     if vocabulary_palette:
@@ -212,8 +314,9 @@ def build_persona_prompt(
         vocab_hint = f"\n[VOCABULARY HINT]: Consider words like: {vocab_items}\n"
 
     # Assemble prompt matching training format
+    # Order: persona frame → word count → skeleton → constraints → style hints → vocab → content
     prompt = f"""{persona_frame}
-{word_count_section}{skeleton_section}{constraints_section}{vocab_hint}
+{word_count_section}{skeleton_section}{constraints_section}{stylistic_hints}{vocab_hint}
 {content}
 ###
 """
