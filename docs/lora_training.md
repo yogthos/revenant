@@ -1,191 +1,133 @@
 # LoRA Training Reference & Checklist
 
-Complete guide for training a LoRA adapter to capture an author's writing style.
+Complete guide for training a "Systems Theologian" Persona Adapter using Qwen 2.5.
 
 ## Overview
 
-This system uses **instruction back-translation** to train style: we teach the model to transform semantic descriptions ("what happens") into stylized prose ("how the author would write it"). The model learns to generate style, not just paraphrase.
+This system uses **Persona Simulation** rather than simple Style Transfer. Instead of asking the model to "Rewrite X," we place it inside a narrative frame (e.g., "You are an engineer analyzing a system failure") to force it to adopt the target worldview (indifferent geometry, cosmic horror, systems theory).
 
-**Key insight**: ~0.9M tokens (approximately 2 books) is sufficient for expert-level style emulation. More data doesn't improve quality and increases overfitting risk.
+**Key Strategy**:
+
+* **Model**: Qwen 2.5 14B Base (4-bit).
+* **Technique**: "Many-to-One" Mapping (Multiple neutral inputs  One styled output).
+* **Objective**: Force the model to hallucinate style and structure by starving it of adjectives in the input.
 
 ---
 
 ## Prerequisites Checklist
 
-- [ ] Apple Silicon Mac (M1/M2/M3) - MLX only works on Apple Silicon
-- [ ] Python 3.9+
-- [ ] MLX installed: `pip install mlx mlx-lm`
-- [ ] sentence-transformers (for corpus curation): `pip install sentence-transformers`
-- [ ] Author's source text (plain .txt format, UTF-8)
+* [ ] Apple Silicon Mac (M1/M2/M3) - 16GB+ RAM (32GB+ Recommended)
+* [ ] Python 3.9+
+* [ ] MLX installed: `pip install mlx mlx-lm`
+* [ ] Author's source text (plain .txt format, UTF-8)
 
 ---
 
 ## Step 1: Prepare Source Corpus
 
-### 1.1 Obtain Author Text
+### 1.1 Obtain & Clean Text
 
-Convert the author's works to plain text:
-- ePub: Use Calibre to convert to .txt
-- PDF: Use `pdftotext` or Calibre
+Convert the author's works to plain text.
+**Critical:** Remove anything that breaks the "Fourth Wall."
 
-**Critical: Clean the corpus manually before processing:**
-- Remove prefaces, introductions, forewords (unless written by the author)
-- Remove copyright notices, publisher information, ISBN pages
-- Remove table of contents, chapter headers, page numbers
-- Remove acknowledgments, about the author sections
-- Remove any text not written in the author's characteristic style
-- Keep only the author's actual prose (the "meat" of the writing)
+* Remove: Prefaces, Copyrights, Chapter Titles, Footnotes.
+* Keep: Only the raw prose (narrative and exposition).
 
-### 1.2 Curate Corpus (Optional but Recommended)
+### 1.2 Curate Corpus (The "Chunking" Strategy)
 
-For large corpuses (>2 books), curate to optimal size:
+We need chunks that are long enough to capture *paragraph structure* (topic sentence  evidence  cosmic conclusion).
 
 ```bash
 python scripts/curate_corpus.py \
-    --input styles/sample_author_full.txt \
-    --output styles/sample_author.txt \
-    --target-tokens 900000
+    --input styles/unconducted_chorus_full.txt \
+    --output styles/unconducted_chorus.txt \
+    --target-tokens 900000 \
+    --min-para-words 60 
+
 ```
 
-**Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--target-tokens` | 900000 | Target token count (~0.9M per research) |
-| `--min-para-words` | 40 | Skip paragraphs shorter than this |
-| `--no-cluster` | false | Skip semantic clustering, use sequential sampling |
-| `--verbose` | false | Show detailed filtering statistics |
-
-**What the script does:**
-1. Filters out low-quality text (short paragraphs, OCR artifacts, fragments)
-2. Uses embedding clustering to select diverse passages
-3. Caps output at target token budget
-
-**Quality filters applied:**
-- Minimum 40 words per paragraph
-- At least 2 complete sentences
-- No excessive special characters (>10%)
-- No excessive word repetition (>15%)
-- No encoding artifacts
-
-### Validation Checkpoint
-- [ ] Corpus is clean plain text (no HTML, markdown, or formatting codes)
-- [ ] Target size is ~600K-900K tokens (larger is not better)
-- [ ] Text represents the author's characteristic style (not introductions, etc.)
+*Note: We increased `min-para-words` to 60 because short paragraphs don't carry enough style signal.*
 
 ---
 
-## Step 2: Generate Training Data (Neutralization)
+## Step 2: Generate Training Data (Persona Injection)
 
-This is the critical step that creates instruction-response pairs for training.
+This step creates the "Many-to-One" training pairs. We generate **3 variations** of input for every 1 styled output.
 
 ```bash
-python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name"
+# Update generate_flat_training.py with the new Persona Logic first!
+python scripts/generate_flat_training.py \
+    --corpus styles/unconducted_chorus.txt \
+    --author "The Unconducted Chorus" \
+    --output data/training/lovecraft
+
 ```
 
-**Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--min-words` | 250 | Minimum words per training chunk |
-| `--max-words` | 650 | Maximum words per training chunk |
-| `--no-overlap` | false | Disable overlap between chunks |
-| `--no-cleanup` | false | Skip LLM cleanup of chunk boundaries |
-| `--llm` | deepseek | LLM provider: `deepseek` (best), `mlx`, or `ollama:model` |
-| `--workers` | 1 | Parallel workers (DeepSeek/Ollama) |
-| `--no-resume` | false | Start fresh, ignore checkpoint |
+### The "Many-to-One" Data Strategy
 
-### LLM Provider Options
+The script will now generate three types of training examples:
 
-**DeepSeek (default, recommended - best instruction following):**
-```bash
-python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --workers 8
-```
+1. **Standard Neutral:** "Rewrite this text..." (Baseline).
+2. **Info-Dropout:** "Explain [Concept]..." (Input has NO adjectives. Model must invent them).
+3. **Abstract:** "Describe [THING]..." (Input replaces nouns with generic placeholders. Model must infer context).
 
-**MLX (local, no API key needed):**
-```bash
-python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --llm mlx
-```
+**Validation Checkpoint:**
 
-**Ollama (local with parallelization):**
-```bash
-python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --llm ollama:qwen3:8b \
-    --workers 4
-```
-
-### What This Script Does
-
-1. **Segmentation**: Splits text into 250-650 word chunks with overlap
-2. **Boundary cleanup**: Uses LLM to fix chunks cut mid-sentence
-3. **Content description**: Generates semantic descriptions of each chunk:
-   > "Describe in detail what is happening in this excerpt. Mention any characters and whether the voice is in first or third person. Maintain the order of sentences while describing."
-
-4. **Creates training pairs**: Each pair contains:
-   - `description`: Neutral content description (what happens)
-   - `original`: Author's actual text (how they wrote it)
-   - `word_count`: Length of original text
-
-### Resuming Interrupted Processing
-
-The script automatically saves checkpoints. If interrupted, just re-run the same command to resume:
-```bash
-# Resumes from checkpoint automatically
-python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name"
-```
-
-To start fresh:
-```bash
-python scripts/neutralize_corpus.py \
-    --input styles/sample_author.txt \
-    --output data/neutralized/author.jsonl \
-    --author "Author Name" \
-    --no-resume
-```
-
-### Validation Checkpoint
-- [ ] Output JSONL has reasonable number of examples (expect ~1500-3000 for 0.9M tokens)
-- [ ] Descriptions are semantic (what happens) not paraphrases (different wording)
-- [ ] Word counts are in 250-650 range
-- [ ] Coverage ratio shown at completion is >90%
+* [ ] Output `train.jsonl` has ~3,500 - 4,000 examples.
+* [ ] Inputs are "neutral" or "broken"; Outputs are "lush" and "styled."
+* [ ] Check `valid.jsonl` to ensure no "I am an AI" refusals exist in the target text.
 
 ---
 
 ## Step 3: Train LoRA Adapter
 
-Create a config.yaml file for training (see `data/training/lovecraft/config.yaml` for a template):
+We use the **Qwen 2.5 14B Base (4-bit)** model. This is the "Goldilocks" model: smarter than 8B, faster than 32B, and fits on consumer hardware with high-rank adapters.
+
+### 3.1 Convert the Base Model
+
+You must convert the base model manually, as it is not always available pre-quantized.
+
+```bash
+mlx_lm.convert --hf-path Qwen/Qwen2.5-14B --q-bits 4 --mlx-path ./models/Qwen2.5-14B-Base-4bit-MLX
+
+```
+
+### 3.2 Configuration (`config.yaml`)
+
+Create `data/training/lovecraft/config.yaml`. This is tuned for **High Fidelity** (Rank 64) on 16GB-32GB RAM machines.
 
 ```yaml
-# data/training/author/config.yaml
-model: "mlx-community/Qwen3-8B-Base-bf16"
+# data/training/lovecraft/config.yaml
+
+# 1. Model & Data
+model: "./models/Qwen2.5-14B-Base-4bit-MLX"
 train: true
-data: "data/training/author"
+data: "data/training/lovecraft"
+fine_tune_type: lora
 
+# 2. Hyperparameters
+# Batch Size 1 allows the model to learn from specific, dense examples.
+# Grad Accumulation 4 stabilizes the updates (Effective Batch = 4).
 batch_size: 1
-grad_accumulation: 2
-iters: 3000              # ~0.87 epochs
-learning_rate: 1e-5
-num_layers: -1
+grad_accumulation: 4
 
+# Duration:
+# 3,770 examples / 4 (Eff Batch) = 942 steps per epoch.
+# Target: ~2.2 Epochs (2,100 steps) to burn in the persona.
+iters: 2100
+
+# Optimization
+learning_rate: 1e-5
+grad_checkpoint: true    # CRITICAL: Enables training on limited RAM
+
+# 3. LoRA Architecture (High Fidelity)
 lora_parameters:
-  rank: 64
-  scale: 2.0
-  dropout: 0.15
+  rank: 64               # High capacity for complex sentence structures
+  scale: 2.0             # Strong style signal
+  dropout: 0.1           # Prevents verbatim memorization
+  
+  # Target ALL Linear Layers (Attn + MLP)
+  # Learns Rhythm (Attn) AND Vocabulary (MLP)
   keys:
     - "self_attn.q_proj"
     - "self_attn.k_proj"
@@ -195,183 +137,81 @@ lora_parameters:
     - "mlp.up_proj"
     - "mlp.down_proj"
 
-adapter_path: "lora_adapters/author"
-save_every: 500
-steps_per_report: 50
+# 4. Checkpointing
+adapter_path: "lora_adapters/lovecraft"
+save_every: 200
+steps_per_report: 10
 steps_per_eval: 200
 seed: 42
+
 ```
 
-Then run training:
-```bash
-mlx_lm.lora --config data/training/author/config.yaml
-```
-
-**Key Parameters:**
-| Parameter | Recommended | Description |
-|-----------|-------------|-------------|
-| `iters` | ~0.87 epochs | Prevents overfitting |
-| `batch_size` | 1 | Learns individual examples better |
-| `learning_rate` | 1e-5 | Lower with high rank for stability |
-| `rank` | 64 | Higher = more capacity for complex syntax |
-| `dropout` | 0.15 | Prevents keyword memorization |
-
-### Training Format
-
-The training data uses this format:
-```
-Write a {word_count} word excerpt about the content below emulating the style and voice of {author}
-
-{content_description}
-
-{original_text}
-```
-
-This teaches the model: given a description and target length, generate text in the author's style.
-
-### Validation Checkpoint
-- [ ] Training completes without errors
-- [ ] Validation loss decreases during training
-- [ ] `adapters.safetensors` file created in output directory
-
----
-
-## Step 4: Test the Adapter
-
-Use the style transfer pipeline to test:
-```bash
-python restyle.py test_input.md -o test_output.md \
-    --adapter lora_adapters/author \
-    --author "Author Name" \
-    --verbose
-```
-
-### Validation Checkpoint
-- [ ] Generated text sounds like the author
-- [ ] Content from the prompt is preserved
-- [ ] No obvious repetition or degeneration
-- [ ] Grammar and coherence are good
-
----
-
-## Complete End-to-End Example
-
-Train a Carl Sagan adapter:
+### 3.3 Run Training
 
 ```bash
-# Step 1: Curate corpus
-python scripts/curate_corpus.py \
-    --input data/corpus/sagan_full.txt \
-    --output data/corpus/sagan.txt \
-    --target-tokens 900000
+mlx_lm.lora --config data/training/lovecraft/config.yaml
 
-# Step 2: Index in ChromaDB
-python scripts/load_corpus.py \
-    --input data/corpus/sagan.txt \
-    --author "Carl Sagan"
+```
 
-# Step 3: Generate training data
-python scripts/generate_flat_training.py \
-    --corpus data/corpus/sagan.txt \
-    --author "Carl Sagan" \
-    --output data/training/sagan
+**Memory Management:**
 
-# Step 4: Train LoRA (create config.yaml first, see template above)
-mlx_lm.lora --config data/training/sagan/config.yaml
+* If you get an **OOM (Out of Memory)** error:
+1. First, ensure `grad_checkpoint: true` is set.
+2. Second, reduce `rank` to **32**.
+3. Third, reduce `rank` to **16** (but keep `scale: 2.0`).
 
-# Step 5: Test with style transfer
-python restyle.py input.md -o output.md \
-    --adapter lora_adapters/sagan \
-    --author "Carl Sagan"
+
+
+---
+
+## Step 4: Inference (The Persona Prompt)
+
+A "Persona Adapter" requires a "Persona Prompt" to activate. Do not just say "Rewrite this."
+
+**Usage Pattern:**
+
+```python
+prompt = """
+[SYSTEM ROLE]:
+You are the Systems Theologian. You view the world as a machine governed by indifferent geometry.
+You do not see "bad luck"; you see "entropy."
+You are analyzing the following input.
+
+[INSTRUCTION]:
+Explain the input concept.
+- Use mechanical metaphors (gears, rot, friction).
+- Do not be cheerful. Be precise and grave.
+- Conclude by linking the concept to the inevitable heat death of the universe.
+
+[INPUT]:
+{user_input}
+"""
+
+# Run with MLX
+subprocess.run(f"mlx_lm.generate --model ./models/Qwen2.5-14B-Base-4bit-MLX --adapter lora_adapters/lovecraft --prompt '{prompt}'")
+
 ```
 
 ---
 
-## Hyperparameter Reference
+## Troubleshooting Reference
 
-### Training Hyperparameters (from Research)
+| Issue | Diagnosis | Fix |
+| --- | --- | --- |
+| **"Command buffer execution failed: Insufficient Memory"** | You ran out of VRAM. | 1. Enable `grad_checkpoint: true` <br>
 
-| Setting | Value | Reasoning |
-|---------|-------|-----------|
-| Batch Size | 1 | Prevents averaging gradients across diverse examples |
-| Grad Accumulation | 2 | Effective batch size of 2 |
-| Learning Rate | 1e-5 | Lower with high rank for stability |
-| Iterations | ~0.87 epochs | Prevents overfitting |
-| LoRA Rank | 64 | Higher capacity for complex syntax |
-| LoRA Scale | 2.0 | Strong style signal |
-| Dropout | 0.15 | Forces structural learning over memorization |
+<br> 2. Reduce Rank to 16. <br>
 
-### Chunk Size Parameters
-
-| Setting | Value | Reasoning |
-|---------|-------|-----------|
-| Min chunk words | 250 | Captures paragraph-level style |
-| Max chunk words | 650 | Fits in context window with overhead |
-| Overlap | Yes | Style lives in transitions between paragraphs |
-
-### Inference Parameters
-
-| Setting | Value | Reasoning |
-|---------|-------|-----------|
-| Temperature | 1.0 | Allows creative vocabulary selection |
-| Top-p | 0.9 | Standard nucleus sampling |
-| Repetition penalty | 1.1 | Prevents degeneration |
+<br> 3. Use `max_seq_length: 1024`. |
+| **Model outputs gibberish / loops** | "Fried" weights (Overfitting). | Reduce `iters` (you trained too long). Load an earlier checkpoint (e.g., Step 1500). Lower `scale` to 0.7 during inference. |
+| **Model refuses to generate ("I cannot...")** | Safety Refusal. | You are using an Instruct model, or your base model wasn't trained enough. **Switch to Base model.** |
+| **Style is too weak** | Underfitting. | Increase `rank` to 128. Increase `scale` to 4.0. Ensure `dropout` is low (0.05). |
+| **Model just copies the input** | Leakage. | Your "Neutral" training data was too similar to the "Styled" output. Increase the "Info Dropout" aggression. |
 
 ---
 
-## Troubleshooting
+## Final Quality Check
 
-### "MLX not available"
-- MLX only works on Apple Silicon Macs
-- Install with: `pip install mlx mlx-lm`
-
-### Training loss not decreasing
-- Check corpus quality (remove non-representative text)
-- Ensure descriptions are semantic, not paraphrases
-- Try increasing learning rate slightly (1.5e-4)
-
-### Generated text doesn't match style
-- Need more diverse training examples
-- Corpus may be too short (target 0.9M tokens)
-- Try more epochs (up to 3) for smaller corpuses
-
-### Generated text repeats or degenerates
-- Reduce temperature to 0.7
-- Increase repetition penalty to 1.2
-- May be overfitting - reduce epochs or use more data
-
-### Output too long/short
-- Model learns length from word_count in training
-- Ensure training data has accurate word counts
-- At inference, specify target word count in prompt
-
-### Memory issues during training
-- Reduce --max-seq-length to 1024
-- Use a smaller base model (4-bit quantized)
-- Close other applications
-
----
-
-## File Structure After Training
-
-```
-lora_adapters/
-└── author/
-    ├── adapters.safetensors    # LoRA weights
-    ├── metadata.json           # Training metadata
-    └── data/
-        ├── train.jsonl         # Training examples
-        └── valid.jsonl         # Validation examples
-
-data/neutralized/
-└── author.jsonl                # Content descriptions
-```
-
----
-
-## Resources
-
-- Paper: [Style Transfer with Instruction-Tuned LLMs](https://arxiv.org/pdf/2510.13939)
-- Example dataset: [Gertrude Stein Style SFT](https://huggingface.co/datasets/MuratcanKoylan/gertrude-stein-style-sft)
-- Training details: [Project Blog](https://muratcankoylan.com/projects/gertrude-stein-style-training)
-- Pipeline code: [GitHub](https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering/tree/main/examples/book-sft-pipeline)
+* [ ] **Rhythm Test:** Does the output sound "breathless" or "complex"? (Check sentence length variance).
+* [ ] **Vocab Test:** does it use specific author words (e.g., "geometry," "indifferent," "mechanism")?
+* [ ] **Hallucination Test:** If you give it a bare noun ("The Stock Market"), does it invent a metaphor ("A shifting ocean of greed")? If yes, it works.
