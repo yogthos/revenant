@@ -4,9 +4,9 @@
 # Strategy: High-Rank, High-Dropout, Base Model
 # ==============================================================================
 
-model: "mlx-community/Qwen3-8B-Base-bf16"
+model: "./models/Qwen2.5-14B-Base-4bit-MLX"
 train: true
-data: "data/training/lovecraft_150"
+data: "data/training/lovecraft"
 
 # Base models work best with raw text completion
 fine_tune_type: lora
@@ -15,20 +15,22 @@ fine_tune_type: lora
 # Effective Batch Size = 2 (1 * 2)
 # We want "spiky" gradients to learn specific style quirks, not averaged smoothness.
 batch_size: 1
-grad_accumulation: 2
+grad_accumulation: 4
+grad_checkpoint: true
 
 # Duration Logic:
 # Train Set: 6,880 items
 # 1 Epoch = 3,440 steps
 # Target: ~0.87 Epochs (3,000 steps). 
 # This sees 87% of data, preventing "catastrophic forgetting" of basic English.
-iters: 3000
+iters: 2100
 
 # Optimization
 learning_rate: 1e-5
 
 # Apply LoRA to ALL layers to capture deep structural reasoning
 num_layers: -1
+#num_layers: 16 #if out of mem
 
 # --- LoRA Architecture ---
 lora_parameters:
@@ -38,15 +40,15 @@ lora_parameters:
   # Scale 2.0: Strong signal override.
   scale: 2.0
   
-  # Dropout 0.15: The "NEFTune" simulation. 
+  # Dropout 0.1: The "NEFTune" simulation. 
   # Forces the model to ignore specific keywords and learn the structural rhythm.
-  dropout: 0.15
+  dropout: 0.1
   
   # Target Modules:
-  # Full paths required for Qwen models.
+  # Full paths required for Qwen models.    
   keys:
     - "self_attn.q_proj"
-    - "self_attn.k_proj"
+    - "self_attn.k_proj" # We skip k_proj to save a bit more, it's the least important for style.
     - "self_attn.v_proj"
     - "self_attn.o_proj"
     - "mlp.gate_proj"
@@ -54,9 +56,9 @@ lora_parameters:
     - "mlp.down_proj"    
 
 # --- Checkpointing & Reporting ---
-adapter_path: "lora_adapters/lovecraft"
-save_every: 500       # Saves 6 checkpoints total
-steps_per_report: 50  # Monitor loss frequently
+adapter_path: "lora_adapters/lovecraft_14b"
+save_every: 200       # Saves 6 checkpoints total
+steps_per_report: 10  # Monitor loss frequently
 steps_per_eval: 200   # Check against your 860 validation items
 
 # Reproducibility

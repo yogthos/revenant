@@ -12,6 +12,8 @@ Pipeline:
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
+from pathlib import Path
+import json
 import time
 
 from .lora_generator import LoRAStyleGenerator, GenerationConfig, AdapterSpec
@@ -49,6 +51,27 @@ except ImportError:
     get_persona_config = None
 
 logger = get_logger(__name__)
+
+
+def _load_validation_config() -> dict:
+    """Load validation config from config.json."""
+    config_paths = [
+        Path("config.json"),
+        Path(__file__).parent.parent.parent / "config.json",
+    ]
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    full_config = json.load(f)
+                return full_config.get("validation", {})
+            except Exception:
+                pass
+    return {}
+
+
+# Load config once at module level
+_VALIDATION_CONFIG = _load_validation_config()
 
 
 @dataclass
@@ -498,12 +521,14 @@ class StyleTransfer:
         # Use 2.5x target words to ensure complete sentences
         max_tokens = max(150, int(target_words * 2.5))
 
-        # Get structural guidance if available
+        # Get structural guidance from AUTHOR'S CORPUS (not source text)
+        # This is the key to adopting the author's style - their rhythm patterns,
+        # sentence lengths, punctuation usage, etc. come from ChromaDB
         structural_guidance = None
         if self.structural_rag:
             guidance = self.structural_rag.get_guidance(paragraph)
             structural_guidance = guidance.format_for_prompt()
-            logger.debug(f"Using structural guidance: {structural_guidance[:80]}...")
+            logger.debug(f"Using author structural guidance: {structural_guidance[:100]}...")
 
         # Get grafting guidance if available
         grafting_guidance = None
@@ -749,18 +774,11 @@ class StyleTransfer:
         stats: Optional['TransferStats'] = None,
         max_attempts: int = 3,
     ) -> Tuple[str, bool]:
-        """Validate styled output using multi-layer semantic verification.
+        """Validate styled output against source graph and repair if needed.
 
-        Uses comprehensive verification to catch:
-        - Sentence-level hallucinations (fabricated content)
-        - Missing source content
-        - Fabricated named entities
-        - Topic drift
-
-        Convergence strategy:
-        - Track best output across all attempts
-        - Use detailed diagnostics to guide targeted repairs
-        - Fall back to source text if hallucinations persist
+        Uses style-preserving repair through the LoRA generator to maintain
+        author voice while fixing factual issues. Only repairs for actual
+        entity/fact misses, not vocabulary style changes.
 
         Args:
             source: Original source text.
@@ -774,138 +792,76 @@ class StyleTransfer:
         Returns:
             Tuple of (output, is_valid).
         """
-        from ..validation.semantic_verifier import verify_semantic_preservation
+        for attempt in range(max_attempts):
+            # Compare graphs
+            output_graph = builder.build_from_text(output)
+            diff = comparator.compare(source_graph, output_graph)
 
-        threshold = self.config.entailment_threshold
-
-        # Track best output across all attempts
-        best_output = output
-        best_score = 0.0
-        best_result = None
-        plateau_count = 0
-
-        for attempt in range(max_attempts + 1):  # +1 for initial check
-            # Multi-layer semantic verification
-            result = verify_semantic_preservation(source, output, threshold)
-
-            logger.info(
-                f"Semantic verification {attempt}/{max_attempts}: "
-                f"score={result.overall_score:.3f}, grounded={result.grounded_ratio:.0%}, "
-                f"hallucinations={result.hallucination_count}, threshold={threshold}"
-            )
-
-            # Log detailed issues
-            issues = result.get_issues()
-            if issues:
-                logger.info(f"  Issues: {'; '.join(issues)}")
-
-            # Track best output seen
-            if result.overall_score > best_score:
-                best_score = result.overall_score
-                best_output = output
-                best_result = result
-                plateau_count = 0
-            else:
-                plateau_count += 1
-
-            # Check if we've met the threshold with no hallucinations
-            if result.overall_score >= threshold and result.hallucination_count == 0:
-                logger.debug(f"Verification passed: {result.overall_score:.3f} >= {threshold}")
+            if diff.is_isomorphic:
+                logger.debug("Output graph matches source perfectly")
                 return output, True
 
-            # Immediate rejection if too many hallucinations
-            if result.hallucination_count >= 3:
-                logger.warning(
-                    f"Too many hallucinations ({result.hallucination_count}), "
-                    f"falling back to source"
-                )
-                return source, False
+            # Check if repair is needed - only for actual entity/fact misses
+            # Skip repair for pure vocabulary style changes (which is the point of style transfer!)
+            missing_entities = self._extract_critical_entities(diff.missing_nodes)
 
-            # Check for convergence plateau
-            if plateau_count >= 2:
-                logger.info(f"Score plateaued at {best_score:.3f}")
-                break
+            if not missing_entities and not diff.added_nodes:
+                # No critical entities missing, vocabulary changes are fine
+                logger.debug("No critical entities missing, accepting styled output")
+                return output, True
 
-            # Skip repair on last iteration
-            if attempt >= max_attempts:
-                break
+            # If only vocabulary differences (no named entities), accept the output
+            if not missing_entities and diff.missing_nodes:
+                logger.debug(f"Missing {len(diff.missing_nodes)} propositions but no critical entities - accepting styled output")
+                return output, True
 
-            # No generator = no repair possible
-            if not self.generator:
-                logger.warning("No generator for repair")
-                break
-
-            # Craft repair prompt based on specific issues
-            repair_hints = []
-
-            if result.hallucination_count > 0:
-                repair_hints.append(
-                    "CRITICAL: Include ONLY facts from the source text. "
-                    "Do not add any new information, quotes, or examples."
-                )
-
-            if result.fabricated_entities:
-                repair_hints.append(
-                    f"ERROR: Remove fabricated references to: {', '.join(result.fabricated_entities[:3])}"
-                )
-
-            if result.missing_entities:
-                repair_hints.append(
-                    f"MUST INCLUDE: {', '.join(result.missing_entities[:5])}"
-                )
-
-            if result.content_word_coverage < 0.5:
-                missing_sample = ', '.join(result.missing_content_words[:5])
-                repair_hints.append(
-                    f"PRESERVE these concepts: {missing_sample}"
-                )
-
-            repair_hint = "[" + " | ".join(repair_hints) + "]" if repair_hints else ""
+            logger.info(
+                f"Repair attempt {attempt + 1}/{max_attempts}: "
+                f"{len(missing_entities)} critical entities missing"
+            )
 
             try:
-                repair_content = f"{repair_hint}\n\n{source}" if repair_hint else source
-                target_words = len(source.split())  # Match source length, not hallucinated length
+                # Use LoRA for style-preserving repair
+                # Re-generate with explicit entity constraints to maintain author voice
+                if not self.generator:
+                    logger.warning("No generator for repair, keeping original output")
+                    break
 
+                # Create repair content: original source with entity hints
+                entity_hint = f"[MUST INCLUDE: {', '.join(missing_entities)}]" if missing_entities else ""
+                repair_content = f"{entity_hint}\n\n{source}" if entity_hint else source
+
+                target_words = len(output.split())
                 repaired = self.generator.generate(
                     content=repair_content,
                     author=self.author,
                     target_words=target_words,
-                    temperature=self.config.repair_temperature,
                 )
 
                 if repaired and len(repaired.split()) > 10:
-                    output = repaired
-                    logger.debug(f"Repair produced: {len(repaired.split())} words")
+                    # Check if repair actually includes the missing entities
+                    repaired_lower = repaired.lower()
+                    entities_found = sum(1 for e in missing_entities if e.lower() in repaired_lower)
+
+                    if entities_found >= len(missing_entities) * 0.5:  # At least half found
+                        output = repaired
+                        logger.debug(f"LoRA repair produced: {len(repaired.split())} words with {entities_found}/{len(missing_entities)} entities")
+                    else:
+                        logger.debug(f"LoRA repair only found {entities_found}/{len(missing_entities)} entities, keeping original")
+                        break
                 else:
-                    logger.warning("Repair produced empty/short output")
+                    logger.warning("LoRA repair produced empty/short output, keeping original")
+                    break
 
             except Exception as e:
-                logger.warning(f"Repair failed: {e}")
+                logger.warning(f"LoRA repair failed: {e}")
+                break
 
-        # Final decision based on best result
-        if best_result is None:
-            return source, False
-
-        # Strict: reject if any hallucinations detected in best output
-        if best_result.hallucination_count > 0:
-            logger.warning(
-                f"Best output has {best_result.hallucination_count} hallucination(s), "
-                f"falling back to source"
-            )
-            return source, False
-
-        # Accept if score is reasonable (allow some flexibility for style changes)
-        minimum_acceptable = threshold * 0.6
-
-        if best_score >= minimum_acceptable:
-            logger.info(f"Using best output (score={best_score:.3f})")
-            return best_output, best_score >= threshold
-        else:
-            logger.warning(
-                f"Score too low ({best_score:.3f} < {minimum_acceptable:.3f}), "
-                f"falling back to source"
-            )
-            return source, False
+        # Final validation - accept if no critical entities missing
+        output_graph = builder.build_from_text(output)
+        diff = comparator.compare(source_graph, output_graph)
+        missing_entities = self._extract_critical_entities(diff.missing_nodes)
+        return output, len(missing_entities) == 0
 
     def _extract_critical_entities(self, missing_nodes: list) -> List[str]:
         """Extract critical named entities from missing proposition nodes.

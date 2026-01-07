@@ -47,6 +47,13 @@ cp config.json.sample config.json
 # Edit config.json to add your DEEPSEEK_API_KEY
 ```
 
+## Create MLX 4bit model
+
+```bash
+mkidr models
+mlx_lm.convert --hf-path Qwen/Qwen2.5-32B --q-bits 4 --mlx-path models/Qwen2.5-32B-Base-4bit-MLX
+```
+
 ---
 
 ## Building a LoRA Adapter from Scratch

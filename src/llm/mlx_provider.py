@@ -5,6 +5,7 @@ This allows the entire pipeline to be self-contained without external services.
 """
 
 import json
+import time
 from typing import Optional, Callable
 from pathlib import Path
 
@@ -940,58 +941,139 @@ class DeepSeekRTTNeutralizer:
         texts: list,
         monotone: bool = False,
         on_progress: Optional[Callable[[int, int], None]] = None,
+        max_retries: int = 2,
     ) -> list:
-        """Neutralize multiple texts in parallel batched API calls.
+        """Neutralize multiple texts using a queue-based parallel pipeline.
 
-        Uses concurrent_batches threads to process multiple batches in parallel,
-        significantly improving throughput for large datasets.
+        Uses a fixed-size work queue that workers continuously pull from.
+        Failed items go back into the queue for retry (up to max_retries).
+        This ensures consistent throughput without waiting for stragglers.
 
         Args:
             texts: List of texts to neutralize.
             monotone: If True, apply monotone flattening.
             on_progress: Optional callback (processed, total).
+            max_retries: Max retry attempts per item (default 2).
 
         Returns:
-            List of neutralized texts (None for failures).
+            List of neutralized texts (None for failures after all retries).
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
         import threading
+        from queue import Queue, Empty
 
         results = [None] * len(texts)
-        processed_count = [0]  # Use list for mutable counter in closure
-        progress_lock = threading.Lock()
+        results_lock = threading.Lock()
 
-        # Prepare all batches
-        batches = []
-        for batch_start in range(0, len(texts), self.batch_size):
-            batch_end = min(batch_start + self.batch_size, len(texts))
-            batch = texts[batch_start:batch_end]
-            batches.append((batch_start, batch))
+        # Track completion and retries
+        completed = [0]  # Successfully processed
+        final_failures = [0]  # Failed after all retries
+        retry_counts = {}  # idx -> retry count
+        completed_lock = threading.Lock()
 
-        logger.info(f"Processing {len(texts)} texts in {len(batches)} batches ({self.concurrent_batches} concurrent)")
+        # Work queue: (original_idx, text, attempt)
+        work_queue = Queue()
+        for idx, text in enumerate(texts):
+            work_queue.put((idx, text, 0))
+            retry_counts[idx] = 0
 
-        def process_with_progress(batch_info):
-            batch_results = self._process_single_batch(batch_info, monotone=monotone)
-            # Update progress
-            with progress_lock:
-                processed_count[0] += len(batch_info[1])
-                if on_progress:
-                    on_progress(processed_count[0], len(texts))
-            return batch_results
+        total_items = len(texts)
+        active_workers = [self.concurrent_batches]  # Track active workers
+        workers_lock = threading.Lock()
 
-        # Process batches in parallel
-        with ThreadPoolExecutor(max_workers=self.concurrent_batches) as executor:
-            futures = [executor.submit(process_with_progress, batch) for batch in batches]
+        logger.info(f"Processing {len(texts)} texts with queue-based pipeline "
+                   f"(batch_size={self.batch_size}, workers={self.concurrent_batches}, max_retries={max_retries})")
 
-            for future in as_completed(futures):
+        def worker():
+            """Worker that pulls batches from queue and processes them."""
+            stagger_delay = 0.1
+
+            while True:
+                # Collect a batch from the queue
+                batch_items = []
                 try:
-                    batch_results = future.result()
-                    # Merge results into main list
-                    for idx, text in batch_results:
-                        results[idx] = text
-                except Exception as e:
-                    logger.warning(f"Batch processing failed: {e}")
+                    # Try to fill a batch
+                    while len(batch_items) < self.batch_size:
+                        try:
+                            item = work_queue.get(timeout=0.5)
+                            batch_items.append(item)
+                        except Empty:
+                            break
 
+                    if not batch_items:
+                        # Check if we should exit
+                        with completed_lock:
+                            done = completed[0] + final_failures[0]
+                            if done >= total_items:
+                                break
+                            # Queue might be temporarily empty, keep waiting
+                            if work_queue.empty():
+                                # Double-check completion
+                                time.sleep(0.1)
+                                if work_queue.empty() and completed[0] + final_failures[0] >= total_items:
+                                    break
+                        continue
+
+                    # Stagger to avoid rate limit spikes
+                    time.sleep(stagger_delay)
+
+                    # Process the batch
+                    batch_texts = [text for _, text, _ in batch_items]
+                    batch_indices = [idx for idx, _, _ in batch_items]
+
+                    # Build batch for _process_single_batch (it expects (start_idx, texts))
+                    # We'll process and map results back manually
+                    batch_info = (0, batch_texts)
+                    batch_results = self._process_single_batch(batch_info, monotone=monotone)
+
+                    # Map results back: batch_results is list of (local_idx, result)
+                    result_map = {local_idx: result for local_idx, result in batch_results}
+
+                    # Process each item in batch
+                    for i, (orig_idx, text, attempt) in enumerate(batch_items):
+                        result = result_map.get(i)
+
+                        if result:
+                            # Success
+                            with results_lock:
+                                results[orig_idx] = result
+                            with completed_lock:
+                                completed[0] += 1
+                                if on_progress:
+                                    on_progress(completed[0], total_items)
+                        else:
+                            # Failure - retry or mark as final failure
+                            with completed_lock:
+                                retry_counts[orig_idx] += 1
+                                if retry_counts[orig_idx] < max_retries:
+                                    # Put back in queue for retry
+                                    work_queue.put((orig_idx, text, retry_counts[orig_idx]))
+                                else:
+                                    # Max retries exhausted
+                                    final_failures[0] += 1
+                                    logger.debug(f"[{orig_idx}] Failed after {max_retries} attempts")
+
+                except Exception as e:
+                    logger.warning(f"Worker error: {e}")
+                    # Put items back in queue
+                    for item in batch_items:
+                        work_queue.put(item)
+
+            with workers_lock:
+                active_workers[0] -= 1
+
+        # Start workers
+        with ThreadPoolExecutor(max_workers=self.concurrent_batches) as executor:
+            futures = [executor.submit(worker) for _ in range(self.concurrent_batches)]
+
+            # Wait for all workers to complete
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.warning(f"Worker thread error: {e}")
+
+        logger.info(f"Queue complete: {completed[0]} succeeded, {final_failures[0]} failed after retries")
         return results
 
 
