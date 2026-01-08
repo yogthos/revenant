@@ -48,48 +48,35 @@ class StructuralGuidance:
     exemplar_sentences: Optional[List[str]] = None  # Actual sentences from author's corpus
 
     def format_for_prompt(self) -> str:
-        """Format as prompt injection.
+        """Format as concise prompt guidance matching training format.
 
-        CRITICAL: Exemplar sentences come FIRST. The model needs to SEE how the
-        author writes before receiving abstract rules. Show, don't tell.
+        Training used simple, direct guidance without verbose headers.
+        Keep this minimal - just the key structural hints.
         """
         lines = []
 
-        # EXEMPLAR SENTENCES FIRST - Most important for style embodiment
+        # Exemplar sentences - show 2-3 examples, no verbose headers
         if self.exemplar_sentences:
-            lines.append("=== YOUR VOICE: SENTENCES FROM YOUR OWN WRITING ===")
-            lines.append("Study these sentences. They ARE your voice. Write like this:")
-            lines.append("")
-            for i, sent in enumerate(self.exemplar_sentences[:5], 1):
-                lines.append(f'  {i}. "{sent}"')
-            lines.append("")
-            lines.append("EMULATE the rhythm, vocabulary, and emotional weight of these sentences.")
-            lines.append("Do NOT copy them—let them guide your voice.")
-            lines.append("")
+            lines.append("Example sentences from this voice:")
+            for sent in self.exemplar_sentences[:3]:
+                lines.append(f'- "{sent}"')
 
-        # Then structural patterns
+        # Concise structural patterns (matching training simplicity)
         if self.rhythm_pattern:
-            lines.append(f"RHYTHM PATTERN: {self.rhythm_pattern}")
+            lines.append(f"Rhythm: {self.rhythm_pattern}")
 
         if self.length_guidance:
-            lines.append(f"LENGTH: {self.length_guidance}")
+            lines.append(f"Length: {self.length_guidance}")
 
         if self.fragment_hint:
-            lines.append(f"FRAGMENTS: {self.fragment_hint}")
+            lines.append(f"Fragments: {self.fragment_hint}")
 
         if self.punctuation_hints:
-            hints = "; ".join(self.punctuation_hints)
-            lines.append(f"PUNCTUATION: {hints}")
+            hints = "; ".join(self.punctuation_hints[:3])  # Limit to 3
+            lines.append(f"Punctuation: {hints}")
 
         if self.opening_hint:
-            lines.append(f"OPENINGS: {self.opening_hint}")
-
-        # Add enhanced guidance if available
-        if self.enhanced_profile:
-            enhanced_guidance = self.enhanced_profile.format_for_prompt()
-            if enhanced_guidance:
-                lines.append("")  # Blank line separator
-                lines.append(enhanced_guidance)
+            lines.append(f"Openings: {self.opening_hint}")
 
         return "\n".join(lines)
 

@@ -93,6 +93,7 @@ flowchart LR
     A[1. Curate Corpus] --> B[2. Generate Training Data]
     B --> C[3. Index ChromaDB]
     C --> D[4. Train LoRA]
+    D --> E[5. Configure Persona]
 ```
 
 **Quick Reference:**
@@ -109,6 +110,9 @@ python scripts/load_corpus.py --input corpus.txt --author "Author"
 
 # 4. Train LoRA (create config.yaml first - see Step 4)
 mlx_lm.lora --config data/training/author/config.yaml
+
+# 5. Configure persona (create prompts/author_persona.txt, update config.json)
+# See Step 5 below for file format
 ```
 
 ---
@@ -412,7 +416,41 @@ After training, create `lora_adapters/lovecraft/metadata.json`:
 
 This file tells the inference pipeline which base model to load with the adapter. Without it, the system defaults to the wrong model and fails.
 
-### Step 5: Verify and Test
+### Step 5: Configure Author Persona
+
+Create a persona file with the exact persona frames used during training. These frames trigger the LoRA style at inference time.
+
+**Create `prompts/{author}_persona.txt`:**
+
+```
+[PERSONA_FRAMES_NARRATIVE]
+{Frame for narrative content - must match training exactly}
+---
+{Another narrative frame}
+---
+{Third narrative frame}
+
+[PERSONA_FRAMES_CONCEPTUAL]
+{Frame for conceptual/explanatory content - must match training exactly}
+---
+{Another conceptual frame}
+---
+{Third conceptual frame}
+```
+
+**Critical:** The persona frames must **exactly match** the frames used in `generate_flat_training.py`. The LoRA was trained on these specific phrases - using different frames at inference will not trigger the learned style. Copy the frames directly from the training script's `PERSONA_FRAMES` dictionary.
+
+**Update `config.json`:**
+
+```json
+"lora": {
+  "worldview": "lovecraft_persona.txt"
+}
+```
+
+See `prompts/lovecraft_worldview.txt` for a complete example.
+
+### Step 6: Verify and Test
 
 Verify the adapter was created and test it:
 
@@ -736,8 +774,10 @@ text-style-transfer/
 │   ├── curate_corpus.py         # Filter corpus to optimal size
 │   └── update_skeletons.py      # Add skeletons to existing index
 │
-├── prompts/                      # Prompt templates
-│   └── style_transfer.txt       # Main generation prompt
+├── prompts/                      # Prompt templates & author personas
+│   ├── style_transfer.txt       # Main generation prompt
+│   ├── default_persona.txt      # Default persona (fallback)
+│   └── lovecraft_worldview.txt  # Example: Lovecraft persona & frames
 │
 ├── data/
 │   ├── corpus/                   # Author corpus files

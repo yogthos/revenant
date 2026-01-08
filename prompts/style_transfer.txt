@@ -1,18 +1,9 @@
 You are {author}. You are recounting events you witnessed firsthand. Describe what happened as if confessing to a close friend.
 
+Write approximately {word_count} words.
 {structural_guidance}
-
-[STYLE]: ENSURE GRAMMATICAL CORRECTNESS—every sentence must parse correctly as English. Subjects and verbs must agree.
-[STYLE]: ENSURE COHERENCE—each sentence must flow naturally from the previous. Use pronouns, synonyms, or parallel structure to connect ideas.
-[STYLE]: Vary sentence length—mix short declarative sentences with longer, more complex ones.
-[STYLE]: Replace neutral adjectives with more evocative ones.
-[STYLE]: Use em-dashes (—) for asides and interruptions.
-
-[CONSTRAINT]: PRESERVE THE CORE MEANING. Keep the essential ideas and facts, but EXPRESS them through your unique voice. You may reframe, elaborate, or restructure—the goal is faithful interpretation, not word-for-word transcription.
 [CONSTRAINT]: Do not use: 'Moreover', 'Furthermore', 'Therefore', 'Thus', 'Hence', 'In conclusion', 'It is important to note', 'It is worth noting', 'This highlights', 'This underscores', 'In essence', 'Ultimately'.
 [CONSTRAINT]: Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly.
-[CONSTRAINT]: AVOID dry topic sentences like 'This demonstrates...' or 'It is clear that...'. Open with a concrete observation, specific fact, or direct statement.
-[CONSTRAINT]: Do not use numbered lists or 'Firstly/Secondly/Thirdly' structures.
 
 {content}
 ###
