@@ -92,16 +92,38 @@ except ImportError:
 
 @dataclass
 class GenerationConfig:
-    """Configuration for LoRA generation."""
+    """Configuration for LoRA generation.
+
+    Values are loaded from config.json "lora" section. Use from_config() to create.
+    """
 
     max_tokens: int = 512
-    temperature: float = 0.7  # Higher temp allows creative/rare word choices
-    top_p: float = 0.95  # Nucleus sampling - higher considers more options
-    min_p: float = 0.05  # Filter nonsense at high temp (keeps tokens with prob >= 5% of top)
-    repetition_penalty: float = 1.4  # Strong penalty to prevent repetition loops
-    min_tokens: int = 50  # Prevent too-short outputs
-    lora_scale: float = 2.0  # LoRA influence: match training scale (alpha/rank = 128/64 = 2.0)
+    temperature: float = 0.6
+    top_p: float = 0.92
+    min_p: float = 0.05
+    repetition_penalty: float = 1.15
+    min_tokens: int = 50
+    lora_scale: float = 2.5
     skip_cleaning: bool = False  # If True, return raw output without _clean_response
+
+    @classmethod
+    def from_config(cls) -> "GenerationConfig":
+        """Create GenerationConfig from config.json settings."""
+        try:
+            from ..config import load_config
+            config = load_config()
+            return cls(
+                max_tokens=config.lora.max_tokens,
+                temperature=config.lora.temperature,
+                top_p=config.lora.top_p,
+                min_p=config.lora.min_p,
+                repetition_penalty=config.lora.repetition_penalty,
+                min_tokens=config.lora.min_tokens,
+                lora_scale=config.lora.lora_scale,
+            )
+        except Exception as e:
+            logger.warning(f"Could not load config, using defaults: {e}")
+            return cls()
 
 
 @dataclass
@@ -203,7 +225,7 @@ class LoRAStyleGenerator:
                 "Note: MLX only works on Apple Silicon Macs."
             )
 
-        self.config = config or GenerationConfig()
+        self.config = config or GenerationConfig.from_config()
         self.base_model_name = base_model
         self.metadata: Optional[AdapterMetadata] = None
         self._temp_dirs: List[str] = []  # For checkpoint symlink directories
@@ -655,6 +677,12 @@ class LoRAStyleGenerator:
 
         response = response.strip()
 
+        # 6b. Fix broken atmospheric openings
+        # Pattern: "Prepositional phrase of X verb..." where X+verb should be the subject
+        # e.g. "Beneath the weight of technology advances" -> "Technology advances"
+        # These occur when the model prepends atmospheric phrases that don't connect grammatically
+        response = self._fix_broken_atmospheric_phrases(response)
+
         # 7. Remove sentences containing fiction-specific markers (hallucinations)
         # These are clearly memorized content, not style transfer
         fiction_markers = [
@@ -715,6 +743,73 @@ class LoRAStyleGenerator:
         # No complete sentences - try to add period if it looks like a complete thought
         if len(text.split()) > 10 and text[-1] not in ',:;':
             return text + '.'
+
+        return text
+
+    def _fix_broken_atmospheric_phrases(self, text: str) -> str:
+        """Fix broken prepositional phrase openings using spaCy parsing.
+
+        Detects patterns where a prepositional phrase ending in "of" is followed
+        by what should be a subject+verb (not the object of "of").
+
+        Example: "Beneath the weight of technology advances"
+        - "technology" looks like object of "of" but "advances" is a verb
+        - This indicates "technology advances" is actually a subject+verb pair
+        - Fix: Remove the prepositional phrase -> "Technology advances"
+
+        Args:
+            text: Text to fix.
+
+        Returns:
+            Text with broken prepositional phrases removed.
+        """
+        try:
+            from ..utils.nlp import get_nlp
+            nlp = get_nlp()
+        except Exception:
+            # If spaCy not available, return unchanged
+            return text
+
+        # Process the text
+        doc = nlp(text)
+
+        # Check if text starts with a prepositional phrase ending in "of"
+        # followed by a noun+verb pattern (indicating broken grammar)
+        first_sent = list(doc.sents)[0] if doc.sents else None
+        if not first_sent:
+            return text
+
+        tokens = list(first_sent)
+        if len(tokens) < 4:
+            return text
+
+        # Find "of" in the first ~10 tokens
+        of_idx = None
+        for i, tok in enumerate(tokens[:10]):
+            if tok.text.lower() == 'of':
+                of_idx = i
+                break
+
+        if of_idx is None or of_idx < 2:
+            return text
+
+        # Check if what follows "of" is a noun followed by a verb
+        # (which would indicate a broken prepositional phrase)
+        if of_idx + 2 < len(tokens):
+            next_tok = tokens[of_idx + 1]
+            after_next = tokens[of_idx + 2]
+
+            # Pattern: "of" + NOUN + VERB (the noun should be subject, not object of "of")
+            if (next_tok.pos_ in ('NOUN', 'PROPN') and
+                after_next.pos_ == 'VERB' and
+                after_next.dep_ in ('ROOT', 'ccomp', 'advcl')):  # Main verb
+
+                # The phrase before "of" + noun is broken - remove it
+                # Keep from the noun onwards
+                start_char = next_tok.idx
+                fixed_text = text[start_char].upper() + text[start_char + 1:]
+                logger.debug(f"Fixed broken prepositional opening at '{next_tok.text}'")
+                return fixed_text
 
         return text
 

@@ -28,6 +28,32 @@ if TYPE_CHECKING:
 # These are the SAME frames used during training. Using them at inference
 # activates the specific LoRA weights associated with each persona.
 
+# =============================================================================
+# Author Worldview - Loaded from prompts/{filename} specified in config.json
+# =============================================================================
+# The worldview isn't just a writing style - it's a LENS through which the author
+# perceives reality. The model must THINK like the author, not just write like them.
+#
+# Configure in config.json under lora.worldview (filename in prompts/ folder)
+
+from pathlib import Path
+
+def _load_worldview() -> str:
+    """Load author worldview from file specified in config.json lora.worldview."""
+    try:
+        from ..config import load_config
+        config = load_config()
+        if config.lora.worldview:
+            prompts_dir = Path(__file__).parent.parent.parent / "prompts"
+            worldview_file = prompts_dir / config.lora.worldview
+            if worldview_file.exists():
+                return worldview_file.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    # Fallback
+    return "You are a distinctive author. Write with your unique voice and perspective."
+
+
 PERSONA_FRAMES = {
     "default": {
         "narrative": [
@@ -79,15 +105,16 @@ ALWAYS_CONSTRAINTS = [
 
 # POSITIVE STYLE GUIDANCE (100%) - What human authors DO
 POSITIVE_STYLE_GUIDANCE = [
-    "START some sentences mid-thought: 'And yet—', 'Strange, how...', 'But here the matter grows darker.'",
+    "ENSURE GRAMMATICAL CORRECTNESS: Every sentence must be grammatically sound. Check that subjects and verbs agree, and that each sentence parses correctly as English.",
+    "ENSURE COHERENCE: Each sentence must logically follow from the previous. Use pronouns ('this', 'it', 'such'), synonyms, or parallel structure to connect ideas naturally.",
     "EMBED your emotional reaction in the prose: 'horrible to relate', 'I confess with some reluctance', 'what words can capture'.",
     "INTERRUPT yourself with em-dashes for sudden asides—like this—revealing your inner turmoil.",
-    "VARY sentence length wildly: a 5-word fragment. Then a sprawling 40-word sentence that winds through multiple subordinate clauses before arriving at its grim conclusion.",
+    "VARY sentence length: mix short declarative sentences with longer, more complex ones.",
 ]
 
 # ANTI-AI-TELL CONSTRAINTS (100%) - Critical patterns that reveal AI authorship
 ANTI_AI_TELL_CONSTRAINTS = [
-    "NEVER use topic sentences. Do not start paragraphs with 'This demonstrates...' or 'It is clear that...'",
+    "AVOID generic topic sentences like 'This demonstrates...', 'It is clear that...', 'This is important because...'. Instead, START with a concrete observation, specific fact, or direct statement.",
     "NEVER use balanced 'A, B, and C' lists. Break into separate sentences or asymmetric phrasing.",
     "LIMIT subordinate clauses: one 'which' or 'that' per sentence maximum.",
     "END decisively. No trailing '...and which could be' or '...or become' clauses.",
@@ -95,7 +122,7 @@ ANTI_AI_TELL_CONSTRAINTS = [
 
 # FREQUENT (70%) - strong anti-patterns
 FREQUENT_CONSTRAINTS = [
-    "Do not start with a topic sentence. Start with a sensory detail, a question, or mid-thought.",
+    "AVOID dry topic sentences. Open with a specific observation, a physical detail, or a direct claim—but ensure the sentence is grammatically complete.",
     "Do not use numbered lists or 'Firstly/Secondly/Thirdly' structures.",
 ]
 
@@ -315,12 +342,25 @@ def build_persona_prompt(
     if target_words is None:
         target_words = len(content.split())
 
-    # Build word count instruction - encourage expansion with author flourish
-    word_count_section = f"""
-Write approximately {target_words} words. You may write MORE if the content demands it.
-IMPORTANT: You are ROLE-PLAYING as this author. Do not merely transcribe—TRANSFORM the content.
-Add sensory details, emotional resonance, and stylistic flourishes that this author would use.
-Express the ideas AS IF YOU ARE THE AUTHOR writing about this subject for the first time.
+    # Get author worldview from config - this is CRITICAL for embodiment
+    author_worldview = _load_worldview()
+
+    # Build the transformation directive - this is the most important instruction
+    transformation_directive = f"""
+=== CRITICAL: YOU ARE THIS AUTHOR ===
+{author_worldview}
+
+=== TRANSFORMATION DIRECTIVE ===
+Do NOT paraphrase. Do NOT just swap synonyms. TRANSFORM.
+
+You must REIMAGINE this content through your eyes. Ask yourself:
+- How would I (the author) PERCEIVE this subject?
+- What emotions does it stir in me?
+- What metaphors and imagery come naturally to my mind?
+- How does this connect to my deepest concerns and obsessions?
+
+Write approximately {target_words} words. You may write MORE if your voice demands it.
+The content below is raw material. Digest it. Then EXPRESS IT AS ONLY YOU CAN.
 """
 
     # Build skeleton structure section (from grafting if available)
@@ -353,10 +393,12 @@ These patterns are extracted from the author's actual writing. Follow them preci
         vocab_items = ", ".join(vocabulary_palette[:6])
         vocab_hint = f"\n[VOCABULARY HINT]: Consider words like: {vocab_items}\n"
 
-    # Assemble prompt matching training format
-    # Order: persona frame → word count → skeleton → structural RAG → constraints → style hints → vocab → content
-    prompt = f"""{persona_frame}
-{word_count_section}{skeleton_section}{structural_section}{constraints_section}{stylistic_hints}{vocab_hint}
+    # Assemble prompt with author embodiment at the core
+    # Order: transformation directive → persona frame → skeleton → structural RAG → constraints → style hints → vocab → content
+    prompt = f"""{transformation_directive}
+
+{persona_frame}
+{skeleton_section}{structural_section}{constraints_section}{stylistic_hints}{vocab_hint}
 {content}
 ###
 """

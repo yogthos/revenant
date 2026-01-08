@@ -1,6 +1,6 @@
 # Text Style Transfer
 
-Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer with semantic graph validation to ensure content fidelity.
+Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer with semantic verification to ensure content fidelity.
 
 ## Features
 
@@ -8,7 +8,7 @@ Transform text to match a target author's writing style while preserving semanti
 - **Multiple Adapter Blending**: Combine multiple author styles with individual scales
 - **Checkpoint Support**: Test specific training checkpoints without overwriting finals
 - **RTT Neutralization**: Round-trip translation strips style before restyling
-- **Semantic Graph Validation**: Validates content preservation using proposition graphs
+- **Semantic Verification**: Validates content preservation using NLI entailment and entity checking
 - **Structural Grafting**: Copies rhetorical structure (argument flow) from author samples
 - **Structural RAG**: Provides rhythm and syntax guidance from author corpus
 - **Persona Prompting**: Dense academic prose patterns to evade AI detection
@@ -626,7 +626,7 @@ flowchart TD
         E[Structural RAG Guidance]
         E2[Structural Grafting]
         F[LoRA Style Generation]
-        G[Semantic Graph Validation]
+        G[Semantic Verification]
         H{Critical Entities Missing?}
         I[LoRA Style-Preserving Repair]
         J[Post-Processing]
@@ -659,7 +659,7 @@ flowchart TD
 - **RTT Neutralization**: Strips source style via English → Mandarin → English translation
 - **Structural RAG**: Retrieves rhythm patterns (sentence length distribution, complexity) from corpus
 - **Structural Grafting**: Finds semantically similar passage, extracts its rhetorical skeleton, injects as blueprint
-- **Semantic Graph Validation**: Only named entities trigger repair; vocabulary changes are accepted
+- **Semantic Verification**: NLI entailment + entity checking; only missing entities trigger repair
 - **Post-Processing**: Grammar correction, sentence splitting, repetition reduction
 
 ### Structural Grafting

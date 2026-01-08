@@ -45,11 +45,29 @@ class StructuralGuidance:
     fragment_hint: str  # e.g., "Include 1-2 sentence fragments"
     opening_hint: str  # e.g., "Start with: determiner, noun, or adverb"
     enhanced_profile: Optional[EnhancedStyleProfile] = None  # Enhanced patterns
+    exemplar_sentences: Optional[List[str]] = None  # Actual sentences from author's corpus
 
     def format_for_prompt(self) -> str:
-        """Format as prompt injection."""
+        """Format as prompt injection.
+
+        CRITICAL: Exemplar sentences come FIRST. The model needs to SEE how the
+        author writes before receiving abstract rules. Show, don't tell.
+        """
         lines = []
 
+        # EXEMPLAR SENTENCES FIRST - Most important for style embodiment
+        if self.exemplar_sentences:
+            lines.append("=== YOUR VOICE: SENTENCES FROM YOUR OWN WRITING ===")
+            lines.append("Study these sentences. They ARE your voice. Write like this:")
+            lines.append("")
+            for i, sent in enumerate(self.exemplar_sentences[:5], 1):
+                lines.append(f'  {i}. "{sent}"')
+            lines.append("")
+            lines.append("EMULATE the rhythm, vocabulary, and emotional weight of these sentences.")
+            lines.append("Do NOT copy them—let them guide your voice.")
+            lines.append("")
+
+        # Then structural patterns
         if self.rhythm_pattern:
             lines.append(f"RHYTHM PATTERN: {self.rhythm_pattern}")
 
@@ -240,6 +258,9 @@ class StructuralRAG:
             if top_patterns:
                 opening_hint = f"Vary: {', '.join(top_patterns)}"
 
+        # Get exemplar sentences from corpus - these are the most important!
+        exemplar_sentences = self._get_exemplar_sentences(input_text)
+
         return StructuralGuidance(
             rhythm_pattern=self.get_rhythm_pattern(target_sentences),
             punctuation_hints=self.get_punctuation_hints(),
@@ -247,7 +268,59 @@ class StructuralRAG:
             fragment_hint=self.get_fragment_hint(),
             opening_hint=opening_hint,
             enhanced_profile=self._enhanced_profile,
+            exemplar_sentences=exemplar_sentences,
         )
+
+    def _get_exemplar_sentences(self, input_text: str, n: int = 5) -> List[str]:
+        """Get exemplar sentences from corpus that demonstrate the author's voice.
+
+        These are the MOST IMPORTANT part of style guidance. The model needs to
+        SEE how the author actually writes, not just receive abstract rules.
+
+        Returns sentences that:
+        1. Have interesting rhythm (not too short, not too long)
+        2. Show characteristic vocabulary and syntax
+        3. Demonstrate emotional engagement
+        """
+        try:
+            # Get relevant chunks from corpus based on input content
+            results = self.indexer.retrieve_similar(self.author, input_text, n=10)
+            chunks = [r["text"] for r in results]
+        except Exception as e:
+            logger.debug(f"Could not query similar chunks: {e}")
+            return []
+
+        if not chunks:
+            return []
+
+        # Extract individual sentences from chunks
+        from ..utils.nlp import split_into_sentences
+        all_sentences = []
+        for chunk in chunks:
+            sentences = split_into_sentences(chunk)
+            all_sentences.extend(sentences)
+
+        # Filter for high-quality exemplar sentences
+        exemplars = []
+        for sent in all_sentences:
+            words = sent.split()
+            # Good length: 10-40 words (interesting but not overwhelming)
+            if 10 <= len(words) <= 40:
+                # Has interesting features
+                has_dash = '—' in sent or ' – ' in sent
+                has_semicolon = ';' in sent
+                has_emotion = any(w in sent.lower() for w in [
+                    'dread', 'horror', 'terrible', 'nameless', 'strange',
+                    'fear', 'wonder', 'awe', 'confess', 'shudder'
+                ])
+                # Prioritize sentences with distinctive features
+                score = int(has_dash) + int(has_semicolon) + int(has_emotion) * 2
+                if score > 0 or len(exemplars) < 3:  # Always get at least 3
+                    exemplars.append((score, sent))
+
+        # Sort by score and return top N
+        exemplars.sort(key=lambda x: -x[0])
+        return [sent for _, sent in exemplars[:n]]
 
 
 # Cache for structural RAG instances

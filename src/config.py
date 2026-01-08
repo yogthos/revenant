@@ -113,14 +113,12 @@ class CorpusConfig:
 @dataclass
 class GenerationConfig:
     """Configuration for text generation."""
+    # Validation settings
+    entailment_threshold: float = 0.7  # Min NLI score for semantic preservation
+
     # Repair settings
     max_repair_attempts: int = 3  # Max critic repair attempts per paragraph
     repair_temperature: float = 0.3  # Low temperature for precise edits
-
-    # Meaning preservation settings
-    entailment_threshold: float = 0.7  # Min score for semantic preservation
-    proposition_threshold: float = 0.7  # Min proposition coverage (0.0-1.0)
-    anchor_threshold: float = 0.8  # Min content anchor coverage (0.0-1.0)
 
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
@@ -132,18 +130,6 @@ class GenerationConfig:
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
-
-    # Style settings
-    style_temperature: float = 0.7  # Temperature for style generation (higher = more creative)
-    neutralization_temperature: float = 0.3  # Temperature for neutralization (lower = more consistent)
-
-    # Content anchor detection settings
-    analogy_min_length: int = 10  # Minimum chars for detected analogies
-    detect_phase_transitions: bool = True  # Detect "X transforms into Y" patterns
-
-    # Hallucination detection settings
-    hallucination_check_noun_phrases: bool = True  # Check for invented noun phrases
-    critical_hallucination_words: str = "death,god,soul,spirit,heaven,hell,divine,eternal"  # Comma-separated
 
     # Post-processing settings
     repetition_threshold: int = 3  # Words used N+ times get replaced
@@ -160,6 +146,29 @@ class GenerationConfig:
     # Grammar correction settings (final post-processing pass)
     correct_grammar: bool = True  # Enable style-safe grammar correction
     grammar_language: str = "en-US"  # Language variant: "en-US" or "en-GB"
+
+    # Sentence restructuring settings
+    restructure_sentences: bool = True  # Enable balanced→inverted restructuring
+    split_sentences: bool = True  # Enable sentence splitting at conjunction points
+    max_sentence_length: int = 60  # Words - split sentences longer than this
+    sentence_length_variance: float = 0.3  # Variance factor (0.3 = 70%-130% of max)
+
+
+@dataclass
+class LoRAConfig:
+    """Configuration for LoRA generation parameters.
+
+    These settings control the balance between style strength and coherence.
+    Adjust in config.json under the "lora" section.
+    """
+    temperature: float = 0.6  # Higher = more creative, lower = more coherent
+    top_p: float = 0.92  # Nucleus sampling threshold
+    min_p: float = 0.05  # Minimum probability filter
+    repetition_penalty: float = 1.15  # Penalty for repeating tokens
+    lora_scale: float = 2.5  # LoRA adapter influence (higher = stronger style)
+    max_tokens: int = 512  # Maximum tokens to generate
+    min_tokens: int = 50  # Minimum tokens to generate
+    worldview: str = ""  # Author worldview prompt for embodiment
 
 
 @dataclass
@@ -239,6 +248,7 @@ class Config:
     fitness_weights: FitnessWeightsConfig = field(default_factory=FitnessWeightsConfig)
     thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    lora: LoRAConfig = field(default_factory=LoRAConfig)
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
@@ -298,8 +308,14 @@ def _parse_llm_config(data: Dict) -> LLMConfig:
     )
 
 
+# Module-level config cache
+_config_cache: dict = {}
+
+
 def load_config(config_path: str = "config.json") -> Config:
     """Load configuration from a JSON file.
+
+    Uses a cache to avoid reloading the same config file multiple times.
 
     Args:
         config_path: Path to the configuration file.
@@ -311,6 +327,10 @@ def load_config(config_path: str = "config.json") -> Config:
         FileNotFoundError: If config file doesn't exist.
         ValueError: If config file is invalid.
     """
+    # Return cached config if available
+    if config_path in _config_cache:
+        return _config_cache[config_path]
+
     path = Path(config_path)
     if not path.exists():
         raise FileNotFoundError(
@@ -363,6 +383,20 @@ def load_config(config_path: str = "config.json") -> Config:
     if "llm" in data:
         config.llm = _parse_llm_config(data["llm"])
 
+    # Parse LoRA generation settings
+    if "lora" in data:
+        lora = data["lora"]
+        config.lora = LoRAConfig(
+            temperature=lora.get("temperature", 0.6),
+            top_p=lora.get("top_p", 0.92),
+            min_p=lora.get("min_p", 0.05),
+            repetition_penalty=lora.get("repetition_penalty", 1.15),
+            lora_scale=lora.get("lora_scale", 2.5),
+            max_tokens=lora.get("max_tokens", 512),
+            min_tokens=lora.get("min_tokens", 50),
+            worldview=lora.get("worldview", ""),
+        )
+
     if "corpus" in data:
         config.corpus = CorpusConfig(
             min_sentences_per_paragraph=data["corpus"].get("min_sentences_per_paragraph", 2),
@@ -373,14 +407,15 @@ def load_config(config_path: str = "config.json") -> Config:
 
     if "generation" in data:
         gen = data["generation"]
+        # Get entailment_threshold from validation section or generation section
+        val_data = data.get("validation", {})
+        entailment_thresh = gen.get("entailment_threshold", val_data.get("entailment_threshold", 0.7))
         config.generation = GenerationConfig(
+            # Validation settings
+            entailment_threshold=entailment_thresh,
             # Repair settings
             max_repair_attempts=gen.get("max_repair_attempts", 3),
             repair_temperature=gen.get("repair_temperature", 0.3),
-            # Meaning preservation
-            entailment_threshold=gen.get("entailment_threshold", 0.7),
-            proposition_threshold=gen.get("proposition_threshold", 0.7),
-            anchor_threshold=gen.get("anchor_threshold", 0.8),
             # Length control
             max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
             target_expansion_ratio=gen.get("target_expansion_ratio", 1.5),
@@ -388,15 +423,6 @@ def load_config(config_path: str = "config.json") -> Config:
             lora_adapters=gen.get("lora_adapters", {}),
             # Neutralization
             skip_neutralization=gen.get("skip_neutralization", False),
-            # Style settings
-            style_temperature=gen.get("style_temperature", 0.7),
-            neutralization_temperature=gen.get("neutralization_temperature", 0.3),
-            # Content anchor detection
-            analogy_min_length=gen.get("analogy_min_length", 10),
-            detect_phase_transitions=gen.get("detect_phase_transitions", True),
-            # Hallucination detection
-            hallucination_check_noun_phrases=gen.get("hallucination_check_noun_phrases", True),
-            critical_hallucination_words=gen.get("critical_hallucination_words", "death,god,soul,spirit,heaven,hell,divine,eternal"),
             # Post-processing
             repetition_threshold=gen.get("repetition_threshold", 3),
             reduce_repetition=gen.get("reduce_repetition", True),
@@ -409,6 +435,11 @@ def load_config(config_path: str = "config.json") -> Config:
             # Grammar correction settings
             correct_grammar=gen.get("correct_grammar", True),
             grammar_language=gen.get("grammar_language", "en-US"),
+            # Sentence restructuring settings
+            restructure_sentences=gen.get("restructure_sentences", True),
+            split_sentences=gen.get("split_sentences", True),
+            max_sentence_length=gen.get("max_sentence_length", 60),
+            sentence_length_variance=gen.get("sentence_length_variance", 0.3),
         )
 
     if "style" in data:
@@ -461,6 +492,9 @@ def load_config(config_path: str = "config.json") -> Config:
     config.log_level = data.get("log_level", "INFO")
     config.log_json = data.get("log_json", False)
 
+    # Cache the config
+    _config_cache[config_path] = config
+
     logger.info(f"Loaded configuration from {config_path}")
     return config
 
@@ -504,10 +538,11 @@ def create_default_config() -> Dict:
         "generation": {
             "max_repair_attempts": 3,
             "repair_temperature": 0.3,
-            "entailment_threshold": 0.7,
-            "proposition_threshold": 0.7,
-            "anchor_threshold": 0.8,
             "repetition_threshold": 3
+        },
+        "validation": {
+            "entailment_threshold": 0.7,
+            "max_hallucinations_before_reject": 2
         },
         "log_level": "INFO"
     }
