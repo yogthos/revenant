@@ -208,17 +208,17 @@ class TestLoRAGenerator:
     """Tests for LoRA inference configuration."""
 
     def test_generation_config_defaults(self):
-        """Test that generation config has paper's recommended defaults."""
+        """Test that generation config has recommended defaults."""
         from src.generation.lora_generator import GenerationConfig
 
         config = GenerationConfig()
 
-        # Temperature 0.7 allows creative/rare word choices
-        # min_p 0.05 filters nonsense at high temp
-        assert config.temperature == 0.7
-        assert config.top_p == 0.95
+        # Temperature 0.6 balances creativity with coherence
+        # min_p 0.05 filters nonsense
+        assert config.temperature == 0.6
+        assert config.top_p == 0.92
         assert config.min_p == 0.05
-        assert config.repetition_penalty == 1.4
+        assert config.repetition_penalty == 1.15
 
     def test_inference_prompt_format_matches_training(self):
         """Test that inference prompt matches training format."""
