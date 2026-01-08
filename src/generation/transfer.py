@@ -418,7 +418,6 @@ class StyleTransfer:
         Returns:
             Tuple of (styled_paragraph, entailment_score).
         """
-        from ..validation.semantic_graph import SemanticGraphBuilder, SemanticGraphComparator
         from ..validation.reference_tracker import extract_references, reinject_references
 
         # Skip very short paragraphs
@@ -436,20 +435,7 @@ class StyleTransfer:
         paragraph_clean, ref_map = extract_references(paragraph)
 
         # ========================================
-        # STEP 1: Build source graph (ground truth)
-        # ========================================
-        builder = SemanticGraphBuilder()
-        source_graph = builder.build_from_text(paragraph_clean)
-        logger.info(f"Source graph: {len(source_graph.nodes)} propositions, {len(source_graph.edges)} relationships")
-
-        if not source_graph.nodes:
-            logger.warning("Could not build source graph, passing through unchanged")
-            return paragraph, 1.0  # Return original with references
-
-        comparator = SemanticGraphComparator()
-
-        # ========================================
-        # STEP 2: RTT Neutralization (match training format)
+        # STEP 1: RTT Neutralization (match training format)
         # ========================================
         # Training used Round-Trip Translation via Mandarin to neutralize text
         # We must use the same process during inference for the LoRA to work
@@ -475,7 +461,7 @@ class StyleTransfer:
                 logger.info(f"RTT OUTPUT ({rtt_output_words} words): {content_for_generation[:150]}...")
 
         # ========================================
-        # STEP 3: Pass to LoRA for style transformation
+        # STEP 2: Pass to LoRA for style transformation
         # ========================================
         target_words = int(word_count * self.config.target_expansion_ratio)
         # Token limit needs to be generous to avoid truncation mid-sentence
@@ -549,10 +535,9 @@ class StyleTransfer:
             logger.warning(f"LoRA over-expanded: {lora_words} words vs {source_words} source ({lora_words/source_words:.0%})")
 
         # ========================================
-        # STEP 4: Validate styled output against source graph (if enabled)
+        # STEP 3: Validate styled output (if enabled)
         # ========================================
         if self.config.verify_entailment:
-            # First, run semantic verification to catch hallucinations
             from ..validation.semantic_verifier import verify_semantic_preservation
             semantic_result = verify_semantic_preservation(
                 source=paragraph_clean,
@@ -570,41 +555,30 @@ class StyleTransfer:
                 fabricated_str = ', '.join(semantic_result.fabricated_entities[:5])
                 logger.warning(f"Fabricated content: {fabricated_str}")
 
-            # If too many hallucinations, try graph-based repair
+            # Trigger repair only if there are missing entities or too many hallucinations
             max_hallucinations = _VALIDATION_CONFIG.get("max_hallucinations_before_reject", 2)
-            if semantic_result.hallucination_count > max_hallucinations:
+            needs_repair = (
+                semantic_result.hallucination_count > max_hallucinations or
+                len(semantic_result.missing_entities) > 0
+            )
+
+            if needs_repair and semantic_result.missing_entities:
                 logger.warning(
-                    f"High hallucination count ({semantic_result.hallucination_count}), "
-                    f"triggering graph-based repair"
+                    f"Triggering repair: {semantic_result.hallucination_count} hallucinations, "
+                    f"{len(semantic_result.missing_entities)} missing entities"
                 )
-                output, is_valid = self._validate_styled_output(
+                output = self._repair_missing_entities(
                     source=paragraph,
                     output=output,
-                    source_graph=source_graph,
-                    builder=builder,
-                    comparator=comparator,
-                    stats=stats,
+                    missing_entities=semantic_result.missing_entities,
                     max_attempts=self.config.max_repair_attempts,
                 )
-            else:
-                # Run standard graph validation for entity preservation
-                output, is_valid = self._validate_styled_output(
-                    source=paragraph,
-                    output=output,
-                    source_graph=source_graph,
-                    builder=builder,
-                    comparator=comparator,
-                    stats=stats,
-                    max_attempts=self.config.max_repair_attempts,
-                )
-        else:
-            is_valid = True  # Skip validation
 
         # Ensure output ends with complete sentence
         output = self._ensure_complete_ending(output)
 
         # ========================================
-        # STEP 5: Reinject references [^N]
+        # STEP 4: Reinject references [^N]
         # ========================================
         # References were extracted in STEP 0 and are now reattached
         # based on entity matching (e.g., "Einstein" -> "Einstein[^1]")
@@ -764,72 +738,40 @@ class StyleTransfer:
         # Fallback: add period to entire text
         return text + '.'
 
-    def _validate_styled_output(
+    def _repair_missing_entities(
         self,
         source: str,
         output: str,
-        source_graph,
-        builder,
-        comparator,
-        stats: Optional['TransferStats'] = None,
+        missing_entities: List[str],
         max_attempts: int = 3,
-    ) -> Tuple[str, bool]:
-        """Validate styled output against source graph and repair if needed.
+    ) -> str:
+        """Repair output to include missing entities.
 
-        Uses style-preserving repair through the LoRA generator to maintain
-        author voice while fixing factual issues. Only repairs for actual
-        entity/fact misses, not vocabulary style changes.
+        Uses LoRA generator to re-generate with entity hints while
+        maintaining author voice.
 
         Args:
             source: Original source text.
-            output: Styled output to validate.
-            source_graph: Semantic graph of source (ground truth).
-            builder: SemanticGraphBuilder instance.
-            comparator: SemanticGraphComparator instance.
-            stats: Optional stats object to update.
+            output: Styled output to repair.
+            missing_entities: List of entity strings to include.
             max_attempts: Max repair attempts.
 
         Returns:
-            Tuple of (output, is_valid).
+            Repaired output text.
         """
+        if not self.generator or not missing_entities:
+            return output
+
         for attempt in range(max_attempts):
-            # Compare graphs
-            output_graph = builder.build_from_text(output)
-            diff = comparator.compare(source_graph, output_graph)
-
-            if diff.is_isomorphic:
-                logger.debug("Output graph matches source perfectly")
-                return output, True
-
-            # Check if repair is needed - only for actual entity/fact misses
-            # Skip repair for pure vocabulary style changes (which is the point of style transfer!)
-            missing_entities = self._extract_critical_entities(diff.missing_nodes)
-
-            if not missing_entities and not diff.added_nodes:
-                # No critical entities missing, vocabulary changes are fine
-                logger.debug("No critical entities missing, accepting styled output")
-                return output, True
-
-            # If only vocabulary differences (no named entities), accept the output
-            if not missing_entities and diff.missing_nodes:
-                logger.debug(f"Missing {len(diff.missing_nodes)} propositions but no critical entities - accepting styled output")
-                return output, True
-
             logger.info(
                 f"Repair attempt {attempt + 1}/{max_attempts}: "
-                f"{len(missing_entities)} critical entities missing"
+                f"{len(missing_entities)} entities missing"
             )
 
             try:
-                # Use LoRA for style-preserving repair
-                # Re-generate with explicit entity constraints to maintain author voice
-                if not self.generator:
-                    logger.warning("No generator for repair, keeping original output")
-                    break
-
-                # Create repair content: original source with entity hints
-                entity_hint = f"[MUST INCLUDE: {', '.join(missing_entities)}]" if missing_entities else ""
-                repair_content = f"{entity_hint}\n\n{source}" if entity_hint else source
+                # Create repair content with entity hints
+                entity_hint = f"[MUST INCLUDE: {', '.join(missing_entities)}]"
+                repair_content = f"{entity_hint}\n\n{source}"
 
                 target_words = len(output.split())
                 repaired = self.generator.generate(
@@ -839,55 +781,23 @@ class StyleTransfer:
                 )
 
                 if repaired and len(repaired.split()) > 10:
-                    # Check if repair actually includes the missing entities
+                    # Check if repair includes missing entities
                     repaired_lower = repaired.lower()
                     entities_found = sum(1 for e in missing_entities if e.lower() in repaired_lower)
 
-                    if entities_found >= len(missing_entities) * 0.5:  # At least half found
-                        output = repaired
-                        logger.debug(f"LoRA repair produced: {len(repaired.split())} words with {entities_found}/{len(missing_entities)} entities")
+                    if entities_found >= len(missing_entities) * 0.5:
+                        logger.debug(f"Repair found {entities_found}/{len(missing_entities)} entities")
+                        return repaired
                     else:
-                        logger.debug(f"LoRA repair only found {entities_found}/{len(missing_entities)} entities, keeping original")
-                        break
+                        logger.debug(f"Repair only found {entities_found}/{len(missing_entities)} entities")
                 else:
-                    logger.warning("LoRA repair produced empty/short output, keeping original")
-                    break
+                    logger.warning("Repair produced empty/short output")
 
             except Exception as e:
-                logger.warning(f"LoRA repair failed: {e}")
+                logger.warning(f"Repair failed: {e}")
                 break
 
-        # Final validation - accept if no critical entities missing
-        output_graph = builder.build_from_text(output)
-        diff = comparator.compare(source_graph, output_graph)
-        missing_entities = self._extract_critical_entities(diff.missing_nodes)
-        return output, len(missing_entities) == 0
-
-    def _extract_critical_entities(self, missing_nodes: list) -> List[str]:
-        """Extract critical named entities from missing proposition nodes.
-
-        Only extracts actual named entities (people, places, organizations,
-        numbers, dates) - NOT general vocabulary which is expected to change
-        during style transfer.
-
-        Args:
-            missing_nodes: List of PropositionNode objects flagged as missing.
-
-        Returns:
-            List of critical entity strings that must be preserved.
-        """
-        critical_entities = set()
-
-        for node in missing_nodes:
-            # Only extract actual named entities, not general words
-            for entity in node.entities:
-                # Skip common words that aren't true named entities
-                entity_lower = entity.lower()
-                skip_words = {'the', 'a', 'an', 'this', 'that', 'it', 'they', 'we', 'our'}
-                if entity_lower not in skip_words and len(entity) > 2:
-                    critical_entities.add(entity)
-
-        return list(critical_entities)
+        return output  # Return original if repair failed
 
     def transfer_document(
         self,

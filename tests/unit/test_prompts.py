@@ -48,6 +48,7 @@ class TestFormatPrompt:
             author="Carl Sagan",
             content="The universe is vast.",
             structural_guidance="",
+            word_count=50,
         )
         assert "Carl Sagan" in prompt
         assert "The universe is vast." in prompt
@@ -67,6 +68,7 @@ class TestFormatPrompt:
             author="H.P. Lovecraft",
             content="A strange creature appeared.",
             structural_guidance="\n\nRHYTHM: Vary between 5 and 35 words\n",
+            word_count=60,
         )
         assert "H.P. Lovecraft" in prompt
         assert "A strange creature appeared." in prompt

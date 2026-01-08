@@ -1,6 +1,6 @@
 # Text Style Transfer
 
-Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer with semantic graph validation to ensure content fidelity.
+Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer with semantic verification to ensure content fidelity.
 
 ## Features
 
@@ -8,7 +8,7 @@ Transform text to match a target author's writing style while preserving semanti
 - **Multiple Adapter Blending**: Combine multiple author styles with individual scales
 - **Checkpoint Support**: Test specific training checkpoints without overwriting finals
 - **RTT Neutralization**: Round-trip translation strips style before restyling
-- **Semantic Graph Validation**: Validates content preservation using proposition graphs
+- **Semantic Verification**: Validates content preservation using NLI entailment and entity checking
 - **Structural Grafting**: Copies rhetorical structure (argument flow) from author samples
 - **Structural RAG**: Provides rhythm and syntax guidance from author corpus
 - **Persona Prompting**: Dense academic prose patterns to evade AI detection
@@ -93,6 +93,7 @@ flowchart LR
     A[1. Curate Corpus] --> B[2. Generate Training Data]
     B --> C[3. Index ChromaDB]
     C --> D[4. Train LoRA]
+    D --> E[5. Configure Persona]
 ```
 
 **Quick Reference:**
@@ -109,6 +110,9 @@ python scripts/load_corpus.py --input corpus.txt --author "Author"
 
 # 4. Train LoRA (create config.yaml first - see Step 4)
 mlx_lm.lora --config data/training/author/config.yaml
+
+# 5. Configure persona (create prompts/author_persona.txt, update config.json)
+# See Step 5 below for file format
 ```
 
 ---
@@ -412,7 +416,41 @@ After training, create `lora_adapters/lovecraft/metadata.json`:
 
 This file tells the inference pipeline which base model to load with the adapter. Without it, the system defaults to the wrong model and fails.
 
-### Step 5: Verify and Test
+### Step 5: Configure Author Persona
+
+Create a persona file with the exact persona frames used during training. These frames trigger the LoRA style at inference time.
+
+**Create `prompts/{author}_persona.txt`:**
+
+```
+[PERSONA_FRAMES_NARRATIVE]
+{Frame for narrative content - must match training exactly}
+---
+{Another narrative frame}
+---
+{Third narrative frame}
+
+[PERSONA_FRAMES_CONCEPTUAL]
+{Frame for conceptual/explanatory content - must match training exactly}
+---
+{Another conceptual frame}
+---
+{Third conceptual frame}
+```
+
+**Critical:** The persona frames must **exactly match** the frames used in `generate_flat_training.py`. The LoRA was trained on these specific phrases - using different frames at inference will not trigger the learned style. Copy the frames directly from the training script's `PERSONA_FRAMES` dictionary.
+
+**Update `config.json`:**
+
+```json
+"lora": {
+  "worldview": "lovecraft_persona.txt"
+}
+```
+
+See `prompts/lovecraft_worldview.txt` for a complete example.
+
+### Step 6: Verify and Test
 
 Verify the adapter was created and test it:
 
@@ -626,7 +664,7 @@ flowchart TD
         E[Structural RAG Guidance]
         E2[Structural Grafting]
         F[LoRA Style Generation]
-        G[Semantic Graph Validation]
+        G[Semantic Verification]
         H{Critical Entities Missing?}
         I[LoRA Style-Preserving Repair]
         J[Post-Processing]
@@ -659,7 +697,7 @@ flowchart TD
 - **RTT Neutralization**: Strips source style via English → Mandarin → English translation
 - **Structural RAG**: Retrieves rhythm patterns (sentence length distribution, complexity) from corpus
 - **Structural Grafting**: Finds semantically similar passage, extracts its rhetorical skeleton, injects as blueprint
-- **Semantic Graph Validation**: Only named entities trigger repair; vocabulary changes are accepted
+- **Semantic Verification**: NLI entailment + entity checking; only missing entities trigger repair
 - **Post-Processing**: Grammar correction, sentence splitting, repetition reduction
 
 ### Structural Grafting
@@ -736,8 +774,10 @@ text-style-transfer/
 │   ├── curate_corpus.py         # Filter corpus to optimal size
 │   └── update_skeletons.py      # Add skeletons to existing index
 │
-├── prompts/                      # Prompt templates
-│   └── style_transfer.txt       # Main generation prompt
+├── prompts/                      # Prompt templates & author personas
+│   ├── style_transfer.txt       # Main generation prompt
+│   ├── default_persona.txt      # Default persona (fallback)
+│   └── lovecraft_worldview.txt  # Example: Lovecraft persona & frames
 │
 ├── data/
 │   ├── corpus/                   # Author corpus files

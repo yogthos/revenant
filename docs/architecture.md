@@ -22,23 +22,22 @@ flowchart TB
 
     subgraph Inference["Inference Pipeline"]
         I1[Input Text] --> I2[Reference Extraction]
-        I2 --> I3[Semantic Graph]
-        I3 --> I4[RTT Neutralization]
-        I4 --> I5[Structural RAG]
+        I2 --> I3[RTT Neutralization]
+        I3 --> I4[Structural RAG]
+        C1 --> I4
+        I4 --> I5[Structural Grafting]
         C1 --> I5
-        I5 --> I6[Structural Grafting]
-        C1 --> I6
-        I6 --> I7[LoRA Generation]
-        T6 --> I7
-        I7 --> I8[Semantic Validation]
-        I8 --> I9[Post-Processing]
-        I9 --> I10[Reference Reinjection]
-        I10 --> I11[Output Text]
+        I5 --> I6[LoRA Generation]
+        T6 --> I6
+        I6 --> I7[Semantic Verification]
+        I7 --> I8[Post-Processing]
+        I8 --> I9[Reference Reinjection]
+        I9 --> I10[Output Text]
     end
 
-    T2 -.->|Rhythm Patterns| I5
-    T2 -.->|Skeletons| I6
-    T6 -.->|Adapter| I7
+    T2 -.->|Rhythm Patterns| I4
+    T2 -.->|Skeletons| I5
+    T6 -.->|Adapter| I6
 ```
 
 ---
@@ -350,21 +349,20 @@ Monitor validation loss. If it starts increasing while training loss decreases �
 ```mermaid
 flowchart TD
     A[Input Paragraph] --> B[Extract References]
-    B --> C[Build Semantic Graph]
-    C --> D[RTT Neutralization]
-    D --> E[Structural RAG Guidance]
-    E --> F[Structural Grafting]
-    F --> G[Persona Prompt Building]
-    G --> H[LoRA Generation]
-    H --> I[Semantic Validation]
-    I --> J{Critical Entities Missing?}
-    J -->|Yes| K[LoRA Repair]
-    K --> I
-    J -->|No| L[Sentence Splitting]
-    L --> M[Grammar Correction]
-    M --> N[Repetition Reduction]
-    N --> O[Reference Reinjection]
-    O --> P[Output Paragraph]
+    B --> C[RTT Neutralization]
+    C --> D[Structural RAG Guidance]
+    D --> E[Structural Grafting]
+    E --> F[Persona Prompt Building]
+    F --> G[LoRA Generation]
+    G --> H[Semantic Verification]
+    H --> I{Missing Entities?}
+    I -->|Yes| J[LoRA Repair]
+    J --> H
+    I -->|No| K[Sentence Splitting]
+    K --> L[Grammar Correction]
+    L --> M[Repetition Reduction]
+    M --> N[Reference Reinjection]
+    N --> O[Output Paragraph]
 ```
 
 ### Step 0: Extract References
@@ -380,23 +378,7 @@ paragraph_clean, ref_map = extract_references(paragraph)
 
 References are stripped during processing (RTT and LoRA don't handle them well) and reinjected at the end based on entity matching.
 
-### Step 1: Build Source Semantic Graph
-
-Extract the "ground truth" from the source:
-
-```python
-builder = SemanticGraphBuilder(use_rebel=False)
-source_graph = builder.build_from_text(paragraph_clean)
-```
-
-The graph contains:
-- **Proposition nodes**: Subject-Predicate-Object triples
-- **Entity nodes**: Named entities (people, places, dates, numbers)
-- **Relationships**: Logical connections between propositions
-
-This graph is used later to verify the output preserves all facts.
-
-### Step 2: RTT Neutralization
+### Step 1: RTT Neutralization
 
 **Why neutralize during inference?**
 
@@ -425,7 +407,7 @@ else:
 }
 ```
 
-### Step 3: Structural RAG Guidance
+### Step 2: Structural RAG Guidance
 
 Retrieve rhythm patterns from the author's corpus (indexed in ChromaDB):
 
@@ -447,7 +429,7 @@ Rhythm patterns from author's corpus:
 
 This gives the model concrete structural targets beyond just "write like X".
 
-### Step 4: Structural Grafting
+### Step 3: Structural Grafting
 
 Find a semantically similar passage in the corpus and extract its rhetorical skeleton:
 
@@ -470,7 +452,7 @@ Extracted Skeleton: [Observation] → [Paradox] → [Rhetorical Question] → [R
 
 The skeleton provides an argumentative blueprint without copying any words from the source.
 
-### Step 5: Persona Prompt Building
+### Step 4: Persona Prompt Building
 
 Build a persona-injected prompt that captures the author's voice characteristics:
 
@@ -493,7 +475,7 @@ if self.config.use_persona and PERSONA_AVAILABLE:
 - **Syntactic patterns**: Em-dashes, nominalization, which-clauses
 - **Anti-patterns**: Words to avoid (furthermore, moreover, etc.)
 
-### Step 6: LoRA Generation
+### Step 5: LoRA Generation
 
 The core style transfer:
 
@@ -527,16 +509,15 @@ output = self.generator.generate(
 | 0.5-1.0 | Strong style |
 | >1.5 | Risk of memorization |
 
-### Step 7: Semantic Validation
+### Step 6: Semantic Verification
 
-Compare output graph to source graph:
+Verify that output preserves source meaning using NLI entailment:
 
 ```python
-output_graph = builder.build_from_text(output)
-diff = comparator.compare(source_graph, output_graph)
+from src.validation import SemanticVerifier, verify_semantic_preservation
 
-if diff.missing_nodes:
-    missing_entities = self._extract_critical_entities(diff.missing_nodes)
+result = verify_semantic_preservation(source, output)
+# result.is_valid, result.score, result.missing_entities
 ```
 
 **What triggers repair:**
@@ -549,7 +530,7 @@ if diff.missing_nodes:
 
 **Critical distinction:** Vocabulary changes are expected and desired ("big" → "cyclopean"). Only missing **named entities** (people, places, organizations, numbers, dates) trigger repair.
 
-### Step 8: Style-Preserving Repair
+### Step 7: Style-Preserving Repair
 
 If critical entities are missing, repair using the **same LoRA** (not a generic LLM):
 
@@ -568,7 +549,7 @@ repaired = self.generator.generate(
 
 A generic LLM doesn't know the author's style. Using it for repair would overwrite the styled prose with generic text.
 
-### Step 9: Post-Processing
+### Step 8: Post-Processing
 
 **Sentence Splitting:**
 
@@ -608,7 +589,7 @@ Targets:
 - Common LLM-speak: "intricate", "tapestry", "testament"
 - Repetitive sentence starters
 
-### Step 10: Reference Reinjection
+### Step 9: Reference Reinjection
 
 Reattach footnote references to their entities:
 
@@ -711,8 +692,8 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
 
 | Module | Purpose |
 |--------|---------|
-| `semantic_graph.py` | Build proposition graphs, compare for missing entities |
-| `entailment.py` | NLI-based entailment checking |
+| `semantic_verifier.py` | NLI-based semantic verification, entity extraction |
+| `entailment.py` | NLI entailment checking (used by semantic_verifier) |
 | `reference_tracker.py` | Extract/reinject footnote references `[^N]` |
 
 ### RAG System (`src/rag/`)
@@ -782,17 +763,16 @@ Output: "The physicist Einstein[^1] formulated his theory of relativity[^2]."
 1. **Input processing:**
    - [ ] Extract footnote references
    - [ ] Skip headings and short paragraphs
-   - [ ] Build semantic graph for validation
+   - [ ] RTT neutralize input to match training distribution
 
 2. **Style transfer:**
-   - [ ] RTT neutralize input (match training distribution)
    - [ ] Get structural guidance from RAG
    - [ ] Get skeleton from grafting (if similar passage found)
    - [ ] Build persona prompt
    - [ ] Generate via LoRA
 
 3. **Validation:**
-   - [ ] Compare semantic graphs
+   - [ ] Verify semantic preservation via NLI entailment
    - [ ] Only repair for missing entities (not vocabulary)
    - [ ] Use LoRA for repair (preserve style)
 

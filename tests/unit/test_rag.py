@@ -977,16 +977,8 @@ class TestStructuralRAGEnhanced:
     """Tests for StructuralRAG with enhanced analyzer integration."""
 
     def test_structural_guidance_with_enhanced_profile(self):
-        """Test that StructuralGuidance includes enhanced profile."""
+        """Test that StructuralGuidance formats correctly."""
         from src.rag.structural_rag import StructuralGuidance
-        from src.rag.enhanced_analyzer import EnhancedStyleProfile, VocabularyCluster
-
-        profile = EnhancedStyleProfile(
-            vocabulary=VocabularyCluster(
-                intensifiers=["utterly", "tremendously"],
-                evaluatives=["eldritch"],
-            )
-        )
 
         guidance = StructuralGuidance(
             rhythm_pattern="LONG → SHORT",
@@ -994,17 +986,16 @@ class TestStructuralRAGEnhanced:
             length_guidance="Vary between 5 and 30 words",
             fragment_hint="Use occasional fragments",
             opening_hint="Vary openings",
-            enhanced_profile=profile,
         )
 
         formatted = guidance.format_for_prompt()
 
-        # Should include both basic and enhanced guidance
-        assert "RHYTHM PATTERN" in formatted
-        assert "utterly" in formatted or "VOCABULARY" in formatted
+        # Should include concise guidance matching training format
+        assert "Rhythm:" in formatted
+        assert "Length:" in formatted
 
     def test_structural_guidance_without_enhanced_profile(self):
-        """Test that StructuralGuidance works without enhanced profile."""
+        """Test that StructuralGuidance works with basic fields."""
         from src.rag.structural_rag import StructuralGuidance
 
         guidance = StructuralGuidance(
@@ -1013,12 +1004,11 @@ class TestStructuralRAGEnhanced:
             length_guidance="Vary",
             fragment_hint="Use fragments",
             opening_hint="",
-            enhanced_profile=None,
         )
 
         formatted = guidance.format_for_prompt()
 
-        assert "RHYTHM PATTERN" in formatted
+        assert "Rhythm:" in formatted
         assert len(formatted) > 0
 
     def test_structural_guidance_empty_fields(self):

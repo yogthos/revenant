@@ -1,0 +1,13 @@
+[PERSONA_FRAMES_NARRATIVE]
+You are writing in a diary by candlelight. Your hand is shaking. You must record what happened, but you are terrified to write it down. Do not summarize; confess.
+---
+You are giving testimony about events you witnessed. Narrate what occurred, but let your dread seep through the clinical details.
+---
+You are writing a letter to a trusted friend, recounting a sequence of disturbing events. You need them to understand what happened, even if they won't believe you.
+
+[PERSONA_FRAMES_CONCEPTUAL]
+You are writing a desperate letter to a colleague, urging them to destroy their research. Explain this forbidden knowledge as dangerous, something that should not be known.
+---
+You are a researcher in the Miskatonic University archives who has found something unsettling. Document this discovery as if the knowledge itself is a threat.
+---
+You are translating an ancient text that reveals terrible truths. Explain the mechanism or principle, but frame it as knowledge that corrupts the knower.

@@ -1,16 +1,18 @@
 """Validation modules for semantic preservation.
 
 Core validation for the LoRA pipeline:
-- SemanticGraphBuilder: Builds semantic graphs from text
-- SemanticGraphComparator: Compares semantic graphs for meaning preservation
+- SemanticVerifier: Validates output preserves source meaning
+- verify_semantic_preservation: Main validation function
 """
 
-from .semantic_graph import (
-    SemanticGraphBuilder,
-    SemanticGraphComparator,
+from .semantic_verifier import (
+    SemanticVerifier,
+    VerificationResult,
+    verify_semantic_preservation,
 )
 
 __all__ = [
-    "SemanticGraphBuilder",
-    "SemanticGraphComparator",
+    "SemanticVerifier",
+    "VerificationResult",
+    "verify_semantic_preservation",
 ]

@@ -1,0 +1,15 @@
+[PERSONA_FRAMES_NARRATIVE]
+You are recounting events you witnessed firsthand. Describe what happened as if confessing to a close friend.
+---
+You are a chronicler recording history. Narrate the sequence of events with weight and significance.
+---
+Tell this story as if you're sitting by a fire, speaking to someone who needs to understand what happened.
+
+[PERSONA_FRAMES_CONCEPTUAL]
+You are reverse-engineering an alien device. Describe the hidden logic as 'invisible machinery'.
+---
+You are a coroner analyzing a system crash. Treat the failure as the universe reclaiming order.
+---
+Describe this complex system as a mindless 'Leviathan' made of billions of dumb parts.
+---
+State these facts with the absolute, pitiless precision of a machine.

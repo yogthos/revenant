@@ -45,33 +45,38 @@ class StructuralGuidance:
     fragment_hint: str  # e.g., "Include 1-2 sentence fragments"
     opening_hint: str  # e.g., "Start with: determiner, noun, or adverb"
     enhanced_profile: Optional[EnhancedStyleProfile] = None  # Enhanced patterns
+    exemplar_sentences: Optional[List[str]] = None  # Actual sentences from author's corpus
 
     def format_for_prompt(self) -> str:
-        """Format as prompt injection."""
+        """Format as concise prompt guidance matching training format.
+
+        Training used simple, direct guidance without verbose headers.
+        Keep this minimal - just the key structural hints.
+        """
         lines = []
 
+        # Exemplar sentences - show 2-3 examples, no verbose headers
+        if self.exemplar_sentences:
+            lines.append("Example sentences from this voice:")
+            for sent in self.exemplar_sentences[:3]:
+                lines.append(f'- "{sent}"')
+
+        # Concise structural patterns (matching training simplicity)
         if self.rhythm_pattern:
-            lines.append(f"RHYTHM PATTERN: {self.rhythm_pattern}")
+            lines.append(f"Rhythm: {self.rhythm_pattern}")
 
         if self.length_guidance:
-            lines.append(f"LENGTH: {self.length_guidance}")
+            lines.append(f"Length: {self.length_guidance}")
 
         if self.fragment_hint:
-            lines.append(f"FRAGMENTS: {self.fragment_hint}")
+            lines.append(f"Fragments: {self.fragment_hint}")
 
         if self.punctuation_hints:
-            hints = "; ".join(self.punctuation_hints)
-            lines.append(f"PUNCTUATION: {hints}")
+            hints = "; ".join(self.punctuation_hints[:3])  # Limit to 3
+            lines.append(f"Punctuation: {hints}")
 
         if self.opening_hint:
-            lines.append(f"OPENINGS: {self.opening_hint}")
-
-        # Add enhanced guidance if available
-        if self.enhanced_profile:
-            enhanced_guidance = self.enhanced_profile.format_for_prompt()
-            if enhanced_guidance:
-                lines.append("")  # Blank line separator
-                lines.append(enhanced_guidance)
+            lines.append(f"Openings: {self.opening_hint}")
 
         return "\n".join(lines)
 
@@ -240,6 +245,9 @@ class StructuralRAG:
             if top_patterns:
                 opening_hint = f"Vary: {', '.join(top_patterns)}"
 
+        # Get exemplar sentences from corpus - these are the most important!
+        exemplar_sentences = self._get_exemplar_sentences(input_text)
+
         return StructuralGuidance(
             rhythm_pattern=self.get_rhythm_pattern(target_sentences),
             punctuation_hints=self.get_punctuation_hints(),
@@ -247,7 +255,59 @@ class StructuralRAG:
             fragment_hint=self.get_fragment_hint(),
             opening_hint=opening_hint,
             enhanced_profile=self._enhanced_profile,
+            exemplar_sentences=exemplar_sentences,
         )
+
+    def _get_exemplar_sentences(self, input_text: str, n: int = 5) -> List[str]:
+        """Get exemplar sentences from corpus that demonstrate the author's voice.
+
+        These are the MOST IMPORTANT part of style guidance. The model needs to
+        SEE how the author actually writes, not just receive abstract rules.
+
+        Returns sentences that:
+        1. Have interesting rhythm (not too short, not too long)
+        2. Show characteristic vocabulary and syntax
+        3. Demonstrate emotional engagement
+        """
+        try:
+            # Get relevant chunks from corpus based on input content
+            results = self.indexer.retrieve_similar(self.author, input_text, n=10)
+            chunks = [r["text"] for r in results]
+        except Exception as e:
+            logger.debug(f"Could not query similar chunks: {e}")
+            return []
+
+        if not chunks:
+            return []
+
+        # Extract individual sentences from chunks
+        from ..utils.nlp import split_into_sentences
+        all_sentences = []
+        for chunk in chunks:
+            sentences = split_into_sentences(chunk)
+            all_sentences.extend(sentences)
+
+        # Filter for high-quality exemplar sentences
+        exemplars = []
+        for sent in all_sentences:
+            words = sent.split()
+            # Good length: 10-40 words (interesting but not overwhelming)
+            if 10 <= len(words) <= 40:
+                # Has interesting features
+                has_dash = '—' in sent or ' – ' in sent
+                has_semicolon = ';' in sent
+                has_emotion = any(w in sent.lower() for w in [
+                    'dread', 'horror', 'terrible', 'nameless', 'strange',
+                    'fear', 'wonder', 'awe', 'confess', 'shudder'
+                ])
+                # Prioritize sentences with distinctive features
+                score = int(has_dash) + int(has_semicolon) + int(has_emotion) * 2
+                if score > 0 or len(exemplars) < 3:  # Always get at least 3
+                    exemplars.append((score, sent))
+
+        # Sort by score and return top N
+        exemplars.sort(key=lambda x: -x[0])
+        return [sent for _, sent in exemplars[:n]]
 
 
 # Cache for structural RAG instances

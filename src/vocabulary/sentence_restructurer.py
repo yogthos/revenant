@@ -170,9 +170,18 @@ class SentenceRestructurer:
 
         # Build the inverted sentence
         # Remove the subject from the beginning and put it after the prefix
+        # CRITICAL: The prefix must end with a comma to separate the prepositional phrase
+        # from the main clause, otherwise the grammar breaks:
+        # BAD: "Amidst the darkness of technology advances..."
+        # GOOD: "Amidst the darkness, technology advances..."
         if first_clause.lower().startswith(subject.lower()):
             after_subject = first_clause[len(subject):].strip()
-            inverted = f"{prefix} {subject.lower()} {after_subject}—{rest.strip()}"
+            # Ensure prefix ends with comma (strip "of" phrases that would break grammar)
+            clean_prefix = prefix.rstrip(',')
+            # Remove trailing "of" to prevent broken grammar like "darkness of technology"
+            if clean_prefix.endswith(' of'):
+                clean_prefix = clean_prefix[:-3]
+            inverted = f"{clean_prefix}, {subject.lower()} {after_subject}—{rest.strip()}"
             # Capitalize first letter
             inverted = inverted[0].upper() + inverted[1:]
             return inverted

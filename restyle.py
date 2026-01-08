@@ -279,7 +279,7 @@ def transfer_file(
             perspective=effective_perspective,
             # From config file
             max_repair_attempts=gen.max_repair_attempts,
-            repair_temperature=getattr(gen, 'repair_temperature', 0.3),
+            repair_temperature=gen.repair_temperature,
             entailment_threshold=gen.entailment_threshold,
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
@@ -294,13 +294,13 @@ def transfer_file(
             # RAG settings
             use_structural_rag=gen.use_structural_rag,
             # Sentence post-processing
-            restructure_sentences=getattr(gen, 'restructure_sentences', True),
-            split_sentences=getattr(gen, 'split_sentences', True),
-            max_sentence_length=getattr(gen, 'max_sentence_length', 60),
-            sentence_length_variance=getattr(gen, 'sentence_length_variance', 0.3),
+            restructure_sentences=gen.restructure_sentences,
+            split_sentences=gen.split_sentences,
+            max_sentence_length=gen.max_sentence_length,
+            sentence_length_variance=gen.sentence_length_variance,
             # Grammar correction
-            correct_grammar=getattr(gen, 'correct_grammar', True),
-            grammar_language=getattr(gen, 'grammar_language', 'en-US'),
+            correct_grammar=gen.correct_grammar,
+            grammar_language=gen.grammar_language,
         )
     else:
         config = TransferConfig(
