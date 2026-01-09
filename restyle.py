@@ -281,6 +281,7 @@ def transfer_file(
             max_repair_attempts=gen.max_repair_attempts,
             repair_temperature=gen.repair_temperature,
             entailment_threshold=gen.entailment_threshold,
+            max_hallucinations_before_reject=app_config.validation.max_hallucinations_before_reject,
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
             # Neutralization
@@ -293,6 +294,9 @@ def transfer_file(
             min_paragraph_words=gen.min_paragraph_words,
             # RAG settings
             use_structural_rag=gen.use_structural_rag,
+            use_structural_grafting=gen.use_structural_grafting,
+            # Persona settings
+            use_persona=gen.use_persona,
             # Sentence post-processing
             restructure_sentences=gen.restructure_sentences,
             split_sentences=gen.split_sentences,

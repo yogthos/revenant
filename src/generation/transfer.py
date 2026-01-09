@@ -12,8 +12,6 @@ Pipeline:
 
 from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
-from pathlib import Path
-import json
 import time
 
 from .lora_generator import LoRAStyleGenerator, GenerationConfig, AdapterSpec
@@ -52,25 +50,6 @@ except ImportError:
 logger = get_logger(__name__)
 
 
-def _load_validation_config() -> dict:
-    """Load validation config from config.json."""
-    config_paths = [
-        Path("config.json"),
-        Path(__file__).parent.parent.parent / "config.json",
-    ]
-    for config_path in config_paths:
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    full_config = json.load(f)
-                return full_config.get("validation", {})
-            except Exception:
-                pass
-    return {}
-
-
-# Load config once at module level
-_VALIDATION_CONFIG = _load_validation_config()
 
 
 @dataclass
@@ -85,6 +64,7 @@ class TransferConfig:
     # Verification settings
     verify_entailment: bool = True
     entailment_threshold: float = 0.7
+    max_hallucinations_before_reject: int = 2  # Trigger repair after this many hallucinations
 
     # Repair settings
     max_repair_attempts: int = 3
@@ -556,9 +536,8 @@ class StyleTransfer:
                 logger.warning(f"Fabricated content: {fabricated_str}")
 
             # Trigger repair only if there are missing entities or too many hallucinations
-            max_hallucinations = _VALIDATION_CONFIG.get("max_hallucinations_before_reject", 2)
             needs_repair = (
-                semantic_result.hallucination_count > max_hallucinations or
+                semantic_result.hallucination_count > self.config.max_hallucinations_before_reject or
                 len(semantic_result.missing_entities) > 0
             )
 

@@ -72,9 +72,11 @@ class LLMProviderRoles:
     Allows using different providers for different tasks:
     - writer: Fast local model for style generation (e.g., MLX with LoRA)
     - critic: Smarter API model for validation and repair (e.g., DeepSeek)
+    - rtt: Provider for Round-Trip Translation neutralization (e.g., DeepSeek)
     """
     writer: str = "mlx"  # Provider for generation
     critic: str = "deepseek"  # Provider for critique/repair
+    rtt: str = "deepseek"  # Provider for RTT neutralization
 
 
 @dataclass
@@ -142,6 +144,10 @@ class GenerationConfig:
 
     # RAG settings
     use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
+    use_structural_grafting: bool = True  # Enable structural grafting for argument skeletons
+
+    # Persona settings
+    use_persona: bool = True  # Enable persona-based prompting
 
     # Grammar correction settings (final post-processing pass)
     correct_grammar: bool = True  # Enable style-safe grammar correction
@@ -190,6 +196,10 @@ class StatisticalValidationConfig:
 @dataclass
 class ValidationConfig:
     """Configuration for validation."""
+    # Top-level validation settings
+    entailment_threshold: float = 0.7  # Min NLI score for semantic preservation
+    max_hallucinations_before_reject: int = 2  # Trigger repair after this many hallucinations
+    # Nested validation configs
     semantic: SemanticValidationConfig = field(default_factory=SemanticValidationConfig)
     statistical: StatisticalValidationConfig = field(default_factory=StatisticalValidationConfig)
 
@@ -297,6 +307,7 @@ def _parse_llm_config(data: Dict) -> LLMConfig:
     provider_roles = LLMProviderRoles(
         writer=provider_data.get("writer", "mlx"),
         critic=provider_data.get("critic", "deepseek"),
+        rtt=provider_data.get("rtt", "deepseek"),
     )
 
     return LLMConfig(
@@ -432,6 +443,9 @@ def load_config(config_path: str = "config.json") -> Config:
             min_paragraph_words=gen.get("min_paragraph_words", 10),
             # RAG settings
             use_structural_rag=gen.get("use_structural_rag", True),
+            use_structural_grafting=gen.get("use_structural_grafting", True),
+            # Persona settings
+            use_persona=gen.get("use_persona", True),
             # Grammar correction settings
             correct_grammar=gen.get("correct_grammar", True),
             grammar_language=gen.get("grammar_language", "en-US"),
@@ -468,6 +482,10 @@ def load_config(config_path: str = "config.json") -> Config:
 
     if "validation" in data:
         val_data = data["validation"]
+        # Load top-level validation settings
+        config.validation.entailment_threshold = val_data.get("entailment_threshold", 0.7)
+        config.validation.max_hallucinations_before_reject = val_data.get("max_hallucinations_before_reject", 2)
+        # Load nested configs
         if "semantic" in val_data:
             config.validation.semantic = SemanticValidationConfig(
                 min_proposition_coverage=val_data["semantic"].get("min_proposition_coverage", 0.9),

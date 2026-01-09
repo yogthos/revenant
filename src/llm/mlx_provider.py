@@ -1088,16 +1088,12 @@ def create_rtt_neutralizer(provider: str = None, batch_size: int = None):
         RTTNeutralizer or DeepSeekRTTNeutralizer instance.
     """
     if provider is None:
-        # Load from config
-        config_path = Path(__file__).parent.parent.parent / "config.json"
-        if config_path.exists():
-            try:
-                with open(config_path) as f:
-                    config = json.load(f)
-                provider = config.get("llm", {}).get("provider", {}).get("rtt", "deepseek")
-            except Exception:
-                provider = "deepseek"
-        else:
+        # Load from config using type-safe config system
+        try:
+            from ..config import load_config
+            config = load_config()
+            provider = config.llm.provider.rtt
+        except Exception:
             provider = "deepseek"
 
     if provider == "mlx":
