@@ -125,6 +125,7 @@ class GenerationConfig:
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = 1.5  # Target for LoRA generation (1.5 = 50% expansion for flourish)
+    expand_for_texture: bool = False  # Add stronger expansion prompt to encourage elaboration/flourishes
 
     # LoRA adapter settings (path -> config mapping)
     # Each adapter can have: scale, temperature, top_p, min_p, repetition_penalty, max_tokens, min_tokens, worldview, checkpoint
@@ -451,6 +452,7 @@ def load_config(config_path: str = "config.json") -> Config:
             # Length control
             max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
             target_expansion_ratio=gen.get("target_expansion_ratio", 1.5),
+            expand_for_texture=gen.get("expand_for_texture", False),
             # LoRA adapters (path -> config mapping)
             lora_adapters=_parse_lora_adapters(gen.get("lora_adapters", {})),
             # Neutralization

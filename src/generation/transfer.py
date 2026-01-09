@@ -86,6 +86,7 @@ class TransferConfig:
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = 1.5  # Target for LoRA generation (1.5 = 50% expansion for author flourish)
+    expand_for_texture: bool = False  # Add stronger expansion prompt for texture/flourishes
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
@@ -484,6 +485,7 @@ class StyleTransfer:
                 structural_guidance=structural_guidance,
                 grafting_guidance=grafting_guidance,
                 target_words=target_words,  # Pass word count to match training format
+                expand_for_texture=self.config.expand_for_texture,
             )
             structural_guidance = None  # Already included in persona prompt
             use_raw_prompt = True  # Use persona prompt directly without additional formatting

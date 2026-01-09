@@ -227,6 +227,8 @@ def transfer_file(
     perspective: str = None,
     verify: bool = True,
     verbose: bool = False,
+    expand: bool = False,
+    no_expand: bool = False,
 ) -> None:
     """Transfer a file using LoRA adapter(s).
 
@@ -240,6 +242,8 @@ def transfer_file(
         perspective: Output perspective (None uses config default).
         verify: Whether to verify entailment.
         verbose: Whether to print verbose output.
+        expand: Enable texture expansion (CLI flag).
+        no_expand: Disable texture expansion (CLI flag).
     """
     from src.generation.transfer import StyleTransfer, TransferConfig
     from src.generation.lora_generator import AdapterSpec
@@ -269,6 +273,17 @@ def transfer_file(
     if effective_perspective is None:
         effective_perspective = "preserve"
 
+    # Determine expand_for_texture: CLI overrides config
+    # --expand enables, --no-expand disables, otherwise use config
+    if expand:
+        expand_for_texture = True
+    elif no_expand:
+        expand_for_texture = False
+    elif app_config:
+        expand_for_texture = app_config.generation.expand_for_texture
+    else:
+        expand_for_texture = False
+
     if app_config:
         gen = app_config.generation
         config = TransferConfig(
@@ -284,6 +299,7 @@ def transfer_file(
             max_hallucinations_before_reject=app_config.validation.max_hallucinations_before_reject,
             max_expansion_ratio=gen.max_expansion_ratio,
             target_expansion_ratio=gen.target_expansion_ratio,
+            expand_for_texture=expand_for_texture,
             # Neutralization
             skip_neutralization=gen.skip_neutralization,
             # Post-processing
@@ -312,6 +328,7 @@ def transfer_file(
             verify_entailment=verify,
             perspective=effective_perspective,
             use_structural_rag=True,  # Default to enabled
+            expand_for_texture=expand_for_texture,
         )
 
     # Create critic provider for repairs
@@ -490,6 +507,16 @@ def main():
         "--no-verify",
         action="store_true",
         help="Disable entailment verification",
+    )
+    parser.add_argument(
+        "--expand",
+        action="store_true",
+        help="Enable texture expansion (add atmospheric details, flourishes)",
+    )
+    parser.add_argument(
+        "--no-expand",
+        action="store_true",
+        help="Disable texture expansion (overrides config.json)",
     )
     parser.add_argument(
         "--lora-scale",
@@ -688,6 +715,8 @@ def main():
         perspective=args.perspective,
         verify=not args.no_verify,
         verbose=args.verbose,
+        expand=args.expand,
+        no_expand=args.no_expand,
     )
 
 

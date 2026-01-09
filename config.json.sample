@@ -47,6 +47,8 @@
     "_comment3": "Length control (target_expansion_ratio: 1.5 = 50% longer output for author flourish)",
     "max_expansion_ratio": 3.0,
     "target_expansion_ratio": 2.0,
+    "_comment3a": "expand_for_texture: add stronger prompt to encourage elaboration/flourishes",
+    "expand_for_texture": false,
     "_comment4": "LoRA adapters with per-adapter generation settings",
     "lora_adapters": {
       "lora_adapters/lovecraft_14b": {
