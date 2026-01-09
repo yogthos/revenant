@@ -191,14 +191,13 @@ class StyleTransfer:
         self.verify_fn = verify_fn
         self.critic_provider = critic_provider
 
-        # Initialize generator
-        # Note: lora_scale is now per-adapter in AdapterSpec, not in config
-        gen_config = GenerationConfig(
-            max_tokens=self.config.max_tokens,
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
-            skip_cleaning=False,  # Always clean output to remove garbage
-        )
+        # Initialize generator using lora config from config.json
+        # This loads temperature, top_p, min_p, repetition_penalty, etc. from lora section
+        gen_config = GenerationConfig.from_config()
+        # Override with any CLI-specified temperature
+        if self.config.temperature != 0.4:  # 0.4 is the default, so non-default means CLI override
+            gen_config.temperature = self.config.temperature
+        gen_config.skip_cleaning = False  # Always clean output to remove garbage
 
         if adapters:
             # Multiple adapters mode
