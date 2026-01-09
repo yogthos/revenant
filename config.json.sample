@@ -58,7 +58,6 @@
         "min_p": 0.05,
         "repetition_penalty": 1.15,
         "max_tokens": 1024,
-        "min_tokens": 50,
         "worldview": "lovecraft_worldview.txt"
       }
     },

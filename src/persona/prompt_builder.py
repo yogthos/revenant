@@ -289,16 +289,10 @@ def build_persona_prompt(
     parts.append(persona_frame)
     parts.append("")  # blank line
 
-    # 2. Word count (REQUIRED)
+    # 2. Word count (REQUIRED) - must match training format EXACTLY
+    # Training format: "Write approximately N words." on its own line, nothing else
+    # The model was trained to follow this instruction precisely (1.00 ratio)
     parts.append(f"Write approximately {target_words} words.")
-
-    # 2b. Expansion instruction (optional - encourages texture/flourishes)
-    if expand_for_texture:
-        parts.append("")
-        parts.append(f"IMPORTANT: You MUST write {target_words} words. The input is shorter—you must EXPAND it substantially. "
-                     "Add atmospheric details, sensory impressions, philosophical asides, and rhetorical flourishes. "
-                     "Elaborate on implications. Add texture through vivid metaphors and characteristic digressions. "
-                     "Do not simply paraphrase the input—amplify and enrich it to reach the full word count.")
 
     # 3. Skeleton structure (if available from grafting - matches training's 50% skeleton)
     if grafting_guidance and hasattr(grafting_guidance, 'skeleton') and grafting_guidance.skeleton:
@@ -328,4 +322,6 @@ def build_persona_prompt(
     # 7. Stop token
     parts.append("###")
 
-    return "\n".join(parts)
+    prompt = "\n".join(parts)
+
+    return prompt

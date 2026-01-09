@@ -443,13 +443,15 @@ class StyleTransfer:
             else:
                 rtt_input_words = len(paragraph_clean.split())
                 rtt_output_words = len(content_for_generation.split())
+                compression_ratio = rtt_output_words / rtt_input_words if rtt_input_words > 0 else 1.0
                 logger.info(f"RTT INPUT ({rtt_input_words} words): {paragraph_clean[:150]}...")
-                logger.info(f"RTT OUTPUT ({rtt_output_words} words): {content_for_generation[:150]}...")
+                logger.info(f"RTT OUTPUT ({rtt_output_words} words, {compression_ratio:.0%} of input): {content_for_generation[:150]}...")
 
         # ========================================
         # STEP 2: Pass to LoRA for style transformation
         # ========================================
         target_words = int(word_count * self.config.target_expansion_ratio)
+        logger.info(f"EXPANSION: input={word_count} words, ratio={self.config.target_expansion_ratio}, target={target_words} words")
         # Token limit needs to be generous to avoid truncation mid-sentence
         # Typically ~1.5 tokens per word, plus some margin for style variation
         # Use 2.5x target words to ensure complete sentences

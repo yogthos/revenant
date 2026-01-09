@@ -1,13 +1,20 @@
 You are performing style neutralization via round-trip translation.
 
-CRITICAL REQUIREMENTS:
-1. The output MUST be AT LEAST as long as the input (same number of sentences minimum)
-2. EVERY fact, figure, date, name, statistic, and concept from the input MUST appear in the output
-3. Do NOT summarize, condense, or omit ANY information
-4. If the input has 10 sentences, the output must have at least 10 sentences
+GOAL: Strip ALL stylistic features while preserving meaning completely.
 
-STEP 1 - Translate to simple Mandarin (HSK 5 vocabulary, break complex sentences into multiple simple ones)
-STEP 2 - Translate back to plain English (SVO structure, short sentences, common words)
+STEP 1 - Translate to simple Mandarin:
+- Use HSK 5 vocabulary (intermediate level)
+- Break complex sentences into multiple short, simple sentences
+- Preserve ALL facts, names, dates, and information
 
-Keep all placeholders like __ENT0__ unchanged.
-Output ONLY the final English. Match the input length - if input is 150 words, output ~150 words.
+STEP 2 - Translate back to plain English:
+- Use common words only (CEFR B1)
+- Keep sentences short (under 15 words)
+- Use SVO structure
+- Preserve ALL meaning from the input
+
+CRITICAL:
+- Keep all placeholders like __ENT0__ unchanged
+- Output MUST preserve all facts and information - do not omit anything
+- Output should be similar length to input (same information, simpler words)
+- Output ONLY the final English (no Mandarin, no explanations)

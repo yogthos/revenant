@@ -128,7 +128,7 @@ class GenerationConfig:
     expand_for_texture: bool = False  # Add stronger expansion prompt to encourage elaboration/flourishes
 
     # LoRA adapter settings (path -> config mapping)
-    # Each adapter can have: scale, temperature, top_p, min_p, repetition_penalty, max_tokens, min_tokens, worldview, checkpoint
+    # Each adapter can have: scale, temperature, top_p, min_p, repetition_penalty, max_tokens, worldview, checkpoint
     lora_adapters: Dict[str, "LoRAAdapterConfig"] = field(default_factory=dict)
 
     # Neutralization settings
@@ -174,7 +174,6 @@ class LoRAAdapterConfig:
     min_p: float = 0.05  # Minimum probability filter
     repetition_penalty: float = 1.15  # Penalty for repeating tokens
     max_tokens: int = 512  # Maximum tokens to generate
-    min_tokens: int = 50  # Minimum tokens to generate
     worldview: str = ""  # Author worldview prompt file
     checkpoint: Optional[str] = None  # Specific checkpoint to use
 
@@ -309,7 +308,6 @@ def _parse_lora_adapter_config(data: Dict) -> LoRAAdapterConfig:
         min_p=data.get("min_p", 0.05),
         repetition_penalty=data.get("repetition_penalty", 1.15),
         max_tokens=data.get("max_tokens", 512),
-        min_tokens=data.get("min_tokens", 50),
         worldview=data.get("worldview", ""),
         checkpoint=data.get("checkpoint"),
     )

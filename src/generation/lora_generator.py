@@ -102,7 +102,6 @@ class GenerationConfig:
     top_p: float = 0.92
     min_p: float = 0.05
     repetition_penalty: float = 1.15
-    min_tokens: int = 50
     scale: float = 1.0  # LoRA adapter scale (was lora_scale)
     skip_cleaning: bool = False  # If True, return raw output without _clean_response
 
@@ -126,7 +125,6 @@ class GenerationConfig:
                 top_p=adapter_config.top_p,
                 min_p=adapter_config.min_p,
                 repetition_penalty=adapter_config.repetition_penalty,
-                min_tokens=adapter_config.min_tokens,
                 scale=adapter_config.scale,
             )
         except Exception as e:

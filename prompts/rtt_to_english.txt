@@ -6,4 +6,5 @@ STYLE GUIDELINES:
 2. LENGTH: Keep sentences short (under 15 words). Use periods, not semicolons.
 3. TONE: Clinical, dry, and monotonous. Remove all emotion and atmosphere.
 4. VOCABULARY: Use common, high-frequency words (CEFR B1 level).
-5. ENTITIES: Keep placeholders like __ENT0__ exactly as they appear.
+5. MEANING: Preserve ALL facts and information from the input accurately.
+6. ENTITIES: Keep placeholders like __ENT0__ exactly as they appear.
