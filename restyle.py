@@ -558,8 +558,16 @@ def main():
 
     args = parser.parse_args()
 
-    # Setup logging based on verbose flag
-    setup_logging(level="INFO" if args.verbose else "WARNING")
+    # Setup logging - use config.log_level as default, -v overrides to INFO
+    try:
+        from src.config import load_config
+        app_config = load_config()
+        default_level = app_config.log_level
+    except Exception:
+        default_level = "WARNING"
+
+    log_level = "INFO" if args.verbose else default_level
+    setup_logging(level=log_level)
 
     # List adapters mode
     if args.list_adapters:

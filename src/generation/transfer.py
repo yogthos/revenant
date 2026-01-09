@@ -756,6 +756,7 @@ class StyleTransfer:
                     content=repair_content,
                     author=self.author,
                     target_words=target_words,
+                    temperature=self.config.repair_temperature,
                 )
 
                 if repaired and len(repaired.split()) > 10:
