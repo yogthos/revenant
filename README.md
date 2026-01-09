@@ -58,7 +58,7 @@ python restyle.py input.txt -o output.txt --no-verify
 | `--adapter PATH[:SCALE]` | - | LoRA adapter path with optional scale |
 | `--author NAME` | - | Author name |
 | `--checkpoint FILE` | - | Use specific training checkpoint |
-| `--temperature` | 0.4 | Generation temperature |
+| `--temperature` | config | Generation temperature (overrides config.json) |
 | `--no-verify` | false | Skip entailment verification |
 | `--repl` | false | Interactive mode |
 | `-v` | false | Verbose output |
@@ -185,11 +185,17 @@ Create `prompts/author_persona.txt` with persona frames matching training:
 {Another conceptual frame}
 ```
 
-Update `config.json`:
+Update `config.json` to add the adapter with its settings:
 
 ```json
-"lora": {
-  "worldview": "author_persona.txt"
+"generation": {
+  "lora_adapters": {
+    "lora_adapters/author": {
+      "scale": 1.0,
+      "temperature": 0.7,
+      "worldview": "author_persona.txt"
+    }
+  }
 }
 ```
 
@@ -231,24 +237,35 @@ Input → RTT Neutralization → Structural RAG → LoRA Generation → Semantic
 
 ## Configuration
 
-Key settings in `config.json`:
+Key settings in `config.json`. All LoRA settings are per-adapter under `lora_adapters`:
 
 ```json
 {
   "generation": {
     "entailment_threshold": 0.9,
     "lora_adapters": {
-      "lora_adapters/lovecraft": {"scale": 0.3}
+      "lora_adapters/lovecraft": {
+        "scale": 1.5,
+        "temperature": 0.7,
+        "top_p": 0.92,
+        "min_p": 0.05,
+        "repetition_penalty": 1.15,
+        "max_tokens": 1024,
+        "worldview": "lovecraft_worldview.txt"
+      }
     },
     "use_structural_rag": true,
     "use_structural_grafting": true,
     "use_persona": true
-  },
-  "lora": {
-    "worldview": "lovecraft_worldview.txt"
   }
 }
 ```
+
+| Setting | Description |
+|---------|-------------|
+| `scale` | LoRA influence (0.0=base only, 1.0=full, >1.0=amplified) |
+| `temperature` | Generation creativity (lower=more coherent) |
+| `worldview` | Persona prompt file in `prompts/` directory |
 
 ---
 
