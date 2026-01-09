@@ -94,7 +94,7 @@ except ImportError:
 class GenerationConfig:
     """Configuration for LoRA generation.
 
-    Values are loaded from config.json "lora" section. Use from_config() to create.
+    Values are loaded from config.json lora_adapters section. Use from_config() to create.
     """
 
     max_tokens: int = 512
@@ -103,23 +103,31 @@ class GenerationConfig:
     min_p: float = 0.05
     repetition_penalty: float = 1.15
     min_tokens: int = 50
-    lora_scale: float = 2.5
+    scale: float = 1.0  # LoRA adapter scale (was lora_scale)
     skip_cleaning: bool = False  # If True, return raw output without _clean_response
 
     @classmethod
-    def from_config(cls) -> "GenerationConfig":
-        """Create GenerationConfig from config.json settings."""
+    def from_config(cls, adapter_path: Optional[str] = None) -> "GenerationConfig":
+        """Create GenerationConfig from config.json settings for a specific adapter.
+
+        Args:
+            adapter_path: Path to the LoRA adapter. If provided, loads adapter-specific
+                         settings from generation.lora_adapters[path]. If None, uses defaults.
+
+        Returns:
+            GenerationConfig with settings from config or defaults.
+        """
         try:
-            from ..config import load_config
-            config = load_config()
+            from ..config import get_adapter_config
+            adapter_config = get_adapter_config(adapter_path)
             return cls(
-                max_tokens=config.lora.max_tokens,
-                temperature=config.lora.temperature,
-                top_p=config.lora.top_p,
-                min_p=config.lora.min_p,
-                repetition_penalty=config.lora.repetition_penalty,
-                min_tokens=config.lora.min_tokens,
-                lora_scale=config.lora.lora_scale,
+                max_tokens=adapter_config.max_tokens,
+                temperature=adapter_config.temperature,
+                top_p=adapter_config.top_p,
+                min_p=adapter_config.min_p,
+                repetition_penalty=adapter_config.repetition_penalty,
+                min_tokens=adapter_config.min_tokens,
+                scale=adapter_config.scale,
             )
         except Exception as e:
             logger.warning(f"Could not load config, using defaults: {e}")

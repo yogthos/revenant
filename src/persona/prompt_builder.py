@@ -96,13 +96,31 @@ def _load_persona_file(persona_filename: str) -> Dict[str, any]:
     return result
 
 
-def _get_worldview_filename() -> str:
-    """Get worldview filename from config.json."""
+def _get_worldview_filename(adapter_path: str = None) -> str:
+    """Get worldview filename from config.json for a specific adapter.
+
+    Args:
+        adapter_path: Path to the adapter. If provided, looks up worldview
+                     from that adapter's config. If None, uses first configured adapter.
+
+    Returns:
+        Worldview filename (e.g., "lovecraft_worldview.txt") or default.
+    """
     try:
-        from ..config import load_config
-        config = load_config()
-        if config.lora.worldview:
-            return config.lora.worldview
+        from ..config import get_adapter_config, load_config
+
+        if adapter_path:
+            # Get worldview for specific adapter
+            adapter_config = get_adapter_config(adapter_path)
+            if adapter_config.worldview:
+                return adapter_config.worldview
+        else:
+            # Fall back to first configured adapter's worldview
+            config = load_config()
+            if config.generation.lora_adapters:
+                first_adapter = next(iter(config.generation.lora_adapters.values()))
+                if first_adapter.worldview:
+                    return first_adapter.worldview
     except Exception:
         pass
     return "default_persona.txt"

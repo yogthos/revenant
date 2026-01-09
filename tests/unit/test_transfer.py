@@ -27,7 +27,7 @@ class TestTransferConfig:
         config = TransferConfig()
 
         assert config.max_tokens == 512
-        assert config.temperature == 0.4
+        assert config.temperature is None  # None means use lora config
         assert config.top_p == 0.9
         assert config.verify_entailment is True
         assert config.entailment_threshold == 0.7

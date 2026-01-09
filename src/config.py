@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from .utils.logging import get_logger
 
@@ -126,9 +126,9 @@ class GenerationConfig:
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = 1.5  # Target for LoRA generation (1.5 = 50% expansion for flourish)
 
-    # LoRA adapter settings (path -> scale mapping)
-    # Scale: 0.0=base only, 0.5=balanced, 1.0=full, >1.0=amplified
-    lora_adapters: dict = field(default_factory=dict)  # {"path": scale, ...}
+    # LoRA adapter settings (path -> config mapping)
+    # Each adapter can have: scale, temperature, top_p, min_p, repetition_penalty, max_tokens, min_tokens, worldview, checkpoint
+    lora_adapters: Dict[str, "LoRAAdapterConfig"] = field(default_factory=dict)
 
     # Neutralization settings
     skip_neutralization: bool = False  # If True, skip RTT and use original text as input
@@ -161,20 +161,25 @@ class GenerationConfig:
 
 
 @dataclass
-class LoRAConfig:
-    """Configuration for LoRA generation parameters.
+class LoRAAdapterConfig:
+    """Configuration for a specific LoRA adapter.
 
     These settings control the balance between style strength and coherence.
-    Adjust in config.json under the "lora" section.
+    Each adapter in lora_adapters can have its own settings.
     """
+    scale: float = 1.0  # Adapter influence (0.0=base only, 1.0=full, >1.0=amplified)
     temperature: float = 0.6  # Higher = more creative, lower = more coherent
     top_p: float = 0.92  # Nucleus sampling threshold
     min_p: float = 0.05  # Minimum probability filter
     repetition_penalty: float = 1.15  # Penalty for repeating tokens
-    lora_scale: float = 2.5  # LoRA adapter influence (higher = stronger style)
     max_tokens: int = 512  # Maximum tokens to generate
     min_tokens: int = 50  # Minimum tokens to generate
-    worldview: str = ""  # Author worldview prompt for embodiment
+    worldview: str = ""  # Author worldview prompt file
+    checkpoint: Optional[str] = None  # Specific checkpoint to use
+
+
+# Keep LoRAConfig as alias for backward compatibility
+LoRAConfig = LoRAAdapterConfig
 
 
 @dataclass
@@ -258,7 +263,6 @@ class Config:
     fitness_weights: FitnessWeightsConfig = field(default_factory=FitnessWeightsConfig)
     thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    lora: LoRAConfig = field(default_factory=LoRAConfig)
     corpus: CorpusConfig = field(default_factory=CorpusConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
@@ -293,6 +297,37 @@ def _parse_llm_provider_config(data: Dict) -> LLMProviderConfig:
         temperature=data.get("temperature", 0.7),
         timeout=data.get("timeout", 120),
     )
+
+
+def _parse_lora_adapter_config(data: Dict) -> LoRAAdapterConfig:
+    """Parse LoRA adapter configuration from dict."""
+    return LoRAAdapterConfig(
+        scale=data.get("scale", 1.0),
+        temperature=data.get("temperature", 0.6),
+        top_p=data.get("top_p", 0.92),
+        min_p=data.get("min_p", 0.05),
+        repetition_penalty=data.get("repetition_penalty", 1.15),
+        max_tokens=data.get("max_tokens", 512),
+        min_tokens=data.get("min_tokens", 50),
+        worldview=data.get("worldview", ""),
+        checkpoint=data.get("checkpoint"),
+    )
+
+
+def _parse_lora_adapters(data: Dict) -> Dict[str, LoRAAdapterConfig]:
+    """Parse lora_adapters section into typed configs.
+
+    Handles both old format (path -> scale) and new format (path -> config dict).
+    """
+    result = {}
+    for path, value in data.items():
+        if isinstance(value, dict):
+            # New format: full config dict
+            result[path] = _parse_lora_adapter_config(value)
+        else:
+            # Old format: just a scale number
+            result[path] = LoRAAdapterConfig(scale=float(value))
+    return result
 
 
 def _parse_llm_config(data: Dict) -> LLMConfig:
@@ -394,20 +429,6 @@ def load_config(config_path: str = "config.json") -> Config:
     if "llm" in data:
         config.llm = _parse_llm_config(data["llm"])
 
-    # Parse LoRA generation settings
-    if "lora" in data:
-        lora = data["lora"]
-        config.lora = LoRAConfig(
-            temperature=lora.get("temperature", 0.6),
-            top_p=lora.get("top_p", 0.92),
-            min_p=lora.get("min_p", 0.05),
-            repetition_penalty=lora.get("repetition_penalty", 1.15),
-            lora_scale=lora.get("lora_scale", 2.5),
-            max_tokens=lora.get("max_tokens", 512),
-            min_tokens=lora.get("min_tokens", 50),
-            worldview=lora.get("worldview", ""),
-        )
-
     if "corpus" in data:
         config.corpus = CorpusConfig(
             min_sentences_per_paragraph=data["corpus"].get("min_sentences_per_paragraph", 2),
@@ -430,8 +451,8 @@ def load_config(config_path: str = "config.json") -> Config:
             # Length control
             max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
             target_expansion_ratio=gen.get("target_expansion_ratio", 1.5),
-            # LoRA adapters (path -> scale mapping)
-            lora_adapters=gen.get("lora_adapters", {}),
+            # LoRA adapters (path -> config mapping)
+            lora_adapters=_parse_lora_adapters(gen.get("lora_adapters", {})),
             # Neutralization
             skip_neutralization=gen.get("skip_neutralization", False),
             # Post-processing
@@ -564,3 +585,36 @@ def create_default_config() -> Dict:
         },
         "log_level": "INFO"
     }
+
+
+def get_adapter_config(adapter_path: Optional[str] = None) -> LoRAAdapterConfig:
+    """Get LoRA adapter config for a specific adapter path.
+
+    Args:
+        adapter_path: Path to the adapter directory. If None, returns defaults.
+
+    Returns:
+        LoRAAdapterConfig for the adapter, or defaults if not found.
+    """
+    if not adapter_path:
+        return LoRAAdapterConfig()
+
+    try:
+        config = load_config()
+        adapters = config.generation.lora_adapters
+
+        # Try exact match first
+        if adapter_path in adapters:
+            return adapters[adapter_path]
+
+        # Try matching by adapter directory name
+        from pathlib import Path
+        adapter_name = Path(adapter_path).name
+        for path, adapter_config in adapters.items():
+            if Path(path).name == adapter_name:
+                return adapter_config
+
+    except Exception as e:
+        logger.debug(f"Could not load adapter config: {e}")
+
+    return LoRAAdapterConfig()

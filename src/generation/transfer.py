@@ -58,7 +58,7 @@ class TransferConfig:
 
     # Generation settings
     max_tokens: int = 512
-    temperature: float = 0.4  # Higher helps complete sentences before repetition loops
+    temperature: Optional[float] = None  # None = use lora config, float = CLI override
     top_p: float = 0.9
 
     # Verification settings
@@ -191,11 +191,17 @@ class StyleTransfer:
         self.verify_fn = verify_fn
         self.critic_provider = critic_provider
 
-        # Initialize generator using lora config from config.json
-        # This loads temperature, top_p, min_p, repetition_penalty, etc. from lora section
-        gen_config = GenerationConfig.from_config()
-        # Override with any CLI-specified temperature
-        if self.config.temperature != 0.4:  # 0.4 is the default, so non-default means CLI override
+        # Determine the primary adapter path for config loading
+        if adapters:
+            primary_adapter_path = adapters[0].path if adapters else None
+        else:
+            primary_adapter_path = adapter_path
+
+        # Initialize generator using adapter-specific config from config.json
+        # This loads temperature, top_p, min_p, repetition_penalty, scale, etc.
+        gen_config = GenerationConfig.from_config(primary_adapter_path)
+        # Override with CLI-specified temperature if provided
+        if self.config.temperature is not None:
             gen_config.temperature = self.config.temperature
         gen_config.skip_cleaning = False  # Always clean output to remove garbage
 

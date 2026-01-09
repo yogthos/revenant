@@ -474,8 +474,8 @@ def main():
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.4,
-        help="Generation temperature (default: 0.4, helps complete sentences)",
+        default=None,
+        help="Generation temperature (overrides config.json lora.temperature)",
     )
     parser.add_argument(
         "--perspective",
@@ -646,20 +646,18 @@ def main():
             adapters.append(adapter)
     else:
         # Try to load adapters from config file
-        from src.config import load_config
+        from src.config import load_config, LoRAAdapterConfig
         try:
             app_config = load_config(args.config)
             lora_adapters = app_config.generation.lora_adapters
             if lora_adapters:
-                for path, value in lora_adapters.items():
-                    # Value can be a number (scale) or dict {scale, checkpoint}
-                    if isinstance(value, dict):
-                        scale = value.get("scale", 1.0)
-                        checkpoint = value.get("checkpoint")
-                        adapters.append(AdapterSpec(path=path, scale=scale, checkpoint=checkpoint))
-                    else:
-                        # Simple number format (scale only)
-                        adapters.append(AdapterSpec(path=path, scale=float(value)))
+                for path, adapter_config in lora_adapters.items():
+                    # Value is now a LoRAAdapterConfig object
+                    adapters.append(AdapterSpec(
+                        path=path,
+                        scale=adapter_config.scale,
+                        checkpoint=adapter_config.checkpoint,
+                    ))
                 print(f"Using adapters from config: {args.config}")
         except (FileNotFoundError, AttributeError):
             pass
