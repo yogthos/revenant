@@ -63,6 +63,20 @@ python restyle.py input.txt -o output.txt --no-verify
 | `--repl` | false | Interactive mode |
 | `-v` | false | Verbose output |
 
+### Interactive REPL
+
+The REPL mode provides an interactive terminal for live style transfer with multiple variations:
+
+```bash
+python restyle.py --repl --adapter lora_adapters/lovecraft --author "H.P. Lovecraft"
+```
+
+Features:
+- Generates 5 variations per input (shown progressively as they complete)
+- Press `Ctrl+C` during generation to stop early and keep completed variations
+- Input supports readline navigation (`Ctrl+A`/`Home`, `Ctrl+E`/`End`, arrow keys)
+- Commands: `/help`, `/clear`, `/history`, `/last`, `/quit`
+
 ---
 
 ## Training Your Own Adapter

@@ -6,6 +6,7 @@ Provides a terminal UI similar to Claude Code for interactive style transfer.
 import sys
 import os
 import textwrap
+import readline
 from typing import Optional
 from dataclasses import dataclass
 
@@ -13,6 +14,18 @@ from ..generation.transfer import StyleTransfer, TransferConfig
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Configure readline for better input handling
+readline.parse_and_bind('set editing-mode emacs')
+readline.parse_and_bind('"\\e[A": previous-history')
+readline.parse_and_bind('"\\e[B": next-history')
+readline.parse_and_bind('"\\e[C": forward-char')
+readline.parse_and_bind('"\\e[D": backward-char')
+readline.parse_and_bind('"\\e[H": beginning-of-line')
+readline.parse_and_bind('"\\e[F": end-of-line')
+readline.parse_and_bind('"\\C-a": beginning-of-line')
+readline.parse_and_bind('"\\C-e": end-of-line')
+
 
 # ANSI color codes
 class Colors:
@@ -95,7 +108,9 @@ class StyleREPL:
         self.config = config
         self.use_color = config.use_color and supports_color()
         self.history: list[tuple[str, list[str]]] = []  # (input, [variations]) pairs
+        self.input_history: list[str] = []  # For readline history
         self.running = False
+        self._generation_cancelled = False
 
     def _color(self, text: str, *codes: str) -> str:
         """Apply color codes to text if colors are enabled."""
@@ -128,7 +143,7 @@ class StyleREPL:
         # Instructions
         print()
         print(self._color("  Enter a paragraph to transform (press Enter twice to submit)", Colors.DIM))
-        print(self._color("  Generates 5 variations for comparison", Colors.DIM))
+        print(self._color("  Generates 5 variations (Ctrl+C to cancel)", Colors.DIM))
         print(self._color("  Commands: /help, /clear, /history, /quit", Colors.DIM))
         print()
 
@@ -145,12 +160,13 @@ class StyleREPL:
         print(self._color("How it works:", Colors.BOLD))
         print("  1. Enter a paragraph (press Enter twice to submit)")
         print("  2. Text is neutralized via Round-Trip Translation (RTT)")
-        print("  3. LoRA generates 5 variations for comparison")
-        print("  4. Choose the best variation for your document")
+        print("  3. LoRA generates 5 variations (shown progressively)")
+        print("  4. Press Ctrl+C during generation to stop early")
         print()
-        print(self._color("Tips:", Colors.BOLD))
-        print("  - Best for fixing specific paragraphs in an otherwise-good document")
-        print("  - Multi-line input is supported")
+        print(self._color("Input shortcuts:", Colors.BOLD))
+        print("  Ctrl+A / Home    Jump to start of line")
+        print("  Ctrl+E / End     Jump to end of line")
+        print("  Up/Down arrows   Navigate input history")
         print()
 
     def _print_history(self) -> None:
@@ -191,7 +207,7 @@ class StyleREPL:
         print()
 
         # Show all variations
-        self._print_output(variations)
+        self._print_variations_final(variations)
         print()
 
     def _print_wrapped(self, text: str, indent: int = 2) -> None:
@@ -219,6 +235,9 @@ class StyleREPL:
             while True:
                 try:
                     line = input()
+                    # Add non-empty lines to readline history
+                    if line.strip():
+                        readline.add_history(line)
                 except EOFError:
                     return None
 
@@ -243,6 +262,15 @@ class StyleREPL:
 
         return "\n".join(lines)
 
+    def _print_variation(self, index: int, output: str) -> None:
+        """Print a single variation as it's generated."""
+        width = get_terminal_width()
+        print()
+        print(self._color(f"  [{index}] ", Colors.CYAN, Colors.BOLD) +
+              self._color(f"({len(output.split())} words)", Colors.DIM))
+        print(self._color("  " + "─" * (width - 4), Colors.DIM))
+        self._print_wrapped(output)
+
     def _transform_text(self, text: str, num_variations: int = 5) -> Optional[list[str]]:
         """Transform text using the style transfer pipeline.
 
@@ -256,41 +284,42 @@ class StyleREPL:
         if not text.strip():
             return None
 
-        word_count = len(text.split())
-
-        # For longer documents, just do single output
-        if word_count >= 100:
-            print()
-            print(self._color("  Transforming document...", Colors.DIM), end="", flush=True)
-            try:
-                output, stats = self.transfer.transfer_document(text)
-                print("\r" + " " * 50 + "\r", end="")
-                return [output] if output else None
-            except Exception as e:
-                print("\r" + " " * 50 + "\r", end="")
-                print(self._color(f"  Error: {e}", Colors.RED))
-                logger.exception("Transform error")
-                return None
-
-        # Generate multiple variations for paragraphs
+        self._generation_cancelled = False
         variations = []
+        width = get_terminal_width()
+
+        # Print header for progressive output
         print()
+        print(self._color("─" * width, Colors.DIM))
+        print(self._color("  Generating variations (Ctrl+C to stop):", Colors.GREEN, Colors.BOLD))
+        print(self._color("─" * width, Colors.DIM))
 
         for i in range(num_variations):
-            print(self._color(f"  Generating variation {i+1}/{num_variations}...", Colors.DIM), end="\r", flush=True)
+            if self._generation_cancelled:
+                break
 
             try:
-                output, score = self.transfer.transfer_paragraph(text)
+                output, _ = self.transfer.transfer_paragraph(text)
                 if output and output.strip():
                     # Avoid duplicates
                     if output.strip() not in [v.strip() for v in variations]:
                         variations.append(output)
+                        # Print variation immediately
+                        self._print_variation(len(variations), output)
+            except KeyboardInterrupt:
+                print()
+                print(self._color(f"\n  Generation cancelled after {len(variations)} variation(s)", Colors.YELLOW))
+                self._generation_cancelled = True
+                break
             except Exception as e:
                 logger.warning(f"Variation {i+1} failed: {e}")
                 continue
 
-        # Clear the progress line
-        print(" " * 60, end="\r")
+        # Print footer
+        print(self._color("─" * width, Colors.DIM))
+        if variations:
+            print(self._color(f"  {len(variations)} variation(s) generated", Colors.DIM))
+        print()
 
         if not variations:
             print(self._color("  Error: No variations generated", Colors.RED))
@@ -298,23 +327,21 @@ class StyleREPL:
 
         return variations
 
-    def _print_output(self, variations: list[str]) -> None:
-        """Print the transformed output variations."""
+    def _print_variations_final(self, variations: list[str]) -> None:
+        """Print all variations (for /last command)."""
         width = get_terminal_width()
 
         print()
         print(self._color("─" * width, Colors.DIM))
 
         if len(variations) == 1:
-            # Single output (document mode)
             output = variations[0]
             print(self._color(f"  Output ({len(output.split())} words):", Colors.GREEN, Colors.BOLD))
             print(self._color("─" * width, Colors.DIM))
             print()
             self._print_wrapped(output)
         else:
-            # Multiple variations
-            print(self._color(f"  {len(variations)} Variations Generated:", Colors.GREEN, Colors.BOLD))
+            print(self._color(f"  {len(variations)} Variations:", Colors.GREEN, Colors.BOLD))
             print(self._color("─" * width, Colors.DIM))
 
             for i, output in enumerate(variations, 1):
@@ -376,7 +403,6 @@ class StyleREPL:
                 output = self._transform_text(text)
 
                 if output:
-                    self._print_output(output)
                     self.history.append((text, output))
 
             except KeyboardInterrupt:
