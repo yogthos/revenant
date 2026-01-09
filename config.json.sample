@@ -1,9 +1,9 @@
 {
   "llm": {
+    "_comment": "Provider selection: critic for repair, rtt for neutralization (deepseek or mlx)",
     "provider": {
-      "writer": "mlx",
       "critic": "deepseek",
-      "rtt": "mlx_rtt"
+      "rtt": "deepseek"
     },
     "providers": {
       "deepseek": {
@@ -19,12 +19,6 @@
         "model": "llama3",
         "max_tokens": 4096,
         "temperature": 0.7
-      },
-      "mlx": {
-        "model": "./models/Qwen2.5-14B-Base-4bit-MLX",
-        "max_tokens": 1024,
-        "temperature": 0.5,
-        "top_p": 0.9
       },
       "mlx_rtt": {
         "model": "mlx-community/Qwen2.5-3B-Instruct-4bit",
@@ -48,15 +42,23 @@
     }
   },
   "generation": {
-    "_comment": "Meaning preservation",
-    "entailment_threshold": 0.95,
+    "_comment": "Repair and length settings",
     "max_repair_attempts": 5,
     "_comment3": "Length control (target_expansion_ratio: 1.5 = 50% longer output for author flourish)",
-    "max_expansion_ratio": 2.5,
-    "target_expansion_ratio": 1.5,
-    "_comment4": "LoRA adapters: value can be scale (number) or {scale, checkpoint} object",
+    "max_expansion_ratio": 3.0,
+    "target_expansion_ratio": 2.0,
+    "_comment4": "LoRA adapters with per-adapter generation settings",
     "lora_adapters": {
-      "lora_adapters/lovecraft_14b": {"scale": 1.0}
+      "lora_adapters/lovecraft_14b": {
+        "scale": 2.5,
+        "temperature": 0.7,
+        "top_p": 0.92,
+        "min_p": 0.05,
+        "repetition_penalty": 1.15,
+        "max_tokens": 1024,
+        "min_tokens": 50,
+        "worldview": "lovecraft_worldview.txt"
+      }
     },
     "_comment5": "Neutralization (skip for better fact preservation)",
     "skip_neutralization": false,
@@ -88,16 +90,9 @@
     "perspective": "preserve"
   },
   "validation": {
-    "_comment": "Proposition-based semantic validation settings (all values 0-1)",
-    "proposition_match_threshold": 0.4,
-    "novelty_threshold": 0.5,
-    "coverage_threshold": 0.85,
-    "grounding_threshold": 0.4,
-    "candidates_per_repair": 2,
-    "max_hallucinations_before_reject": 2,
-    "max_repair_iterations": 2,
-    "_comment2": "Lower iterations = less repetition, higher = better coverage",
-    "_comment3": "max_hallucinations_before_reject: reduced from 4 to 2 for stricter validation"
+    "_comment": "Semantic validation settings",
+    "entailment_threshold": 0.7,
+    "max_hallucinations_before_reject": 3
   },
   "log_level": "INFO"
 }
