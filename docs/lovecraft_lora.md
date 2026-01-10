@@ -70,8 +70,8 @@ The model was NOT trained on:
       "lora_adapters/lovecraft_14b": {
         "scale": 0.5,
         "temperature": 0.7,
-        "top_p": 0.92,
-        "min_p": 0.05,
+        "top_p": 0.92, # Higher values (0.95) = more diverse/creative output. Lower values (0.8) = more focused/deterministic.
+        "min_p": 0.05, # Filters out very unlikely tokens that could cause incoherence. Higher values = more conservative, lower values = allows more unusual word choices.
         "repetition_penalty": 1.15,
         "max_tokens": 1024,
         "worldview": "lovecraft_worldview.txt"

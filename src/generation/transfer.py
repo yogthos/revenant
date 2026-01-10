@@ -194,7 +194,7 @@ class StyleTransfer:
 
         # Determine the primary adapter path for config loading
         if adapters:
-            primary_adapter_path = adapters[0].path if adapters else None
+            primary_adapter_path = adapters[0].path
         else:
             primary_adapter_path = adapter_path
 
@@ -308,7 +308,7 @@ class StyleTransfer:
             try:
                 from ..llm.mlx_provider import create_rtt_neutralizer
                 self._rtt_neutralizer = create_rtt_neutralizer()
-                logger.info(f"RTT neutralizer: {type(self._rtt_neutralizer).__name__}")
+                logger.debug(f"RTT neutralizer: {type(self._rtt_neutralizer).__name__}")
             except Exception as e:
                 logger.error(f"Failed to initialize RTT neutralizer: {e}")
                 return None
@@ -319,9 +319,13 @@ class StyleTransfer:
         """Create default entailment verifier."""
         try:
             import sys
+            import os
             import warnings
             import logging
             from io import StringIO
+
+            # Disable tqdm before importing sentence_transformers
+            os.environ["TQDM_DISABLE"] = "1"
             from sentence_transformers import CrossEncoder
 
             # Suppress all output during model loading (position_ids mismatch report)
@@ -365,7 +369,7 @@ class StyleTransfer:
                 # Return entailment probability (index 2)
                 return float(probs[2]) if len(probs) > 2 else float(probs[-1])
 
-            logger.info("Using NLI-based entailment verification")
+            logger.debug("Using NLI-based entailment verification")
             return verify
 
         except ImportError:
@@ -444,14 +448,14 @@ class StyleTransfer:
                 rtt_input_words = len(paragraph_clean.split())
                 rtt_output_words = len(content_for_generation.split())
                 compression_ratio = rtt_output_words / rtt_input_words if rtt_input_words > 0 else 1.0
-                logger.info(f"RTT INPUT ({rtt_input_words} words): {paragraph_clean[:150]}...")
-                logger.info(f"RTT OUTPUT ({rtt_output_words} words, {compression_ratio:.0%} of input): {content_for_generation[:150]}...")
+                logger.debug(f"RTT INPUT ({rtt_input_words} words): {paragraph_clean[:150]}...")
+                logger.debug(f"RTT OUTPUT ({rtt_output_words} words, {compression_ratio:.0%} of input): {content_for_generation[:150]}...")
 
         # ========================================
         # STEP 2: Pass to LoRA for style transformation
         # ========================================
         target_words = int(word_count * self.config.target_expansion_ratio)
-        logger.info(f"EXPANSION: input={word_count} words, ratio={self.config.target_expansion_ratio}, target={target_words} words")
+        logger.debug(f"EXPANSION: input={word_count} words, ratio={self.config.target_expansion_ratio}, target={target_words} words")
         # Token limit needs to be generous to avoid truncation mid-sentence
         # Typically ~1.5 tokens per word, plus some margin for style variation
         # Use 2.5x target words to ensure complete sentences
@@ -503,7 +507,7 @@ class StyleTransfer:
         )
         lora_output_words = len(output.split())
         lora_input_words = len(content_for_generation.split())
-        logger.info(f"LORA OUTPUT ({lora_output_words} words, target={target_words}): {output[:150]}...")
+        logger.debug(f"LORA OUTPUT ({lora_output_words} words, target={target_words}): {output[:150]}...")
 
         # Check if LoRA output matches input (indicates no transformation)
         if output.strip() == paragraph_clean.strip():
@@ -537,12 +541,12 @@ class StyleTransfer:
             # Log any issues detected
             issues = semantic_result.get_issues()
             if issues:
-                logger.warning(f"Semantic issues detected: {', '.join(issues)}")
+                logger.debug(f"Semantic issues detected: {', '.join(issues)}")
 
             # Check for fabricated content (years, citations)
             if semantic_result.fabricated_entities:
                 fabricated_str = ', '.join(semantic_result.fabricated_entities[:5])
-                logger.warning(f"Fabricated content: {fabricated_str}")
+                logger.debug(f"Fabricated content: {fabricated_str}")
 
             # Trigger repair only if there are missing entities or too many hallucinations
             needs_repair = (
@@ -551,7 +555,7 @@ class StyleTransfer:
             )
 
             if needs_repair and semantic_result.missing_entities:
-                logger.warning(
+                logger.debug(
                     f"Triggering repair: {semantic_result.hallucination_count} hallucinations, "
                     f"{len(semantic_result.missing_entities)} missing entities"
                 )
@@ -751,7 +755,7 @@ class StyleTransfer:
             return output
 
         for attempt in range(max_attempts):
-            logger.info(
+            logger.debug(
                 f"Repair attempt {attempt + 1}/{max_attempts}: "
                 f"{len(missing_entities)} entities missing"
             )

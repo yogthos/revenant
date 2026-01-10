@@ -23,15 +23,34 @@ _nli_model = None
 _nlp = None
 
 
+class _SilentCrossEncoder:
+    """Wrapper that ensures CrossEncoder.predict always suppresses progress bars."""
+
+    def __init__(self, model):
+        self._model = model
+
+    def predict(self, sentences, **kwargs):
+        # Force show_progress_bar=False regardless of caller
+        kwargs['show_progress_bar'] = False
+        return self._model.predict(sentences, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
 def _get_nli_model():
     """Get the NLI model, loading if necessary."""
     global _nli_model
     if _nli_model is None:
         try:
             import sys
+            import os
             import warnings
             import logging
             from io import StringIO
+
+            # Disable tqdm before importing sentence_transformers
+            os.environ["TQDM_DISABLE"] = "1"
             from sentence_transformers import CrossEncoder
 
             with warnings.catch_warnings():
@@ -43,14 +62,16 @@ def _get_nli_model():
                 sys.stdout = StringIO()
                 sys.stderr = StringIO()
                 try:
-                    _nli_model = CrossEncoder(
+                    model = CrossEncoder(
                         "cross-encoder/nli-deberta-v3-small",
                         max_length=512,
                     )
+                    # Wrap to always suppress progress bars
+                    _nli_model = _SilentCrossEncoder(model)
                 finally:
                     sys.stdout, sys.stderr = old_stdout, old_stderr
                     transformers_logger.setLevel(old_level)
-            logger.info("Loaded NLI model for semantic verification")
+            logger.debug("Loaded NLI model for semantic verification")
         except ImportError:
             logger.warning("sentence-transformers not available for NLI")
             _nli_model = None

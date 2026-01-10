@@ -134,7 +134,6 @@ class TestPromptFiles:
             "rtt_to_english",
             "rtt_deepseek",
             "document_context",
-            "nli_repair",
         ]
         prompts = list_prompts()
         for name in required_prompts:

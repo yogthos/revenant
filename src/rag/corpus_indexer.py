@@ -38,9 +38,13 @@ def get_embedding_model():
     if _sentence_transformer is None:
         try:
             import sys
+            import os
             import warnings
             import logging
             from io import StringIO
+
+            # Disable tqdm before importing sentence_transformers
+            os.environ["TQDM_DISABLE"] = "1"
             from sentence_transformers import SentenceTransformer
 
             # Suppress noisy warnings and stdout during model loading
@@ -64,7 +68,7 @@ def get_embedding_model():
                     st_logger.setLevel(old_st_level)
                     tf_logger.setLevel(old_tf_level)
 
-            logger.info("Loaded sentence transformer: all-MiniLM-L6-v2")
+            logger.debug("Loaded sentence transformer: all-MiniLM-L6-v2")
         except ImportError:
             raise ImportError(
                 "sentence-transformers required. Install with: pip install sentence-transformers"
@@ -246,7 +250,7 @@ class CorpusIndexer:
             return 0
 
         # Generate embeddings
-        embeddings = self.embedding_model.encode(chunks, show_progress_bar=True)
+        embeddings = self.embedding_model.encode(chunks, show_progress_bar=False)
 
         # Analyze style metrics
         metrics_list = self._analyzer.analyze_batch(chunks)
@@ -379,7 +383,7 @@ class CorpusIndexer:
             List of dicts with 'text', 'skeleton', and 'distance' keys.
         """
         # Encode query
-        query_embedding = self.embedding_model.encode([query_text])[0]
+        query_embedding = self.embedding_model.encode([query_text], show_progress_bar=False)[0]
 
         # Query ChromaDB
         results = self.collection.query(

@@ -105,9 +105,9 @@ class MLXGenerator:
         if self._model is not None:
             return
 
-        logger.info(f"Loading MLX model: {self.model_name}")
+        logger.debug(f"Loading MLX model: {self.model_name}")
         self._model, self._tokenizer = load(self.model_name)
-        logger.info("Model loaded successfully")
+        logger.debug("Model loaded successfully")
 
     def generate(
         self,
@@ -643,7 +643,7 @@ class DeepSeekRTTNeutralizer:
             "Content-Type": "application/json"
         }
 
-        logger.info(f"DeepSeek RTT: model={self.model}, batch_size={self.batch_size}, concurrent={self.concurrent_batches}")
+        logger.debug(f"DeepSeek RTT: model={self.model}, batch_size={self.batch_size}, concurrent={self.concurrent_batches}")
 
     def _call_api(self, system: str, user: str, max_tokens: int = None) -> str:
         """Make a single API call to DeepSeek."""

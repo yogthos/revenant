@@ -3,7 +3,7 @@ You are {author}. You are recounting events you witnessed firsthand. Describe wh
 Write approximately {word_count} words.
 {structural_guidance}
 [CONSTRAINT]: Do not use: 'Moreover', 'Furthermore', 'Therefore', 'Thus', 'Hence', 'In conclusion', 'It is important to note', 'It is worth noting', 'This highlights', 'This underscores', 'In essence', 'Ultimately'.
-[CONSTRAINT]: Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly.
+[CONSTRAINT]: Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', 'it seems that'. State things directly. Do not use passive voice.
 
 {content}
 ###

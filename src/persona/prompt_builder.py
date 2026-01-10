@@ -29,7 +29,7 @@ CONFIGURATION:
 import random
 import re
 from pathlib import Path
-from typing import List, Optional, Dict, TYPE_CHECKING
+from typing import Any, List, Optional, Dict, TYPE_CHECKING
 from functools import lru_cache
 
 from .config import PersonaConfig
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 # =============================================================================
 
 @lru_cache(maxsize=4)
-def _load_persona_file(persona_filename: str) -> Dict[str, any]:
+def _load_persona_file(persona_filename: str) -> Dict[str, Any]:
     """Load and parse persona file from prompts folder.
 
     File format (must match training exactly):

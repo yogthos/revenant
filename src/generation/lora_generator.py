@@ -344,12 +344,12 @@ class LoRAStyleGenerator:
 
         is_cached = self._is_model_cached(self.base_model_name)
         if is_cached:
-            logger.info(f"Loading model: {self.base_model_name}")
+            logger.debug(f"Loading model: {self.base_model_name}")
             # Suppress progress bars for cached models
             old_hf_disable = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
             os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
         else:
-            logger.info(f"Downloading model: {self.base_model_name}")
+            logger.debug(f"Downloading model: {self.base_model_name}")
             old_hf_disable = None
 
         try:
@@ -365,7 +365,7 @@ class LoRAStyleGenerator:
                 else:
                     os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = old_hf_disable
 
-        logger.info("Model loaded successfully")
+        logger.debug("Model loaded successfully")
 
     def _load_with_adapters(self):
         """Load model with one or more LoRA adapters."""
@@ -376,7 +376,7 @@ class LoRAStyleGenerator:
             adapter = self.adapters[0]
             effective_path = self._get_effective_adapter_path(adapter)
 
-            logger.info(f"With LoRA adapter: {adapter.path} (scale={adapter.scale})")
+            logger.debug(f"With LoRA adapter: {adapter.path} (scale={adapter.scale})")
             self._model, self._tokenizer = load(
                 self.base_model_name,
                 adapter_path=effective_path,
@@ -813,6 +813,8 @@ class LoRAStyleGenerator:
                 # The phrase before "of" + noun is broken - remove it
                 # Keep from the noun onwards
                 start_char = next_tok.idx
+                if start_char >= len(text) - 1:
+                    return text  # Bounds check: not enough text to fix
                 fixed_text = text[start_char].upper() + text[start_char + 1:]
                 logger.debug(f"Fixed broken prepositional opening at '{next_tok.text}'")
                 return fixed_text
