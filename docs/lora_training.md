@@ -1,16 +1,29 @@
 # LoRA Training Reference & Checklist
 
-Complete guide for training a "Systems Theologian" Persona Adapter using Qwen 2.5.
+Complete guide for training style transfer LoRA adapters using Qwen 2.5.
+
+## Critical: Training/Inference Distribution Matching
+
+**The most important insight**: Output quality depends on matching inference conditions to training conditions exactly.
+
+See `docs/lora_training_strategy.md` for the complete analysis. Key requirements:
+
+| Must Match | Training | Inference |
+|------------|----------|-----------|
+| Input perturbation | 8% noise | `apply_input_perturbation: true` |
+| Persona frames | `PERSONA_FRAMES` dict | `prompts/{author}_worldview.txt` |
+| Content classifier | `classify_content_type()` | `src/utils/content_classifier.py` |
+| Scale | 2.0 | 2.0 in config.json |
 
 ## Overview
 
-This system uses **Persona Simulation** rather than simple Style Transfer. Instead of asking the model to "Rewrite X," we place it inside a narrative frame (e.g., "You are an engineer analyzing a system failure") to force it to adopt the target worldview (indifferent geometry, cosmic horror, systems theory).
+This system uses **Persona Simulation** rather than simple Style Transfer. Instead of asking the model to "Rewrite X," we place it inside a narrative frame (e.g., "You are an engineer analyzing a system failure") to force it to adopt the target worldview.
 
 **Key Strategy**:
 
 * **Model**: Qwen 2.5 14B Base (4-bit).
-* **Technique**: "Many-to-One" Mapping (Multiple neutral inputs  One styled output).
-* **Objective**: Force the model to hallucinate style and structure by starving it of adjectives in the input.
+* **Technique**: Triad Strategy (original + snowflake + robustness).
+* **Objective**: Force the model to creatively reconstruct degraded input into rich prose.
 
 ---
 
@@ -198,15 +211,13 @@ subprocess.run(f"mlx_lm.generate --model ./models/Qwen2.5-14B-Base-4bit-MLX --ad
 
 | Issue | Diagnosis | Fix |
 | --- | --- | --- |
-| **"Command buffer execution failed: Insufficient Memory"** | You ran out of VRAM. | 1. Enable `grad_checkpoint: true` <br>
-
-<br> 2. Reduce Rank to 16. <br>
-
-<br> 3. Use `max_seq_length: 1024`. |
-| **Model outputs gibberish / loops** | "Fried" weights (Overfitting). | Reduce `iters` (you trained too long). Load an earlier checkpoint (e.g., Step 1500). Lower `scale` to 0.7 during inference. |
-| **Model refuses to generate ("I cannot...")** | Safety Refusal. | You are using an Instruct model, or your base model wasn't trained enough. **Switch to Base model.** |
-| **Style is too weak** | Underfitting. | Increase `rank` to 128. Increase `scale` to 4.0. Ensure `dropout` is low (0.05). |
-| **Model just copies the input** | Leakage. | Your "Neutral" training data was too similar to the "Styled" output. Increase the "Info Dropout" aggression. |
+| **"Command buffer execution failed: Insufficient Memory"** | You ran out of VRAM. | 1. Enable `grad_checkpoint: true` 2. Reduce Rank to 16. 3. Use `max_seq_length: 1024`. |
+| **Model outputs gibberish / loops** | "Fried" weights (Overfitting). | Reduce `iters` (you trained too long). Load an earlier checkpoint. |
+| **Model refuses to generate ("I cannot...")** | Safety Refusal. | You are using an Instruct model. **Switch to Base model.** |
+| **Style is too weak** | Scale mismatch. | Set `scale: 2.0` to match training. Check `use_persona: true`. |
+| **Output is mechanical/formulaic** | Distribution mismatch. | Enable `apply_input_perturbation: true`. Verify persona frames match training. |
+| **Output doesn't expand** | LoRA can't expand. | Enable `expand_for_texture: true`. LoRA trained on similar-length pairs. |
+| **Wrong persona frame type** | Content misclassified. | Both must use `src/utils/content_classifier.py`. Check spaCy NER output. |
 
 ---
 
