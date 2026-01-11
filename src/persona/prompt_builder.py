@@ -218,23 +218,12 @@ def _build_constraints() -> str:
 def _detect_content_type(content: str) -> bool:
     """Detect if content is narrative (events/story) or conceptual (explanation).
 
+    Uses shared classifier to match training detection exactly.
+
     Returns True for narrative, False for conceptual.
     """
-    # Narrative indicators
-    narrative_words = ['happened', 'went', 'came', 'saw', 'heard', 'felt',
-                       'told', 'said', 'found', 'discovered', 'witnessed',
-                       'arrived', 'left', 'began', 'ended', 'then', 'after']
-
-    # Conceptual indicators
-    conceptual_words = ['means', 'because', 'therefore', 'system', 'process',
-                        'mechanism', 'function', 'works', 'causes', 'results',
-                        'explains', 'defines', 'consists', 'involves']
-
-    content_lower = content.lower()
-    narrative_score = sum(1 for w in narrative_words if w in content_lower)
-    conceptual_score = sum(1 for w in conceptual_words if w in content_lower)
-
-    return narrative_score > conceptual_score
+    from ..utils.content_classifier import is_narrative
+    return is_narrative(content)
 
 
 def build_persona_prompt(
@@ -314,6 +303,9 @@ def build_persona_prompt(
         parts.append("\n".join(f"[CONSTRAINT]: {c}" for c in constraints))
     else:
         parts.append(_build_constraints())
+
+    # Note: expand_for_texture is handled by the critic model before RTT,
+    # not as a constraint here. The parameter is kept for API compatibility.
 
     # 6. Content
     parts.append("")

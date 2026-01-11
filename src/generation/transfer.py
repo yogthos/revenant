@@ -97,6 +97,7 @@ class TransferConfig:
     # Structural RAG settings
     use_structural_rag: bool = True  # Enable Structural RAG for rhythm/syntax guidance
     use_structural_grafting: bool = True  # Enable Structural Grafting for argument skeletons
+    rag_sample_size: int = 200  # Number of corpus chunks to sample for rhythm pattern analysis
 
     # Sentence restructuring settings (convert mechanical patterns to organic)
     restructure_sentences: bool = True  # Enable balanced→inverted restructuring
@@ -112,6 +113,7 @@ class TransferConfig:
 
     # Persona settings (subjective voice to defeat AI detection)
     use_persona: bool = True  # Enable persona-based prompting
+    apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
 
 
 @dataclass
@@ -190,7 +192,19 @@ class StyleTransfer:
         self.config = config or TransferConfig()
         self.author = author_name
         self.verify_fn = verify_fn
-        self.critic_provider = critic_provider
+
+        # Convert string provider name to actual LLMProvider object if needed
+        if isinstance(critic_provider, str):
+            from ..llm.provider import create_critic_provider
+            from ..config import load_config
+            app_config = load_config()
+            self.critic_provider = create_critic_provider(app_config.llm)
+        else:
+            self.critic_provider = critic_provider
+
+        # Log key config settings
+        logger.info(f"StyleTransfer config: expand_for_texture={self.config.expand_for_texture}, "
+                    f"target_expansion_ratio={self.config.target_expansion_ratio}")
 
         # Determine the primary adapter path for config loading
         if adapters:
@@ -266,7 +280,7 @@ class StyleTransfer:
         if self.config.use_structural_rag:
             if STRUCTURAL_RAG_AVAILABLE:
                 self.structural_rag = get_structural_rag(self.author)
-                loaded = self.structural_rag.load_patterns(sample_size=50)
+                loaded = self.structural_rag.load_patterns(sample_size=self.config.rag_sample_size)
                 if loaded > 0:
                     logger.info(f"Structural RAG loaded {loaded} rhythm patterns for {self.author}")
                 else:
@@ -314,6 +328,47 @@ class StyleTransfer:
                 return None
 
         return self._rtt_neutralizer.neutralize(text, max_retries=max_retries)
+
+    def _expand_with_texture(self, text: str) -> str:
+        """Expand text with texture using the critic model.
+
+        Adds asides, observations, parenthetical thoughts, and sensory details
+        to enrich flat prose before style transfer.
+
+        Args:
+            text: Input text to expand.
+
+        Returns:
+            Expanded text with added texture, or original text if expansion fails.
+        """
+        try:
+            from ..utils.prompts import load_prompt
+
+            system_prompt = load_prompt("expand_texture")
+            user_prompt = text
+
+            response = self.critic_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.7,  # Some creativity for texture
+                max_tokens=len(text.split()) * 3,  # Allow ~2x expansion headroom
+            )
+
+            input_words = len(text.split())
+            output_words = len(response.split()) if response else 0
+            logger.info(f"TEXTURE EXPANSION result: {input_words} → {output_words} words")
+
+            if response and output_words > input_words:
+                expansion = output_words / input_words
+                logger.info(f"TEXTURE EXPANSION: expanded by {expansion:.0%}")
+                return response.strip()
+            else:
+                logger.warning(f"Texture expansion returned shorter/equal text ({output_words} vs {input_words}), using original")
+                return text
+
+        except Exception as e:
+            logger.warning(f"Texture expansion failed: {e}")
+            return text
 
     def _create_default_verifier(self) -> Callable[[str, str], float]:
         """Create default entailment verifier."""
@@ -424,6 +479,20 @@ class StyleTransfer:
         # References are stripped before processing and reinjected at the end
         paragraph_clean, ref_map = extract_references(paragraph)
 
+        # Save original for semantic verification (before any expansion)
+        original_for_verification = paragraph_clean
+
+        # ========================================
+        # STEP 0.5: Texture expansion (optional)
+        # ========================================
+        # If enabled, use the critic model to add asides, observations, and
+        # texture before RTT neutralization. This enriches flat prose.
+        if self.config.expand_for_texture:
+            logger.info(f"TEXTURE EXPANSION: Starting expansion for {len(paragraph_clean.split())} words")
+            paragraph_clean = self._expand_with_texture(paragraph_clean)
+            word_count = len(paragraph_clean.split())  # Update word count after expansion
+            logger.info(f"TEXTURE EXPANSION: Complete, now {word_count} words")
+
         # ========================================
         # STEP 1: RTT Neutralization (match training format)
         # ========================================
@@ -435,6 +504,7 @@ class StyleTransfer:
             content_for_generation = paragraph_clean
             logger.debug("RTT neutralization skipped (skip_neutralization=true)")
         else:
+            logger.info(f"RTT: Starting neutralization for {len(paragraph_clean.split())} words")
             content_for_generation = self._rtt_neutralize(paragraph_clean)
             if not content_for_generation:
                 # Fall back to cleaned text instead of crashing
@@ -448,14 +518,29 @@ class StyleTransfer:
                 rtt_input_words = len(paragraph_clean.split())
                 rtt_output_words = len(content_for_generation.split())
                 compression_ratio = rtt_output_words / rtt_input_words if rtt_input_words > 0 else 1.0
-                logger.debug(f"RTT INPUT ({rtt_input_words} words): {paragraph_clean[:150]}...")
-                logger.debug(f"RTT OUTPUT ({rtt_output_words} words, {compression_ratio:.0%} of input): {content_for_generation[:150]}...")
+                logger.info(f"RTT: {rtt_input_words} → {rtt_output_words} words ({compression_ratio:.0%})")
+
+        # ========================================
+        # STEP 1.5: Apply input perturbation to match training distribution
+        # ========================================
+        # Training data used 8% perturbation (typos, word drops, synonym swaps)
+        # This forces the model to creatively reconstruct, not just restyle
+        if self.config.apply_input_perturbation:
+            from ..utils.perturbation import perturb_text
+            pre_perturb_words = len(content_for_generation.split())
+            content_for_generation = perturb_text(
+                content_for_generation,
+                perturbation_rate=0.08,
+                drop_adjectives=True,
+            )
+            post_perturb_words = len(content_for_generation.split())
+            logger.info(f"PERTURBATION: {pre_perturb_words} → {post_perturb_words} words (adjective drops + 8% noise)")
 
         # ========================================
         # STEP 2: Pass to LoRA for style transformation
         # ========================================
         target_words = int(word_count * self.config.target_expansion_ratio)
-        logger.debug(f"EXPANSION: input={word_count} words, ratio={self.config.target_expansion_ratio}, target={target_words} words")
+        logger.info(f"LORA: content_for_generation={len(content_for_generation.split())} words, target={target_words} words")
         # Token limit needs to be generous to avoid truncation mid-sentence
         # Typically ~1.5 tokens per word, plus some margin for style variation
         # Use 2.5x target words to ensure complete sentences
@@ -507,7 +592,7 @@ class StyleTransfer:
         )
         lora_output_words = len(output.split())
         lora_input_words = len(content_for_generation.split())
-        logger.debug(f"LORA OUTPUT ({lora_output_words} words, target={target_words}): {output[:150]}...")
+        logger.info(f"LORA OUTPUT: {lora_output_words} words (target was {target_words})")
 
         # Check if LoRA output matches input (indicates no transformation)
         if output.strip() == paragraph_clean.strip():
@@ -530,10 +615,14 @@ class StyleTransfer:
         # ========================================
         # STEP 3: Validate styled output (if enabled)
         # ========================================
+        logger.info(f"BEFORE VALIDATION: {len(output.split())} words")
         if self.config.verify_entailment:
             from ..validation.semantic_verifier import verify_semantic_preservation
+            # Use original (pre-expansion) text for verification
+            # We only require the output to preserve the ORIGINAL meaning,
+            # not the texture added by the critic
             semantic_result = verify_semantic_preservation(
-                source=paragraph_clean,
+                source=original_for_verification,
                 output=output,
                 threshold=self.config.entailment_threshold,
             )
@@ -541,21 +630,22 @@ class StyleTransfer:
             # Log any issues detected
             issues = semantic_result.get_issues()
             if issues:
-                logger.debug(f"Semantic issues detected: {', '.join(issues)}")
+                logger.info(f"Semantic issues detected: {', '.join(issues)}")
 
             # Check for fabricated content (years, citations)
             if semantic_result.fabricated_entities:
                 fabricated_str = ', '.join(semantic_result.fabricated_entities[:5])
-                logger.debug(f"Fabricated content: {fabricated_str}")
+                logger.info(f"Fabricated content: {fabricated_str}")
 
-            # Trigger repair only if there are missing entities or too many hallucinations
+            # Trigger repair ONLY for actual hallucinations, not for "missing" entities
+            # Missing entities are often just paraphrases (e.g., "roughly" → "about")
+            # The repair process generates from original source, which loses styled expansion
             needs_repair = (
-                semantic_result.hallucination_count > self.config.max_hallucinations_before_reject or
-                len(semantic_result.missing_entities) > 0
+                semantic_result.hallucination_count > self.config.max_hallucinations_before_reject
             )
 
             if needs_repair and semantic_result.missing_entities:
-                logger.debug(
+                logger.info(
                     f"Triggering repair: {semantic_result.hallucination_count} hallucinations, "
                     f"{len(semantic_result.missing_entities)} missing entities"
                 )
@@ -565,9 +655,12 @@ class StyleTransfer:
                     missing_entities=semantic_result.missing_entities,
                     max_attempts=self.config.max_repair_attempts,
                 )
+                logger.info(f"AFTER REPAIR: {len(output.split())} words")
 
         # Ensure output ends with complete sentence
+        logger.info(f"BEFORE _ensure_complete_ending: {len(output.split())} words")
         output = self._ensure_complete_ending(output)
+        logger.info(f"AFTER _ensure_complete_ending: {len(output.split())} words")
 
         # ========================================
         # STEP 4: Reinject references [^N]
@@ -581,8 +674,9 @@ class StyleTransfer:
         # Verify if configured
         score = 1.0
         if self.verify_fn:
-            score = self.verify_fn(paragraph_clean, output)
+            score = self.verify_fn(original_for_verification, output)
 
+        logger.info(f"FINAL OUTPUT: {len(output.split())} words")
         return output, score
 
     def _check_content_overlap(self, input_text: str, output_text: str) -> float:

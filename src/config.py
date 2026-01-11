@@ -146,9 +146,11 @@ class GenerationConfig:
     # RAG settings
     use_structural_rag: bool = True  # Enable structural RAG for rhythm/syntax guidance
     use_structural_grafting: bool = True  # Enable structural grafting for argument skeletons
+    rag_sample_size: int = 200  # Number of corpus chunks to sample for rhythm pattern analysis
 
     # Persona settings
     use_persona: bool = True  # Enable persona-based prompting
+    apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
 
     # Grammar correction settings (final post-processing pass)
     correct_grammar: bool = True  # Enable style-safe grammar correction
@@ -465,8 +467,10 @@ def load_config(config_path: str = "config.json") -> Config:
             # RAG settings
             use_structural_rag=gen.get("use_structural_rag", True),
             use_structural_grafting=gen.get("use_structural_grafting", True),
+            rag_sample_size=gen.get("rag_sample_size", 200),
             # Persona settings
             use_persona=gen.get("use_persona", True),
+            apply_input_perturbation=gen.get("apply_input_perturbation", True),
             # Grammar correction settings
             correct_grammar=gen.get("correct_grammar", True),
             grammar_language=gen.get("grammar_language", "en-US"),

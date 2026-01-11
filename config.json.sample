@@ -82,6 +82,7 @@
     "_comment8": "RAG settings",
     "use_structural_rag": true,
     "use_structural_grafting": true,
+    "rag_sample_size": 200,
     "_comment9": "Persona settings (subjective voice to defeat AI detection)",
     "use_persona": true
   },
