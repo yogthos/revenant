@@ -302,6 +302,54 @@ MUNDANE_TOPICS = [
     "why takeout containers never stack properly", "the unfairness of parking meters",
 ]
 
+# =============================================================================
+# Perspective Pools for Variation Generation
+# =============================================================================
+# The LoRA is trained on first-person singular narrative ("I saw", "I found").
+# To make inference work with ANY input perspective, we generate training variations
+# in different perspectives. This teaches the model that style is independent of POV.
+
+PERSPECTIVE_TRANSFORMS = {
+    "first_person_plural": {
+        "description": "Convert to first person plural (we/us/our)",
+        "instruction": """Convert this first-person singular narrative to first-person PLURAL.
+Change all instances of:
+- "I" → "we"
+- "me" → "us"
+- "my" → "our"
+- "myself" → "ourselves"
+- "mine" → "ours"
+
+The narrator is now speaking for a group who experienced this together.
+Preserve ALL other aspects: sentence structure, vocabulary, tone, rhythm.""",
+    },
+    "third_person": {
+        "description": "Convert to third person (he/she/they)",
+        "instruction": """Convert this first-person narrative to THIRD PERSON.
+The narrator becomes "the observer", "the researcher", "the chronicler", or similar.
+Change all instances of:
+- "I" → "the observer" / "he" / "she" / "they"
+- "me" → "him" / "her" / "them"
+- "my" → "his" / "her" / "their"
+- "myself" → "himself" / "herself" / "themselves"
+
+Use a consistent third-person subject throughout.
+Preserve ALL other aspects: sentence structure, vocabulary, tone, rhythm.""",
+    },
+    "impersonal": {
+        "description": "Convert to impersonal exposition (one/it is/passive voice)",
+        "instruction": """Convert this first-person narrative to IMPERSONAL EXPOSITION.
+Remove the personal narrator entirely. Use:
+- "One observes that..." / "It is observed that..."
+- "The evidence suggests..." / "It becomes clear that..."
+- Passive constructions: "was discovered", "can be seen", "is known"
+- "We" in the academic sense (the reader and author together)
+
+The text should read like academic or encyclopedic prose.
+Preserve ALL factual content and the logical flow of ideas.""",
+    },
+}
+
 
 def validate_variation(original: str, varied: str, nlp=None) -> Tuple[bool, str]:
     """Validate that topic variation preserved approximate structure."""
@@ -391,6 +439,99 @@ Output only the rewritten passage, nothing else."""
                 logger.debug(f"Variation rejected: {reason}")
         except Exception as e:
             logger.debug(f"Variation attempt {attempt+1} failed: {e}")
+
+    return None
+
+
+def validate_perspective_variation(original: str, varied: str, nlp=None) -> Tuple[bool, str]:
+    """Validate that perspective variation preserved content and structure."""
+    orig_words = len(original.split())
+    varied_words = len(varied.split())
+
+    # Allow 15% word count variance for perspective changes (pronouns change count)
+    if abs(orig_words - varied_words) > orig_words * 0.15:
+        return False, f"Word count too different: {orig_words} vs {varied_words}"
+
+    if nlp is None:
+        nlp = get_nlp()
+    orig_sentences = len(split_into_sentences(original, nlp))
+    varied_sentences = len(split_into_sentences(varied, nlp))
+
+    # Sentence count should be exactly the same (perspective change doesn't add sentences)
+    if orig_sentences != varied_sentences:
+        return False, f"Sentence count mismatch: {orig_sentences} vs {varied_sentences}"
+
+    return True, "OK"
+
+
+def create_perspective_variation(
+    paragraph: str,
+    author: str,
+    perspective_key: str,
+    max_attempts: int = 2
+) -> Optional[str]:
+    """Create a perspective variation that changes POV while maintaining style.
+
+    This teaches the LoRA that style is independent of perspective. By training on
+    the same content in different perspectives (first-person plural, third-person,
+    impersonal), the model learns to apply style regardless of input POV.
+
+    Args:
+        paragraph: Original author paragraph (assumed first-person singular).
+        author: Author name for style context.
+        perspective_key: Key from PERSPECTIVE_TRANSFORMS dict.
+        max_attempts: Maximum retry attempts.
+
+    Returns:
+        Paragraph in new perspective, or None if failed.
+    """
+    if perspective_key not in PERSPECTIVE_TRANSFORMS:
+        logger.warning(f"Unknown perspective key: {perspective_key}")
+        return None
+
+    transform = PERSPECTIVE_TRANSFORMS[perspective_key]
+
+    system = f"""You are a literary perspective transformation assistant.
+
+Your task: Change the grammatical perspective of a passage while preserving:
+- The EXACT sentence structure and rhythm
+- ALL vocabulary (except pronouns and verb conjugations)
+- The author's characteristic style and tone
+- ALL factual content
+
+You are NOT rewriting or paraphrasing. You are ONLY changing the grammatical person."""
+
+    prompt = f"""Transform this passage from first-person singular to {transform['description']}.
+
+{transform['instruction']}
+
+Original passage:
+{paragraph}
+
+Requirements:
+1. Change ONLY the perspective - preserve everything else
+2. Keep the same sentence count and structure
+3. Match the word count closely (~{len(paragraph.split())} words)
+4. Maintain the author's distinctive vocabulary and rhythm
+
+Output only the transformed passage, nothing else."""
+
+    for attempt in range(max_attempts):
+        try:
+            varied = call_deepseek(prompt, system, max_retries=2)
+            varied = varied.strip('`"\' \n')
+            if varied.startswith('```'):
+                varied = re.sub(r'^```\w*\n?', '', varied)
+                varied = re.sub(r'\n?```$', '', varied)
+
+            # Validate the variation
+            is_valid, reason = validate_perspective_variation(paragraph, varied)
+            if is_valid:
+                return varied
+            else:
+                logger.debug(f"Perspective variation rejected: {reason}")
+        except Exception as e:
+            logger.debug(f"Perspective variation attempt {attempt+1} failed: {e}")
 
     return None
 
@@ -506,42 +647,49 @@ def expand_corpus_with_variations(
     author: str,
     workers: int = 4,
     skip_variation: bool = False,
+    skip_perspective: bool = False,
 ) -> List[Tuple[str, str]]:
-    """Expand corpus using the Triad strategy (1:3 ratio).
+    """Expand corpus using enhanced Triad strategy with perspective variations.
 
-    For each original paragraph, creates exactly 2 variations:
-    - Entry 1 (Anchor): Original author text
+    For each original paragraph, creates variations:
+    - Entry 1 (Anchor): Original author text (first-person singular)
     - Entry 2 (Snowflake): Topic swap to mundane activity
     - Entry 3 (Robustness): Marked for heavy input perturbation later
+    - Entry 4-6 (Perspective): Same content in different perspectives
 
-    The Robustness entry reuses the original text but will have heavy
-    perturbation applied to its INPUT during training data generation.
-    This is more efficient than generating another LLM variation.
+    Perspective variations teach the LoRA that style is independent of POV:
+    - first_person_plural: "we saw" instead of "I saw"
+    - third_person: "the observer saw" instead of "I saw"
+    - impersonal: "it was observed" instead of "I saw"
 
     Args:
         paragraphs: Original author paragraphs
         author: Author name for style preservation
         workers: Number of parallel workers
-        skip_variation: If True, skip variation generation (originals only)
+        skip_variation: If True, skip topic variation (originals only)
+        skip_perspective: If True, skip perspective variations
 
     Returns:
         List of (text, variation_type) tuples where variation_type is:
         - 'original': Real author text (Entry 1 - Anchor)
         - 'snowflake': Mundane topic swap (Entry 2 - Snowflake)
         - 'robustness': Same as original, marked for heavy perturbation (Entry 3)
+        - 'perspective_plural': First person plural version
+        - 'perspective_third': Third person version
+        - 'perspective_impersonal': Impersonal/passive version
     """
     # Entry 1: Anchor (original author text)
     result = [(para, "original") for para in paragraphs]
 
     if skip_variation:
-        logger.info("Skipping topic variation (--skip-variation flag)")
+        logger.info("Skipping all variations (--skip-variation flag)")
         return result
 
     # Entry 3: Robustness (same text, will get heavy input perturbation)
     # Add these now - they use original text but will be processed differently
     robustness_entries = [(para, "robustness") for para in paragraphs]
 
-    logger.info(f"Triad Strategy: 1 original + 1 snowflake + 1 robustness per paragraph")
+    logger.info(f"Enhanced Triad Strategy: 1 original + 1 snowflake + 1 robustness + 3 perspective per paragraph")
     logger.info(f"Creating {len(paragraphs)} snowflake (topic swap) variations...")
     logger.info(f"Robustness entries: {len(paragraphs)} (will use heavy input perturbation)")
 
@@ -597,16 +745,80 @@ def expand_corpus_with_variations(
         f"in {elapsed:.1f}s"
     )
 
-    # Log Triad breakdown
+    # =========================================================================
+    # Entry 4-6: Perspective Variations
+    # =========================================================================
+    # These teach the LoRA that style is independent of POV. By training on
+    # the same content in different perspectives, the model learns to apply
+    # style regardless of input perspective (first person, third person, etc.)
+
+    if not skip_perspective:
+        logger.info("=" * 60)
+        logger.info("Creating perspective variations (first_person_plural, third_person, impersonal)...")
+
+        perspective_counts = {key: 0 for key in PERSPECTIVE_TRANSFORMS.keys()}
+        perspective_failed = 0
+        perspective_start = time.time()
+
+        # Prepare all perspective tasks (3 perspectives per paragraph)
+        perspective_tasks = []
+        for idx, para in enumerate(paragraphs):
+            for perspective_key in PERSPECTIVE_TRANSFORMS.keys():
+                perspective_tasks.append((idx, para, perspective_key))
+
+        logger.info(f"Generating {len(perspective_tasks)} perspective variations...")
+
+        def process_perspective(task):
+            idx, para, perspective_key = task
+            varied = create_perspective_variation(para, author, perspective_key)
+            return idx, perspective_key, varied
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(process_perspective, task): task for task in perspective_tasks}
+
+            for future in as_completed(futures):
+                try:
+                    idx, perspective_key, varied = future.result()
+                    if varied:
+                        result.append((varied, f"perspective_{perspective_key}"))
+                        perspective_counts[perspective_key] += 1
+                    else:
+                        perspective_failed += 1
+
+                    total_processed = sum(perspective_counts.values()) + perspective_failed
+                    if total_processed % 30 == 0:
+                        elapsed_p = time.time() - perspective_start
+                        rate = total_processed / elapsed_p if elapsed_p > 0 else 0
+                        success_rate = sum(perspective_counts.values()) / total_processed * 100 if total_processed > 0 else 0
+                        logger.info(
+                            f"Perspective: {sum(perspective_counts.values())}/{len(perspective_tasks)} | "
+                            f"Failed: {perspective_failed} | "
+                            f"Success: {success_rate:.0f}% | "
+                            f"Rate: {rate:.1f}/s"
+                        )
+                except Exception as e:
+                    perspective_failed += 1
+                    logger.debug(f"Perspective task failed: {e}")
+
+        perspective_elapsed = time.time() - perspective_start
+        logger.info(
+            f"Perspective complete: {sum(perspective_counts.values())} created, {perspective_failed} failed "
+            f"in {perspective_elapsed:.1f}s"
+        )
+        logger.info(f"  Per perspective: {perspective_counts}")
+    else:
+        logger.info("Skipping perspective variations (--skip-perspective flag)")
+
+    # Log final breakdown
     category_counts = {}
     for _, vtype in result:
         category_counts[vtype] = category_counts.get(vtype, 0) + 1
-    logger.info(f"Triad breakdown: {category_counts}")
+    logger.info(f"Final breakdown: {category_counts}")
 
     # Calculate actual ratio
     total = len(result)
     original_pct = category_counts.get('original', 0) / total * 100
-    logger.info(f"Real author signal: {original_pct:.1f}% (target: ~33%)")
+    logger.info(f"Real author signal: {original_pct:.1f}%")
 
     return result
 
@@ -653,10 +865,11 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
     all_chunks = []
 
     for vtype, texts in by_type.items():
-        # Triad Strategy handling:
+        # Enhanced Triad Strategy handling:
         # - 'original': Overlapping chunks (continuous narrative, style in transitions)
         # - 'snowflake': Keep separate (each is about different mundane topic)
         # - 'robustness': Keep separate (will get heavy input perturbation later)
+        # - 'perspective_*': Keep separate (each is same content in different POV)
         if vtype != "original":
             chunks_for_type = []
             for para_text in texts:
@@ -1649,6 +1862,8 @@ def main():
                         help="Workers for parallel processing (MLX neutralization is serialized, so 1 is optimal)")
     parser.add_argument("--skip-variation", action="store_true",
                         help="Skip topic variation step (originals only, no Triad)")
+    parser.add_argument("--skip-perspective", action="store_true",
+                        help="Skip perspective variation step (no first_person_plural, third_person, impersonal)")
     parser.add_argument("--phase", type=int, choices=[1, 2, 3], default=None,
                         help="Run specific phase: 1=Anchors (RTT), 2=Noise (script), 3=Snowflakes (LLM)")
     parser.add_argument("--no-monotone", action="store_true",
@@ -1746,6 +1961,7 @@ def main():
             author=args.author,
             workers=args.workers,
             skip_variation=args.skip_variation,
+            skip_perspective=args.skip_perspective,
         )
 
         for _, vtype in expanded:
@@ -1813,6 +2029,7 @@ def main():
             author=args.author,
             workers=args.workers,
             skip_variation=args.skip_variation,
+            skip_perspective=args.skip_perspective,
         )
 
         for _, vtype in expanded:

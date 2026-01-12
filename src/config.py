@@ -151,6 +151,7 @@ class GenerationConfig:
     # Persona settings
     use_persona: bool = True  # Enable persona-based prompting
     apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
+    narrativize_input: bool = True  # Convert impersonal exposition to first-person narrative (match training format)
 
     # Grammar correction settings (final post-processing pass)
     correct_grammar: bool = True  # Enable style-safe grammar correction
@@ -471,6 +472,7 @@ def load_config(config_path: str = "config.json") -> Config:
             # Persona settings
             use_persona=gen.get("use_persona", True),
             apply_input_perturbation=gen.get("apply_input_perturbation", True),
+            narrativize_input=gen.get("narrativize_input", True),
             # Grammar correction settings
             correct_grammar=gen.get("correct_grammar", True),
             grammar_language=gen.get("grammar_language", "en-US"),

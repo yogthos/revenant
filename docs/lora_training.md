@@ -10,10 +10,20 @@ See `docs/lora_training_strategy.md` for the complete analysis. Key requirements
 
 | Must Match | Training | Inference |
 |------------|----------|-----------|
+| **Input perspective** | First-person narrative ("I saw", "I found") | `narrativize_input: true` |
 | Input perturbation | 8% noise | `apply_input_perturbation: true` |
 | Persona frames | `PERSONA_FRAMES` dict | `prompts/{author}_worldview.txt` |
 | Content classifier | `classify_content_type()` | `src/utils/content_classifier.py` |
 | Scale | 2.0 | 2.0 in config.json |
+
+**CRITICAL Pipeline Order**: Narrativize must happen BEFORE RTT, not after:
+
+```
+Correct:  Input → Narrativize → RTT → Perturb → LoRA  ✓
+Wrong:    Input → RTT → Narrativize → Perturb → LoRA  ✗
+```
+
+The LoRA was trained on RTT output. If narrativize happens after RTT, it destroys the neutral format the LoRA expects. The narrativize step converts impersonal input to first-person BEFORE RTT neutralizes it.
 
 ## Overview
 
@@ -65,30 +75,51 @@ python scripts/curate_corpus.py \
 
 ## Step 2: Generate Training Data (Persona Injection)
 
-This step creates the "Many-to-One" training pairs. We generate **3 variations** of input for every 1 styled output.
+This step creates the "Many-to-One" training pairs with perspective variations.
 
 ```bash
-# Update generate_flat_training.py with the new Persona Logic first!
 python scripts/generate_flat_training.py \
     --corpus styles/unconducted_chorus.txt \
     --author "The Unconducted Chorus" \
     --output data/training/lovecraft
 
+# Skip perspective variations (faster, fewer examples)
+python scripts/generate_flat_training.py \
+    --corpus styles/unconducted_chorus.txt \
+    --author "The Unconducted Chorus" \
+    --output data/training/lovecraft \
+    --skip-perspective
 ```
 
-### The "Many-to-One" Data Strategy
+### The Enhanced Triad Strategy
 
-The script will now generate three types of training examples:
+The script generates multiple variation types per paragraph:
 
-1. **Standard Neutral:** "Rewrite this text..." (Baseline).
-2. **Info-Dropout:** "Explain [Concept]..." (Input has NO adjectives. Model must invent them).
-3. **Abstract:** "Describe [THING]..." (Input replaces nouns with generic placeholders. Model must infer context).
+**Content Variations:**
+1. **Original (Anchor):** Real author text in first-person singular
+2. **Snowflake:** Topic swap to mundane activity (preserves structure, different content)
+3. **Robustness:** Same text with heavy input perturbation
+
+**Perspective Variations (NEW):**
+4. **First Person Plural:** "we saw" instead of "I saw"
+5. **Third Person:** "the observer saw" instead of "I saw"
+6. **Impersonal:** "it was observed" instead of "I saw"
+
+Perspective variations teach the LoRA that style is independent of POV. This allows inference to work with ANY input perspective, eliminating the need for the `narrativize_input` step.
+
+### Input Variants per Anchor
+
+For each anchor, we generate multiple input variants:
+1. **Standard Neutral:** RTT-neutralized text (baseline)
+2. **Info-Dropout:** No adjectives (model must invent them)
+3. **Abstract:** Concrete nouns replaced with [THING] placeholders
 
 **Validation Checkpoint:**
 
-* [ ] Output `train.jsonl` has ~3,500 - 4,000 examples.
-* [ ] Inputs are "neutral" or "broken"; Outputs are "lush" and "styled."
-* [ ] Check `valid.jsonl` to ensure no "I am an AI" refusals exist in the target text.
+* [ ] Output `train.jsonl` has sufficient examples (varies by corpus size)
+* [ ] Inputs are "neutral" or "broken"; Outputs are "lush" and "styled"
+* [ ] Check `valid.jsonl` to ensure no "I am an AI" refusals exist in the target text
+* [ ] Perspective variations cover all three types (plural, third, impersonal)
 
 ---
 
@@ -216,6 +247,7 @@ subprocess.run(f"mlx_lm.generate --model ./models/Qwen2.5-14B-Base-4bit-MLX --ad
 | **Model refuses to generate ("I cannot...")** | Safety Refusal. | You are using an Instruct model. **Switch to Base model.** |
 | **Style is too weak** | Scale mismatch. | Set `scale: 2.0` to match training. Check `use_persona: true`. |
 | **Output is mechanical/formulaic** | Distribution mismatch. | Enable `apply_input_perturbation: true`. Verify persona frames match training. |
+| **Output is passive/descriptive/impersonal** | Input perspective mismatch. Training used first-person narrative ("I saw"), inference uses impersonal ("We trace"). | Enable `narrativize_input: true`. This converts "We trace..." → "I traced..." before LoRA. |
 | **Output doesn't expand** | LoRA can't expand. | Enable `expand_for_texture: true`. LoRA trained on similar-length pairs. |
 | **Wrong persona frame type** | Content misclassified. | Both must use `src/utils/content_classifier.py`. Check spaCy NER output. |
 

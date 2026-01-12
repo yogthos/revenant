@@ -1,6 +1,6 @@
 # ==============================================================================
-# MLX LoRA Configuration: Lovecraft Style Transfer (Final)
-# Dataset: 8,600 Total / 6,880 Train
+# MLX LoRA Configuration: Lovecraft Style Transfer (With Perspective Variations)
+# Dataset: 8,840 Total / 7,072 Train / 884 Valid / 884 Test
 # Strategy: High-Rank, High-Dropout, Base Model
 # ==============================================================================
 
@@ -12,17 +12,17 @@ data: "data/training/lovecraft"
 fine_tune_type: lora
 
 # --- Training Strategy ---
-# Effective Batch Size = 2 (1 * 2)
+# Effective Batch Size = 4 (1 * 4)
 # We want "spiky" gradients to learn specific style quirks, not averaged smoothness.
 batch_size: 1
 grad_accumulation: 4
 grad_checkpoint: true
 
 # Duration Logic:
-# Train Set: 6,880 items
-# 1 Epoch = 3,440 steps
-# Target: ~0.87 Epochs (3,000 steps). 
-# This sees 87% of data, preventing "catastrophic forgetting" of basic English.
+# Train Set: 7,072 items
+# Effective batch: 4
+# 1 Epoch = 7,072 / 4 = 1,768 steps
+# Target: ~1.2 Epochs (2,100 steps) to learn perspective variations well
 iters: 2100
 
 # Optimization
@@ -57,9 +57,9 @@ lora_parameters:
 
 # --- Checkpointing & Reporting ---
 adapter_path: "lora_adapters/lovecraft_14b"
-save_every: 200       # Saves 6 checkpoints total
+save_every: 200       # Saves checkpoints every 200 steps
 steps_per_report: 10  # Monitor loss frequently
-steps_per_eval: 200   # Check against your 860 validation items
+steps_per_eval: 200   # Check against 884 validation items
 
 # Reproducibility
 seed: 42

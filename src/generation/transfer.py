@@ -115,6 +115,12 @@ class TransferConfig:
     use_persona: bool = True  # Enable persona-based prompting
     apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
 
+    # Narrativization settings (convert impersonal exposition to first-person)
+    # CRITICAL: Training inputs were first-person narrative ("I saw", "I found")
+    # but RTT produces impersonal exposition ("We trace", "One observes")
+    # This step converts input to match training distribution format
+    narrativize_input: bool = True  # Convert impersonal exposition to first-person narrative
+
 
 @dataclass
 class TransferStats:
@@ -370,6 +376,51 @@ class StyleTransfer:
             logger.warning(f"Texture expansion failed: {e}")
             return text
 
+    def _narrativize(self, text: str) -> str:
+        """Convert impersonal exposition to first-person narrative.
+
+        CRITICAL FOR LORA QUALITY:
+        The LoRA was trained on first-person narrative inputs ("I saw", "I found",
+        "I discovered"). But RTT neutralization produces impersonal exposition
+        ("We trace", "One observes", "It is known that").
+
+        This step bridges that gap by converting input to match training format:
+        - "We now trace the forces..." → "I have traced the forces..."
+        - "One must understand..." → "I came to understand..."
+        - "It is observed that..." → "I observed..."
+
+        Args:
+            text: Impersonal exposition text.
+
+        Returns:
+            First-person narrative version, or original text if conversion fails.
+        """
+        try:
+            from ..utils.prompts import load_prompt
+
+            system_prompt = load_prompt("narrativize")
+            user_prompt = text
+
+            response = self.critic_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.5,  # Some variation but controlled
+                max_tokens=len(text.split()) * 2,  # Allow for slight expansion
+            )
+
+            if response and response.strip():
+                input_words = len(text.split())
+                output_words = len(response.split())
+                logger.info(f"NARRATIVIZE: {input_words} → {output_words} words (converted to first-person)")
+                return response.strip()
+            else:
+                logger.warning("Narrativization returned empty, using original")
+                return text
+
+        except Exception as e:
+            logger.warning(f"Narrativization failed: {e}")
+            return text
+
     def _create_default_verifier(self) -> Callable[[str, str], float]:
         """Create default entailment verifier."""
         try:
@@ -492,6 +543,22 @@ class StyleTransfer:
             paragraph_clean = self._expand_with_texture(paragraph_clean)
             word_count = len(paragraph_clean.split())  # Update word count after expansion
             logger.info(f"TEXTURE EXPANSION: Complete, now {word_count} words")
+
+        # ========================================
+        # STEP 0.7: Narrativize input BEFORE RTT
+        # ========================================
+        # CRITICAL ORDERING: Narrativize must happen BEFORE RTT because:
+        # 1. Training used RTT on first-person Lovecraft text
+        # 2. RTT output is what the LoRA learned to transform
+        # 3. If we narrativize AFTER RTT, we destroy the RTT output format
+        #
+        # Correct flow: impersonal input → narrativize → first-person → RTT → neutral first-person → LoRA
+        # Wrong flow:   impersonal input → RTT → neutral impersonal → narrativize → literary first-person → LoRA
+        if self.config.narrativize_input:
+            pre_narrativize_words = len(paragraph_clean.split())
+            paragraph_clean = self._narrativize(paragraph_clean)
+            post_narrativize_words = len(paragraph_clean.split())
+            logger.info(f"NARRATIVIZE: {pre_narrativize_words} → {post_narrativize_words} words (impersonal → first-person)")
 
         # ========================================
         # STEP 1: RTT Neutralization (match training format)
