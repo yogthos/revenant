@@ -115,12 +115,6 @@ class TransferConfig:
     use_persona: bool = True  # Enable persona-based prompting
     apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
 
-    # Narrativization settings (convert impersonal exposition to first-person)
-    # CRITICAL: Training inputs were first-person narrative ("I saw", "I found")
-    # but RTT produces impersonal exposition ("We trace", "One observes")
-    # This step converts input to match training distribution format
-    narrativize_input: bool = True  # Convert impersonal exposition to first-person narrative
-
 
 @dataclass
 class TransferStats:
@@ -421,6 +415,72 @@ class StyleTransfer:
             logger.warning(f"Narrativization failed: {e}")
             return text
 
+    def _convert_to_perspective(self, text: str, target_perspective: str) -> str:
+        """Convert text to target perspective BEFORE RTT neutralization.
+
+        CRITICAL: This must happen BEFORE RTT because the LoRA was trained on
+        perspective-varied text that went through RTT. The training pairs are:
+            neutral(third_person) → styled(third_person)
+
+        So the perspective is embedded in the text BEFORE RTT, and the LoRA
+        preserves it during styling.
+
+        Args:
+            text: Input text in any perspective.
+            target_perspective: Target perspective from config.
+
+        Returns:
+            Text converted to target perspective.
+        """
+        # "preserve" means don't convert - keep original perspective
+        if target_perspective == "preserve":
+            return text
+
+        # "first_person_singular" uses the existing narrativize prompt
+        if target_perspective == "first_person_singular":
+            return self._narrativize(text)
+
+        try:
+            from ..utils.prompts import load_prompt
+
+            # Build the perspective description
+            perspective_descriptions = {
+                "first_person_plural": "first_person_plural (use: we, us, our, ours)",
+                "third_person": "third_person (use: the observer, they, one)",
+                "author_voice_third_person": "author_voice_third_person (impersonal exposition: one observes, it is known, passive voice)",
+            }
+            perspective_desc = perspective_descriptions.get(
+                target_perspective, target_perspective
+            )
+
+            system_prompt = load_prompt("convert_perspective").format(
+                target_perspective=perspective_desc
+            )
+            user_prompt = text
+
+            response = self.critic_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.3,  # Low temperature for precise conversion
+                max_tokens=len(text.split()) * 2,
+            )
+
+            if response and response.strip():
+                input_words = len(text.split())
+                output_words = len(response.split())
+                logger.info(
+                    f"PERSPECTIVE CONVERSION: {input_words} → {output_words} words "
+                    f"(converted to {target_perspective})"
+                )
+                return response.strip()
+            else:
+                logger.warning("Perspective conversion returned empty, using original")
+                return text
+
+        except Exception as e:
+            logger.warning(f"Perspective conversion failed: {e}")
+            return text
+
     def _create_default_verifier(self) -> Callable[[str, str], float]:
         """Create default entailment verifier."""
         try:
@@ -545,20 +605,24 @@ class StyleTransfer:
             logger.info(f"TEXTURE EXPANSION: Complete, now {word_count} words")
 
         # ========================================
-        # STEP 0.7: Narrativize input BEFORE RTT
+        # STEP 0.7: Convert to target perspective BEFORE RTT
         # ========================================
-        # CRITICAL ORDERING: Narrativize must happen BEFORE RTT because:
-        # 1. Training used RTT on first-person Lovecraft text
-        # 2. RTT output is what the LoRA learned to transform
-        # 3. If we narrativize AFTER RTT, we destroy the RTT output format
+        # CRITICAL ORDERING: Perspective conversion must happen BEFORE RTT because:
+        # 1. Training used RTT on perspective-varied text (first-person, third-person, impersonal)
+        # 2. The LoRA preserves perspective through RTT → styled output
+        # 3. Training pairs: neutral(perspective_text) → styled(perspective_text)
         #
-        # Correct flow: impersonal input → narrativize → first-person → RTT → neutral first-person → LoRA
-        # Wrong flow:   impersonal input → RTT → neutral impersonal → narrativize → literary first-person → LoRA
-        if self.config.narrativize_input:
-            pre_narrativize_words = len(paragraph_clean.split())
-            paragraph_clean = self._narrativize(paragraph_clean)
-            post_narrativize_words = len(paragraph_clean.split())
-            logger.info(f"NARRATIVIZE: {pre_narrativize_words} → {post_narrativize_words} words (impersonal → first-person)")
+        # Correct flow: input → convert_to_perspective → RTT → neutral_in_perspective → LoRA → styled_in_perspective
+        #
+        # For backward compatibility:
+        # - "preserve" = keep input perspective (no conversion)
+        # - "first_person_singular" = convert to first person (legacy narrativize behavior)
+        # - Other perspectives = convert to that perspective
+        if self.config.perspective != "preserve":
+            pre_perspective_words = len(paragraph_clean.split())
+            paragraph_clean = self._convert_to_perspective(paragraph_clean, self.config.perspective)
+            post_perspective_words = len(paragraph_clean.split())
+            logger.info(f"PERSPECTIVE: {pre_perspective_words} → {post_perspective_words} words (→ {self.config.perspective})")
 
         # ========================================
         # STEP 1: RTT Neutralization (match training format)

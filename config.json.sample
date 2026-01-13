@@ -100,9 +100,7 @@
     "_comment9": "Persona settings (subjective voice to defeat AI detection)",
     "use_persona": true,
     "_comment10": "Input perturbation (8% noise to match training distribution)",
-    "apply_input_perturbation": true,
-    "_comment11": "Narrativization (convert impersonal exposition to first-person narrative)",
-    "narrativize_input": true
+    "apply_input_perturbation": true
   },
   "style": {
     "_comment": "Perspective controls output point-of-view",

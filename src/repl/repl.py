@@ -484,7 +484,6 @@ def run_repl(
             rag_sample_size=gen.rag_sample_size,
             use_persona=gen.use_persona,
             apply_input_perturbation=gen.apply_input_perturbation,
-            narrativize_input=gen.narrativize_input,
             # Disable document context for REPL (interactive mode)
             use_document_context=False,
             pass_headings_unchanged=False,

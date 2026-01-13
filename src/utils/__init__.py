@@ -20,7 +20,6 @@ from .nlp import (
     get_pos_distribution,
     get_dependency_depth,
     detect_perspective,
-    setup_nltk,
 )
 from .prompts import (
     load_prompt,
@@ -49,7 +48,6 @@ __all__ = [
     "get_pos_distribution",
     "get_dependency_depth",
     "detect_perspective",
-    "setup_nltk",
     # Prompts
     "load_prompt",
     "format_prompt",

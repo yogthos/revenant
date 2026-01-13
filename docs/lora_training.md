@@ -11,7 +11,7 @@ See `docs/lora_training_strategy.md` for the complete analysis. Key requirements
 | Must Match | Training | Inference |
 |------------|----------|-----------|
 | **Prompt format** | Qwen chat template (`<\|im_start\|>...`) | Auto-applied by `lora_generator.py` |
-| **Input perspective** | First-person narrative ("I saw", "I found") | `narrativize_input: true` |
+| **Perspective** | Multiple perspectives (first/third/impersonal) | `perspective` setting converts input before RTT |
 | Input perturbation | 8% noise | `apply_input_perturbation: true` |
 | Persona frames | `PERSONA_FRAMES` dict | `prompts/{author}_worldview.txt` |
 | Content classifier | `classify_content_type()` | `src/utils/content_classifier.py` |
@@ -38,7 +38,7 @@ Correct:  Input → Narrativize → RTT → Perturb → LoRA  ✓
 Wrong:    Input → RTT → Narrativize → Perturb → LoRA  ✗
 ```
 
-The LoRA was trained on RTT output. If narrativize happens after RTT, it destroys the neutral format the LoRA expects. The narrativize step converts impersonal input to first-person BEFORE RTT neutralizes it.
+The LoRA was trained on RTT output. If perspective conversion happens after RTT, it destroys the neutral format the LoRA expects. The perspective conversion step must happen BEFORE RTT neutralizes it.
 
 ## Overview
 
@@ -120,7 +120,7 @@ The script generates multiple variation types per paragraph:
 5. **Third Person:** "the observer saw" instead of "I saw"
 6. **Impersonal:** "it was observed" instead of "I saw"
 
-Perspective variations teach the LoRA that style is independent of POV. This allows inference to work with ANY input perspective, eliminating the need for the `narrativize_input` step.
+Perspective variations teach the LoRA that style is independent of POV. This allows inference to work with ANY input perspective. Use the `perspective` config setting to convert input to the target perspective before RTT.
 
 ### Input Variants per Anchor
 
@@ -262,7 +262,7 @@ subprocess.run(f"mlx_lm.generate --model ./models/Qwen2.5-14B-Base-4bit-MLX --ad
 | **Model refuses to generate ("I cannot...")** | Safety Refusal. | You are using an Instruct model. **Switch to Base model.** |
 | **Style is too weak** | Scale mismatch. | Set `scale: 2.0` to match training. Check `use_persona: true`. |
 | **Output is mechanical/formulaic** | Distribution mismatch. | Enable `apply_input_perturbation: true`. Verify persona frames match training. |
-| **Output is passive/descriptive/impersonal** | Input perspective mismatch. Training used first-person narrative ("I saw"), inference uses impersonal ("We trace"). | Enable `narrativize_input: true`. This converts "We trace..." → "I traced..." before LoRA. |
+| **Output is passive/descriptive/impersonal** | Input perspective mismatch. | Set `perspective: first_person_singular` to convert input before RTT. |
 | **Output doesn't expand** | LoRA can't expand. | Enable `expand_for_texture: true`. LoRA trained on similar-length pairs. |
 | **Wrong persona frame type** | Content misclassified. | Both must use `src/utils/content_classifier.py`. Check spaCy NER output. |
 

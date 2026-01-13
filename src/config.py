@@ -12,49 +12,6 @@ logger = get_logger(__name__)
 
 
 @dataclass
-class StyleBlendingWeights:
-    """Fitness weights when style blending is enabled."""
-    enabled_weight: float = 0.15
-    content_with_blending: float = 0.35
-    length_with_blending: float = 0.18
-    transition_with_blending: float = 0.12
-    vocabulary_with_blending: float = 0.12
-    fluency_with_blending: float = 0.08
-
-
-@dataclass
-class FitnessWeightsConfig:
-    """Configuration for fitness function weights."""
-    content: float = 0.40
-    length: float = 0.20
-    transition: float = 0.15
-    vocabulary: float = 0.15
-    fluency: float = 0.10
-    style_blending: StyleBlendingWeights = field(default_factory=StyleBlendingWeights)
-
-
-@dataclass
-class ThresholdsConfig:
-    """Configuration for various strictness thresholds."""
-    overuse_word_count: int = 3  # Word appearing more than this is "overused"
-    severe_overuse_count: int = 5  # Severe overuse penalty threshold
-    entailment_score: float = 0.5  # Min entailment for semantic preservation
-    delta_score: float = 1.5  # Burrows' Delta threshold
-    content_preservation_min: float = 0.5  # Min content preservation ratio
-    novelty_min: float = 0.95  # Min novelty for anachronistic tests
-    anachronistic_pass_rate: float = 0.9  # Min pass rate for style generalization
-
-
-@dataclass
-class BlendingConfig:
-    """Configuration for SLERP-based author style blending."""
-    enabled: bool = False
-    embedding_model: str = "all-MiniLM-L6-v2"
-    cache_dir: str = "centroid_cache/"
-    authors: Dict[str, float] = field(default_factory=dict)  # author_name -> weight
-
-
-@dataclass
 class LLMProviderConfig:
     """Configuration for a specific LLM provider."""
     api_key: str = ""
@@ -104,15 +61,6 @@ class LLMConfig:
 
 
 @dataclass
-class CorpusConfig:
-    """Configuration for corpus processing."""
-    min_sentences_per_paragraph: int = 2
-    style_audit_threshold: int = 4
-    opener_percentage: float = 0.15
-    closer_percentage: float = 0.15
-
-
-@dataclass
 class GenerationConfig:
     """Configuration for text generation."""
     # Validation settings
@@ -151,7 +99,6 @@ class GenerationConfig:
     # Persona settings
     use_persona: bool = True  # Enable persona-based prompting
     apply_input_perturbation: bool = True  # Apply 8% noise to match training distribution
-    narrativize_input: bool = True  # Convert impersonal exposition to first-person narrative (match training format)
 
     # Grammar correction settings (final post-processing pass)
     correct_grammar: bool = True  # Enable style-safe grammar correction
@@ -182,60 +129,17 @@ class LoRAAdapterConfig:
     checkpoint: Optional[str] = None  # Specific checkpoint to use
 
 
-# Keep LoRAConfig as alias for backward compatibility
-LoRAConfig = LoRAAdapterConfig
-
-
-@dataclass
-class SemanticValidationConfig:
-    """Configuration for semantic validation."""
-    min_proposition_coverage: float = 0.9
-    max_hallucinated_entities: int = 0
-    require_citation_preservation: bool = True
-
-
-@dataclass
-class StatisticalValidationConfig:
-    """Configuration for statistical validation."""
-    length_tolerance: float = 0.2
-    burstiness_tolerance: float = 0.3
-    min_vocab_match: float = 0.5
-
-
 @dataclass
 class ValidationConfig:
     """Configuration for validation."""
-    # Top-level validation settings
     entailment_threshold: float = 0.7  # Min NLI score for semantic preservation
     max_hallucinations_before_reject: int = 2  # Trigger repair after this many hallucinations
-    # Nested validation configs
-    semantic: SemanticValidationConfig = field(default_factory=SemanticValidationConfig)
-    statistical: StatisticalValidationConfig = field(default_factory=StatisticalValidationConfig)
-
-
-@dataclass
-class ContextBudgetConfig:
-    """Token budget configuration for context management."""
-    system_prompt_max: int = 1500
-    user_prompt_max: int = 600
-    keep_last_n_sentences: int = 5
-    max_conversation_tokens: int = 8000
-
-
-@dataclass
-class VoiceInjectionConfig:
-    """Configuration for voice profile injection into generation."""
-    enabled: bool = True
-    assertiveness_weight: float = 0.7  # How much to weight assertiveness patterns
-    rhetorical_weight: float = 0.8  # How much to weight rhetorical patterns
 
 
 @dataclass
 class StyleConfig:
     """Configuration for style transfer settings."""
     perspective: str = "preserve"  # preserve, first_person_singular, first_person_plural, third_person, author_voice_third_person
-    voice_injection: VoiceInjectionConfig = field(default_factory=VoiceInjectionConfig)
-    blending: BlendingConfig = field(default_factory=BlendingConfig)
 
     def validate_perspective(self) -> bool:
         """Check if perspective setting is valid."""
@@ -264,14 +168,10 @@ class StyleConfig:
 @dataclass
 class Config:
     """Main configuration container."""
-    fitness_weights: FitnessWeightsConfig = field(default_factory=FitnessWeightsConfig)
-    thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
-    corpus: CorpusConfig = field(default_factory=CorpusConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     style: StyleConfig = field(default_factory=StyleConfig)
     validation: ValidationConfig = field(default_factory=ValidationConfig)
-    context_budget: ContextBudgetConfig = field(default_factory=ContextBudgetConfig)
     log_level: str = "INFO"
     log_json: bool = False
 
@@ -397,49 +297,8 @@ def load_config(config_path: str = "config.json") -> Config:
     # Parse each section
     config = Config()
 
-    # Parse fitness weights
-    if "fitness_weights" in data:
-        fw_data = data["fitness_weights"]
-        blending_data = fw_data.get("style_blending", {})
-        config.fitness_weights = FitnessWeightsConfig(
-            content=fw_data.get("content", 0.40),
-            length=fw_data.get("length", 0.20),
-            transition=fw_data.get("transition", 0.15),
-            vocabulary=fw_data.get("vocabulary", 0.15),
-            fluency=fw_data.get("fluency", 0.10),
-            style_blending=StyleBlendingWeights(
-                enabled_weight=blending_data.get("enabled_weight", 0.15),
-                content_with_blending=blending_data.get("content_with_blending", 0.35),
-                length_with_blending=blending_data.get("length_with_blending", 0.18),
-                transition_with_blending=blending_data.get("transition_with_blending", 0.12),
-                vocabulary_with_blending=blending_data.get("vocabulary_with_blending", 0.12),
-                fluency_with_blending=blending_data.get("fluency_with_blending", 0.08),
-            ),
-        )
-
-    # Parse thresholds
-    if "thresholds" in data:
-        th_data = data["thresholds"]
-        config.thresholds = ThresholdsConfig(
-            overuse_word_count=th_data.get("overuse_word_count", 3),
-            severe_overuse_count=th_data.get("severe_overuse_count", 5),
-            entailment_score=th_data.get("entailment_score", 0.5),
-            delta_score=th_data.get("delta_score", 1.5),
-            content_preservation_min=th_data.get("content_preservation_min", 0.5),
-            novelty_min=th_data.get("novelty_min", 0.95),
-            anachronistic_pass_rate=th_data.get("anachronistic_pass_rate", 0.9),
-        )
-
     if "llm" in data:
         config.llm = _parse_llm_config(data["llm"])
-
-    if "corpus" in data:
-        config.corpus = CorpusConfig(
-            min_sentences_per_paragraph=data["corpus"].get("min_sentences_per_paragraph", 2),
-            style_audit_threshold=data["corpus"].get("style_audit_threshold", 4),
-            opener_percentage=data["corpus"].get("opener_percentage", 0.15),
-            closer_percentage=data["corpus"].get("closer_percentage", 0.15),
-        )
 
     if "generation" in data:
         gen = data["generation"]
@@ -474,7 +333,6 @@ def load_config(config_path: str = "config.json") -> Config:
             # Persona settings
             use_persona=gen.get("use_persona", True),
             apply_input_perturbation=gen.get("apply_input_perturbation", True),
-            narrativize_input=gen.get("narrativize_input", True),
             # Grammar correction settings
             correct_grammar=gen.get("correct_grammar", True),
             grammar_language=gen.get("grammar_language", "en-US"),
@@ -487,21 +345,8 @@ def load_config(config_path: str = "config.json") -> Config:
 
     if "style" in data:
         style_data = data["style"]
-        voice_data = style_data.get("voice_injection", {})
-        blending_data = style_data.get("blending", {})
         config.style = StyleConfig(
             perspective=style_data.get("perspective", "preserve"),
-            voice_injection=VoiceInjectionConfig(
-                enabled=voice_data.get("enabled", True),
-                assertiveness_weight=voice_data.get("assertiveness_weight", 0.7),
-                rhetorical_weight=voice_data.get("rhetorical_weight", 0.8),
-            ),
-            blending=BlendingConfig(
-                enabled=blending_data.get("enabled", False),
-                embedding_model=blending_data.get("embedding_model", "all-MiniLM-L6-v2"),
-                cache_dir=blending_data.get("cache_dir", "centroid_cache/"),
-                authors=blending_data.get("authors", {}),
-            ),
         )
         if not config.style.validate_perspective():
             logger.warning(
@@ -511,30 +356,8 @@ def load_config(config_path: str = "config.json") -> Config:
 
     if "validation" in data:
         val_data = data["validation"]
-        # Load top-level validation settings
         config.validation.entailment_threshold = val_data.get("entailment_threshold", 0.7)
         config.validation.max_hallucinations_before_reject = val_data.get("max_hallucinations_before_reject", 2)
-        # Load nested configs
-        if "semantic" in val_data:
-            config.validation.semantic = SemanticValidationConfig(
-                min_proposition_coverage=val_data["semantic"].get("min_proposition_coverage", 0.9),
-                max_hallucinated_entities=val_data["semantic"].get("max_hallucinated_entities", 0),
-                require_citation_preservation=val_data["semantic"].get("require_citation_preservation", True),
-            )
-        if "statistical" in val_data:
-            config.validation.statistical = StatisticalValidationConfig(
-                length_tolerance=val_data["statistical"].get("length_tolerance", 0.2),
-                burstiness_tolerance=val_data["statistical"].get("burstiness_tolerance", 0.3),
-                min_vocab_match=val_data["statistical"].get("min_vocab_match", 0.5),
-            )
-
-    if "context_budget" in data:
-        config.context_budget = ContextBudgetConfig(
-            system_prompt_max=data["context_budget"].get("system_prompt_max", 1500),
-            user_prompt_max=data["context_budget"].get("user_prompt_max", 600),
-            keep_last_n_sentences=data["context_budget"].get("keep_last_n_sentences", 5),
-            max_conversation_tokens=data["context_budget"].get("max_conversation_tokens", 8000),
-        )
 
     config.log_level = data.get("log_level", "INFO")
     config.log_json = data.get("log_json", False)
