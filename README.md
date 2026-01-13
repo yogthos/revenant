@@ -157,6 +157,16 @@ Run training:
 mlx_lm.lora --config data/training/author/config.yaml
 ```
 
+**If training with LLaMA-Factory (e.g., on RunPod):** LLaMA-Factory produces PEFT format adapters that must be converted to MLX format:
+
+```bash
+python scripts/convert_peft_to_mlx.py \
+    --input lora_adapters/author_peft/checkpoint-600 \
+    --output lora_adapters/author
+```
+
+See `docs/runpod_training.md` for full cloud training instructions.
+
 Create `lora_adapters/author/metadata.json`:
 
 ```json
@@ -191,6 +201,7 @@ Update `config.json` to add the adapter with its settings:
 "generation": {
   "lora_adapters": {
     "lora_adapters/author": {
+      "enabled": true,
       "scale": 1.0,
       "temperature": 0.7,
       "worldview": "author_persona.txt"
@@ -199,24 +210,35 @@ Update `config.json` to add the adapter with its settings:
 }
 ```
 
+You can configure multiple adapters and toggle them with `enabled: true/false`.
+
 ---
 
 ## Base Model Setup
 
-Download and quantize a base model:
+Download and quantize a base model. **Important:** Use `-q` flag to enable quantization:
 
 ```bash
 mkdir -p models
+
+# 14B model (~8GB output)
 mlx_lm.convert --hf-path Qwen/Qwen2.5-14B \
-    --q-bits 4 \
+    -q --q-bits 4 \
     --mlx-path models/Qwen2.5-14B-Base-4bit-MLX
+
+# 32B model (~18GB output)
+mlx_lm.convert --hf-path Qwen/Qwen2.5-32B \
+    -q --q-bits 4 \
+    --mlx-path models/Qwen2.5-32B-Base-4bit-MLX
 ```
 
-| Model | Training Memory | Inference Memory |
-|-------|-----------------|------------------|
-| Qwen2.5-7B-4bit | ~20GB | ~8GB |
-| **Qwen2.5-14B-4bit** | ~40GB | ~16GB |
-| Qwen2.5-32B-4bit | ~64GB+ | ~24GB |
+**Note:** Without `-q`, the model saves at full precision (bf16), resulting in much larger files.
+
+| Model | Disk Size | Inference Memory |
+|-------|-----------|------------------|
+| Qwen2.5-7B-4bit | ~4GB | ~8GB |
+| Qwen2.5-14B-4bit | ~8GB | ~16GB |
+| Qwen2.5-32B-4bit | ~18GB | ~24GB |
 
 ---
 
@@ -242,15 +264,22 @@ Key settings in `config.json`. All LoRA settings are per-adapter under `lora_ada
 ```json
 {
   "generation": {
-    "entailment_threshold": 0.9,
     "lora_adapters": {
-      "lora_adapters/lovecraft": {
-        "scale": 1.5,
+      "lora_adapters/lovecraft_32b": {
+        "enabled": true,
+        "scale": 2.0,
         "temperature": 0.7,
-        "top_p": 0.92,
-        "min_p": 0.05,
-        "repetition_penalty": 1.15,
+        "top_p": 0.95,
+        "min_p": 0.03,
+        "repetition_penalty": 1.05,
         "max_tokens": 1024,
+        "worldview": "lovecraft_worldview.txt",
+        "checkpoint": "checkpoint-600"
+      },
+      "lora_adapters/lovecraft_14b": {
+        "enabled": false,
+        "scale": 2.0,
+        "temperature": 0.8,
         "worldview": "lovecraft_worldview.txt"
       }
     },
@@ -263,9 +292,24 @@ Key settings in `config.json`. All LoRA settings are per-adapter under `lora_ada
 
 | Setting | Description |
 |---------|-------------|
+| `enabled` | Whether this adapter is active (toggle without removing config) |
 | `scale` | LoRA influence (0.0=base only, 1.0=full, >1.0=amplified) |
 | `temperature` | Generation creativity (lower=more coherent) |
 | `worldview` | Persona prompt file in `prompts/` directory |
+| `checkpoint` | Specific checkpoint subdirectory to use (e.g., `checkpoint-600`) |
+
+List configured adapters and their status:
+
+```bash
+python restyle.py --list-adapters
+```
+
+```
+Status     Author                    Path                           Rank   Examples
+-------------------------------------------------------------------------------------
+[ON]       H.P. Lovecraft            lovecraft_32b                  64     8840
+[OFF]      H.P. Lovecraft            lovecraft_14b                  64     8840
+```
 
 ---
 
@@ -274,10 +318,34 @@ Key settings in `config.json`. All LoRA settings are per-adapter under `lora_ada
 | Problem | Solution |
 |---------|----------|
 | Content lost | Increase `entailment_threshold` to 0.9, lower adapter scale |
-| Style too weak | Increase adapter scale to 0.5-1.0 |
-| Memorized output | Lower adapter scale, use earlier checkpoint |
+| Style too weak | Increase adapter scale to 2.0+, check adapter is loading |
+| Output unchanged | LLaMA-Factory adapters need PEFT→MLX conversion (see below) |
+| Memorized output | Lower adapter scale, use earlier checkpoint (e.g., step 600) |
 | Out of memory (training) | Reduce `num_layers` to 16, enable `grad_checkpoint` |
-| Out of memory (inference) | Use 7B model instead of 14B |
+| Out of memory (inference) | Model not quantized - use `-q` flag with `mlx_lm.convert` |
+| Model too large (60GB+) | Missing `-q` flag during conversion - re-run with `-q --q-bits 4` |
+
+### LLaMA-Factory Adapter Conversion
+
+If you trained with LLaMA-Factory (e.g., on RunPod), the adapter is in PEFT format and must be converted:
+
+```bash
+python scripts/convert_peft_to_mlx.py \
+    --input lora_adapters/author_peft/checkpoint-600 \
+    --output lora_adapters/author_mlx
+```
+
+The conversion:
+- Renames weight keys from PEFT format to MLX format
+- Transposes weight matrices (PEFT uses different layout)
+- Creates `adapter_config.json` with required fields (`num_layers`, etc.)
+
+After conversion, update `metadata.json` to point to your local MLX model:
+```json
+{
+    "base_model": "./models/Qwen2.5-32B-Base-4bit-MLX"
+}
+```
 
 ---
 

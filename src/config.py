@@ -171,6 +171,7 @@ class LoRAAdapterConfig:
     These settings control the balance between style strength and coherence.
     Each adapter in lora_adapters can have its own settings.
     """
+    enabled: bool = True  # Whether this adapter is active
     scale: float = 1.0  # Adapter influence (0.0=base only, 1.0=full, >1.0=amplified)
     temperature: float = 0.6  # Higher = more creative, lower = more coherent
     top_p: float = 0.92  # Nucleus sampling threshold
@@ -305,6 +306,7 @@ def _parse_llm_provider_config(data: Dict) -> LLMProviderConfig:
 def _parse_lora_adapter_config(data: Dict) -> LoRAAdapterConfig:
     """Parse LoRA adapter configuration from dict."""
     return LoRAAdapterConfig(
+        enabled=data.get("enabled", True),
         scale=data.get("scale", 1.0),
         temperature=data.get("temperature", 0.6),
         top_p=data.get("top_p", 0.92),

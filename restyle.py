@@ -183,6 +183,15 @@ def list_adapters(adapters_dir: str = "lora_adapters") -> None:
         print("  4. mlx_lm.lora --config data/training/author/config.yaml")
         return
 
+    # Load config to check enabled status
+    config_adapters = {}
+    try:
+        from src.config import load_config
+        config = load_config()
+        config_adapters = config.generation.lora_adapters
+    except Exception:
+        pass
+
     adapters = []
     for item in adapters_path.iterdir():
         if item.is_dir():
@@ -190,12 +199,20 @@ def list_adapters(adapters_dir: str = "lora_adapters") -> None:
             if metadata_path.exists():
                 with open(metadata_path, 'r') as f:
                     metadata = json.load(f)
+
+                # Check enabled status from config
+                adapter_path = str(item)
+                enabled = True  # Default to enabled if not in config
+                if adapter_path in config_adapters:
+                    enabled = config_adapters[adapter_path].enabled
+
                 adapters.append({
-                    "path": str(item),
+                    "path": adapter_path,
                     "author": metadata.get("author", "Unknown"),
                     "base_model": metadata.get("base_model", "Unknown"),
                     "rank": metadata.get("lora_rank", 16),
                     "examples": metadata.get("training_examples", 0),
+                    "enabled": enabled,
                 })
 
     if not adapters:
@@ -203,11 +220,13 @@ def list_adapters(adapters_dir: str = "lora_adapters") -> None:
         return
 
     print(f"\nAvailable LoRA adapters in {adapters_path}:\n")
-    print(f"{'Author':<25} {'Path':<30} {'Rank':<6} {'Examples'}")
-    print("-" * 75)
+    print(f"{'Status':<10} {'Author':<25} {'Path':<30} {'Rank':<6} {'Examples'}")
+    print("-" * 85)
 
     for adapter in adapters:
+        status = "[ON]" if adapter['enabled'] else "[OFF]"
         print(
+            f"{status:<10} "
             f"{adapter['author']:<25} "
             f"{Path(adapter['path']).name:<30} "
             f"{adapter['rank']:<6} "
@@ -679,6 +698,9 @@ def main():
             lora_adapters = app_config.generation.lora_adapters
             if lora_adapters:
                 for path, adapter_config in lora_adapters.items():
+                    # Skip disabled adapters
+                    if not adapter_config.enabled:
+                        continue
                     # Value is now a LoRAAdapterConfig object
                     adapters.append(AdapterSpec(
                         path=path,

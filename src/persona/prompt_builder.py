@@ -115,12 +115,12 @@ def _get_worldview_filename(adapter_path: str = None) -> str:
             if adapter_config.worldview:
                 return adapter_config.worldview
         else:
-            # Fall back to first configured adapter's worldview
+            # Fall back to first enabled adapter's worldview
             config = load_config()
             if config.generation.lora_adapters:
-                first_adapter = next(iter(config.generation.lora_adapters.values()))
-                if first_adapter.worldview:
-                    return first_adapter.worldview
+                for adapter_config in config.generation.lora_adapters.values():
+                    if adapter_config.enabled and adapter_config.worldview:
+                        return adapter_config.worldview
     except Exception:
         pass
     return "default_persona.txt"

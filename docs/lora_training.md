@@ -10,11 +10,26 @@ See `docs/lora_training_strategy.md` for the complete analysis. Key requirements
 
 | Must Match | Training | Inference |
 |------------|----------|-----------|
+| **Prompt format** | Qwen chat template (`<\|im_start\|>...`) | Auto-applied by `lora_generator.py` |
 | **Input perspective** | First-person narrative ("I saw", "I found") | `narrativize_input: true` |
 | Input perturbation | 8% noise | `apply_input_perturbation: true` |
 | Persona frames | `PERSONA_FRAMES` dict | `prompts/{author}_worldview.txt` |
 | Content classifier | `classify_content_type()` | `src/utils/content_classifier.py` |
-| Scale | 2.0 | 2.0 in config.json |
+| Scale | 2.0-4.0 | Match training `lora_alpha/lora_rank` |
+
+### Prompt Format (Critical for LLaMA-Factory Models)
+
+LLaMA-Factory with `template: qwen` trains on chat format. The inference code auto-applies this:
+
+```
+<|im_start|>system
+{persona_frame + constraints}<|im_end|>
+<|im_start|>user
+{neutral_content}<|im_end|>
+<|im_start|>assistant
+```
+
+If output looks unchanged from input, the chat template may not be applied. Check logs for "Applied chat template to prompt".
 
 **CRITICAL Pipeline Order**: Narrativize must happen BEFORE RTT, not after:
 

@@ -49,14 +49,28 @@
     "target_expansion_ratio": 2.0,
     "_comment3a": "expand_for_texture: add stronger prompt to encourage elaboration/flourishes",
     "expand_for_texture": false,
-    "_comment4": "LoRA adapters with per-adapter generation settings",
+    "_comment4": "LoRA adapters with per-adapter generation settings (enabled: true/false to toggle)",
     "lora_adapters": {
-      "lora_adapters/lovecraft_14b": {
-        "scale": 2.5,
+      "lora_adapters/lovecraft_32b": {
+        "_comment": "Qwen2.5-32B trained on RunPod A100, checkpoint-600 has best val_loss",
+        "enabled": true,
+        "scale": 2.0,
         "temperature": 0.7,
-        "top_p": 0.92,
-        "min_p": 0.05,
-        "repetition_penalty": 1.15,
+        "top_p": 0.95,
+        "min_p": 0.03,
+        "repetition_penalty": 1.05,
+        "max_tokens": 1024,
+        "worldview": "lovecraft_worldview.txt",
+        "checkpoint": "checkpoint-600"
+      },
+      "lora_adapters/lovecraft_14b": {
+        "_comment": "Qwen2.5-14B local MLX training",
+        "enabled": false,
+        "scale": 2.0,
+        "temperature": 0.8,
+        "top_p": 0.96,
+        "min_p": 0.03,
+        "repetition_penalty": 1.08,
         "max_tokens": 1024,
         "worldview": "lovecraft_worldview.txt"
       }
@@ -84,7 +98,11 @@
     "use_structural_grafting": true,
     "rag_sample_size": 200,
     "_comment9": "Persona settings (subjective voice to defeat AI detection)",
-    "use_persona": true
+    "use_persona": true,
+    "_comment10": "Input perturbation (8% noise to match training distribution)",
+    "apply_input_perturbation": true,
+    "_comment11": "Narrativization (convert impersonal exposition to first-person narrative)",
+    "narrativize_input": true
   },
   "style": {
     "_comment": "Perspective controls output point-of-view",

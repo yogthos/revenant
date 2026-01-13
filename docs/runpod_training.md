@@ -158,10 +158,82 @@ Detach from screen with `Ctrl+A, D`. Reattach later with `screen -r training`.
 Once training completes, download the adapter:
 
 ```bash
-# From local machine
+# From local machine - download the best checkpoint
 scp -r -P <PORT> root@<POD_IP>:/workspace/LLaMA-Factory/saves/Qwen2.5-32B/lora/lovecraft \
-    ./lora_adapters/lovecraft_32b
+    ./lora_adapters/lovecraft_peft
 ```
+
+---
+
+## Step 7: Convert to MLX Format
+
+LLaMA-Factory produces PEFT/HuggingFace format adapters. MLX requires a different format.
+
+### Why Conversion is Needed
+
+| Aspect | PEFT Format | MLX Format |
+|--------|-------------|------------|
+| Weight keys | `base_model.model.model.layers.0...lora_A.weight` | `model.layers.0...lora_a` |
+| Weight layout | `lora_A: [rank, in_features]` | `lora_a: [in_features, rank]` |
+| Config fields | HuggingFace PEFT config | Requires `num_layers`, `fine_tune_type` |
+
+### Conversion Command
+
+```bash
+# Convert the best checkpoint to MLX format
+python scripts/convert_peft_to_mlx.py \
+    --input lora_adapters/lovecraft_peft/checkpoint-600 \
+    --output lora_adapters/lovecraft_32b_mlx
+```
+
+### Update Metadata
+
+Edit `lora_adapters/lovecraft_32b_mlx/metadata.json` to point to your local MLX model:
+
+```json
+{
+    "author": "H.P. Lovecraft",
+    "base_model": "./models/Qwen2.5-32B-Base-4bit-MLX",
+    "lora_rank": 64,
+    "lora_alpha": 256,
+    "training_examples": 8840
+}
+```
+
+---
+
+## Step 8: Prepare Base Model
+
+The base model must be properly quantized for MLX. **Important:** Use `-q` flag:
+
+```bash
+mlx_lm.convert --hf-path Qwen/Qwen2.5-32B \
+    -q --q-bits 4 \
+    --mlx-path ./models/Qwen2.5-32B-Base-4bit-MLX
+```
+
+**Without `-q`**, the model saves at bf16 (~61GB instead of ~18GB).
+
+---
+
+## Prompt Format (Critical)
+
+LLaMA-Factory with `template: qwen` trains models on Qwen chat format:
+
+```
+<|im_start|>system
+{instruction}<|im_end|>
+<|im_start|>user
+{input}<|im_end|>
+<|im_start|>assistant
+{output}<|im_end|>
+```
+
+The inference code automatically applies this format when:
+- `hasattr(tokenizer, 'apply_chat_template')` is True
+- The prompt contains the `###` delimiter
+
+If your output looks unchanged from input, verify the chat template is being applied (check logs for "Applied chat template to prompt").
 
 ---
 

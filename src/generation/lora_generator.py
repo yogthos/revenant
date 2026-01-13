@@ -541,6 +541,38 @@ class LoRAStyleGenerator:
                 structural_guidance=guidance_str,
             )
 
+        # Wrap prompt in chat format if tokenizer supports it
+        # LLaMA-Factory trained models expect Qwen chat format
+        # Training format: instruction (persona+constraints) | input (content) | output
+        if hasattr(self._tokenizer, 'apply_chat_template'):
+            # Split at "###" - everything before last content block is instruction
+            # Format: {instruction}\n\n{content}\n###
+            if '###' in prompt:
+                # Find the content by looking for the last double-newline before ###
+                prompt_no_stop = prompt.rsplit('###', 1)[0].rstrip()
+                # Split instruction from content - content is after last \n\n
+                parts = prompt_no_stop.rsplit('\n\n', 1)
+                if len(parts) == 2:
+                    instruction, user_content = parts
+                else:
+                    instruction = ""
+                    user_content = parts[0]
+            else:
+                # Fallback: use whole prompt as user content
+                instruction = ""
+                user_content = prompt
+
+            messages = [
+                {'role': 'system', 'content': instruction},
+                {'role': 'user', 'content': user_content}
+            ]
+            prompt = self._tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            logger.debug("Applied chat template to prompt")
+
         # Create sampler with temperature, top_p, and min_p
         # min_p filters low-probability nonsense while allowing creative choices
         # Use override temperature if provided (for repairs)
