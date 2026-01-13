@@ -6,7 +6,7 @@ Train LoRA adapters on RunPod using LLaMA-Factory with Qwen2.5-32B.
 
 - **GPU**: A100 SXM 80GB (required for Qwen2.5-32B with 4-bit quantization)
 - **Template**: LLaMA-Factory
-- **Estimated Time**: ~17-18 hours for 1500 steps
+- **Estimated Time**: ~7 hours for 600 steps
 
 ---
 
@@ -113,11 +113,11 @@ overwrite_output_dir: true
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 16
 learning_rate: 1.0e-4
-num_train_epochs: 2.5
+num_train_epochs: 3.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.05
 bf16: true
-max_steps: 1500
+max_steps: 600
 
 ### Evaluation
 val_size: 0.05
@@ -165,15 +165,32 @@ scp -r -P <PORT> root@<POD_IP>:/workspace/LLaMA-Factory/saves/Qwen2.5-32B/lora/l
 
 ---
 
+## Training Results & Optimal Duration
+
+Based on actual training runs, **600 steps (~3 epochs) is optimal**. Training beyond this causes overfitting:
+
+| Step | Epoch | Train Loss | Val Loss | Notes |
+|------|-------|------------|----------|-------|
+| 100 | 0.48 | 1.013 | 0.977 | Early training |
+| 200 | 0.96 | 0.720 | 0.703 | Learning style |
+| 400 | 1.92 | 0.293 | 0.402 | Good progress |
+| **600** | **2.87** | **0.131** | **0.358** | **Best checkpoint** |
+| 800 | 3.83 | 0.044 | 0.392 | Overfitting begins |
+| 1500 | 7.18 | 0.029 | 0.473 | Overfit |
+
+**Key insight**: Validation loss bottoms out at step 600, then climbs 32% by step 1500. The model starts memorizing specific phrases instead of learning general style patterns.
+
+---
+
 ## Training Time Estimates
 
 Based on A100 80GB with the config above:
 
-| Progress | Steps | Time Elapsed | Rate |
-|----------|-------|--------------|------|
-| 5% | 75 | ~50 min | ~1.5 steps/min |
-| 19% | 291 | ~3.5 hours | ~1.4 steps/min |
-| 100% | 1500 | ~17-18 hours | ~1.4 steps/min |
+| Steps | Epochs | Time | Rate |
+|-------|--------|------|------|
+| 100 | 0.5 | ~1.2 hours | ~1.4 steps/min |
+| 300 | 1.4 | ~3.5 hours | ~1.4 steps/min |
+| **600** | **2.9** | **~7 hours** | **~1.4 steps/min** |
 
 ---
 
@@ -186,6 +203,7 @@ Based on A100 80GB with the config above:
 | Dataset not found | Check `dataset` name matches key in `dataset_info.json` |
 | Slow training | Ensure `flash_attn: sdpa` is set, check GPU utilization with `nvidia-smi` |
 | Connection dropped | Use `screen` or `tmux` before starting training |
+| Output too mechanical | Use earlier checkpoint (step 400-600), model may be overfit |
 
 ---
 
