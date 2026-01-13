@@ -170,8 +170,8 @@ class TestDefaultConfig:
 
         assert config.llm.max_retries == 5
         assert config.generation.max_repair_attempts == 3  # actual default is 3
-        assert config.validation.semantic.min_proposition_coverage == 0.9
-        assert config.validation.statistical.length_tolerance == 0.2
+        assert config.validation.entailment_threshold == 0.7
+        assert config.validation.max_hallucinations_before_reject == 2
 
 
 class TestLLMConfig:
