@@ -2,36 +2,110 @@
 
 Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer.
 
-## Getting Started
-
-### Using a Pre-trained Adapter
-
-A pre-trained H.P. Lovecraft adapter is available on HuggingFace: [yogthos/lovecraft-style-lora-14b](https://huggingface.co/yogthos/lovecraft-style-lora-14b)
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-python -m spacy download en_core_web_lg
-
-# Download the pre-trained adapter
-mkdir -p lora_adapters
-cd lora_adapters
-git lfs install
-git clone https://huggingface.co/yogthos/lovecraft-style-lora-14b lovecraft
-cd ..
-
-# Copy config and add your DeepSeek API key
-cp config.json.sample config.json
-
-# Run style transfer
-python restyle.py input.txt -o output.txt --author "H.P. Lovecraft"
-```
-
-### Requirements
+## Requirements
 
 - Python 3.9+
 - Apple Silicon Mac (for MLX inference)
+- ~20GB disk space (model + adapter)
 - DeepSeek API key (for RTT neutralization)
+
+## Setup
+
+### Step 1: Create Virtual Environment
+
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+### Step 2: Install Dependencies
+
+```bash
+pip install -r requirements.txt
+python -m spacy download en_core_web_lg
+```
+
+### Step 3: Download and Convert Base Model
+
+Download Qwen2.5-32B and convert to MLX 4-bit format:
+
+```bash
+mkdir -p models
+mlx_lm.convert --hf-path Qwen/Qwen2.5-32B \
+    -q --q-bits 4 \
+    --mlx-path models/Qwen2.5-32B-Base-4bit-MLX
+```
+
+This downloads ~18GB and takes a few minutes.
+
+| Model | Disk Size | Inference Memory |
+|-------|-----------|------------------|
+| Qwen2.5-14B-4bit | ~8GB | ~16GB |
+| Qwen2.5-32B-4bit | ~18GB | ~24GB |
+
+### Step 4: Download and Convert LoRA Adapter
+
+A pre-trained H.P. Lovecraft adapter is available on HuggingFace. Download and convert the checkpoint-600 weights:
+
+```bash
+# Download PEFT adapter
+mkdir -p lora_adapters
+cd lora_adapters
+git lfs install
+git clone https://huggingface.co/yogthos/lovecraft-style-lora-32b lovecraft_peft
+cd ..
+
+# Convert PEFT to MLX format (use checkpoint-600 for best results)
+python scripts/convert_peft_to_mlx.py \
+    --input lora_adapters/lovecraft_peft/checkpoint-600 \
+    --output lora_adapters/lovecraft
+```
+
+Update `lora_adapters/lovecraft/metadata.json` to point to your local model:
+
+```json
+{
+    "base_model": "./models/Qwen2.5-32B-Base-4bit-MLX"
+}
+```
+
+### Step 5: Configure
+
+```bash
+cp config.json.sample config.json
+```
+
+Edit `config.json` and add your DeepSeek API key:
+
+```json
+{
+  "llm": {
+    "deepseek_api_key": "sk-your-key-here"
+  }
+}
+```
+
+### Step 6: Index Corpus for RAG
+
+The RAG system retrieves style patterns from the author's corpus during inference:
+
+```bash
+# Download the Lovecraft corpus (if not included)
+# Then index it:
+python scripts/load_corpus.py \
+    --input data/corpus/lovecraft.txt \
+    --author "H.P. Lovecraft" \
+    --skip-skeletons
+
+# Verify indexing
+python scripts/load_corpus.py --list
+```
+
+### Step 7: Run Style Transfer
+
+```bash
+python restyle.py input.txt -o output.txt --author "H.P. Lovecraft"
+```
 
 ## Usage
 
@@ -109,15 +183,50 @@ python scripts/generate_flat_training.py \
 
 Creates training pairs via RTT neutralization: `neutral_text → styled_text`.
 
-### Step 3: Index Corpus
+### Step 3: Index Corpus for RAG
+
+The RAG system enables two inference-time features:
+- **Structural RAG**: Retrieves rhythm patterns (sentence length, punctuation density) from similar passages
+- **Structural Grafting**: Copies rhetorical skeletons from semantically similar paragraphs
 
 ```bash
+# Basic indexing (includes skeleton extraction via DeepSeek API)
 python scripts/load_corpus.py \
     --input data/corpus/author.txt \
     --author "Author Name"
+
+# Fast indexing without skeleton extraction
+python scripts/load_corpus.py \
+    --input data/corpus/author.txt \
+    --author "Author Name" \
+    --skip-skeletons
+
+# Re-index with fresh data (clears existing)
+python scripts/load_corpus.py \
+    --input data/corpus/author.txt \
+    --author "Author Name" \
+    --clear
+
+# List indexed authors and chunk counts
+python scripts/load_corpus.py --list
 ```
 
-Indexes corpus in ChromaDB for Structural RAG and Grafting during inference.
+The indexer:
+1. Splits corpus into paragraphs
+2. Filters for quality (minimum 30 words, complete sentences)
+3. Deduplicates using semantic similarity
+4. Computes style metrics (sentence length, complexity, adjective ratio)
+5. Generates embeddings for semantic search
+6. Extracts rhetorical skeletons via LLM (optional, requires DeepSeek API)
+7. Stores everything in ChromaDB at `data/rag_index/`
+
+| Option | Description |
+|--------|-------------|
+| `--min-words N` | Minimum words per paragraph (default: 30) |
+| `--no-dedup` | Skip semantic deduplication |
+| `--skip-skeletons` | Skip skeleton extraction (faster, no API calls) |
+| `--clear` | Clear existing chunks for this author before loading |
+| `-v` | Verbose output with rejection breakdown |
 
 ### Step 4: Train LoRA
 
@@ -214,34 +323,6 @@ You can configure multiple adapters and toggle them with `enabled: true/false`.
 
 ---
 
-## Base Model Setup
-
-Download and quantize a base model. **Important:** Use `-q` flag to enable quantization:
-
-```bash
-mkdir -p models
-
-# 14B model (~8GB output)
-mlx_lm.convert --hf-path Qwen/Qwen2.5-14B \
-    -q --q-bits 4 \
-    --mlx-path models/Qwen2.5-14B-Base-4bit-MLX
-
-# 32B model (~18GB output)
-mlx_lm.convert --hf-path Qwen/Qwen2.5-32B \
-    -q --q-bits 4 \
-    --mlx-path models/Qwen2.5-32B-Base-4bit-MLX
-```
-
-**Note:** Without `-q`, the model saves at full precision (bf16), resulting in much larger files.
-
-| Model | Disk Size | Inference Memory |
-|-------|-----------|------------------|
-| Qwen2.5-7B-4bit | ~4GB | ~8GB |
-| Qwen2.5-14B-4bit | ~8GB | ~16GB |
-| Qwen2.5-32B-4bit | ~18GB | ~24GB |
-
----
-
 ## Architecture
 
 ### Pipeline
@@ -319,33 +400,11 @@ Status     Author                    Path                           Rank   Examp
 |---------|----------|
 | Content lost | Increase `entailment_threshold` to 0.9, lower adapter scale |
 | Style too weak | Increase adapter scale to 2.0+, check adapter is loading |
-| Output unchanged | LLaMA-Factory adapters need PEFT→MLX conversion (see below) |
+| Output unchanged | PEFT adapters need conversion to MLX (see Step 4 in Setup) |
 | Memorized output | Lower adapter scale, use earlier checkpoint (e.g., step 600) |
 | Out of memory (training) | Reduce `num_layers` to 16, enable `grad_checkpoint` |
 | Out of memory (inference) | Model not quantized - use `-q` flag with `mlx_lm.convert` |
 | Model too large (60GB+) | Missing `-q` flag during conversion - re-run with `-q --q-bits 4` |
-
-### LLaMA-Factory Adapter Conversion
-
-If you trained with LLaMA-Factory (e.g., on RunPod), the adapter is in PEFT format and must be converted:
-
-```bash
-python scripts/convert_peft_to_mlx.py \
-    --input lora_adapters/author_peft/checkpoint-600 \
-    --output lora_adapters/author_mlx
-```
-
-The conversion:
-- Renames weight keys from PEFT format to MLX format
-- Transposes weight matrices (PEFT uses different layout)
-- Creates `adapter_config.json` with required fields (`num_layers`, etc.)
-
-After conversion, update `metadata.json` to point to your local MLX model:
-```json
-{
-    "base_model": "./models/Qwen2.5-32B-Base-4bit-MLX"
-}
-```
 
 ---
 
