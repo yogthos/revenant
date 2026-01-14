@@ -127,6 +127,12 @@ class LoRAAdapterConfig:
     max_tokens: int = 512  # Maximum tokens to generate
     worldview: str = ""  # Author worldview prompt file
     checkpoint: Optional[str] = None  # Specific checkpoint to use
+    # Backend configuration
+    backend: str = "auto"  # "auto", "mlx", or "pytorch"
+    device: str = "auto"  # Device for PyTorch: "auto", "cuda", "cpu", "mps"
+    load_in_4bit: bool = True  # Use 4-bit quantization (PyTorch with CUDA only)
+    load_in_8bit: bool = False  # Use 8-bit quantization (PyTorch with CUDA only)
+    hf_adapter_path: Optional[str] = None  # HuggingFace adapter path (if different from local)
 
 
 @dataclass
@@ -215,6 +221,12 @@ def _parse_lora_adapter_config(data: Dict) -> LoRAAdapterConfig:
         max_tokens=data.get("max_tokens", 512),
         worldview=data.get("worldview", ""),
         checkpoint=data.get("checkpoint"),
+        # Backend configuration
+        backend=data.get("backend", "auto"),
+        device=data.get("device", "auto"),
+        load_in_4bit=data.get("load_in_4bit", True),
+        load_in_8bit=data.get("load_in_8bit", False),
+        hf_adapter_path=data.get("hf_adapter_path"),
     )
 
 

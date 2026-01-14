@@ -141,7 +141,7 @@ class TestStyleTransfer:
         critic.call.return_value = "Repaired text here."
         return critic
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_init_with_adapter(self, mock_generator_class, mock_critic):
         """Test initialization with adapter path."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -158,7 +158,7 @@ class TestStyleTransfer:
         assert transfer.author == "Test Author"
         mock_generator_class.assert_called_once()
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_init_without_adapter(self, mock_generator_class, mock_critic):
         """Test initialization without adapter (base model only)."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -174,7 +174,7 @@ class TestStyleTransfer:
 
         assert transfer.author == "Test Author"
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_ensure_complete_ending_with_period(self, mock_generator_class, mock_critic):
         """Test that text ending with period is unchanged."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -192,7 +192,7 @@ class TestStyleTransfer:
 
         assert result == text
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_ensure_complete_ending_adds_period(self, mock_generator_class, mock_critic):
         """Test that incomplete text gets period added."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -210,7 +210,7 @@ class TestStyleTransfer:
 
         assert result.endswith(".")
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_clean_repair_output_basic(self, mock_generator_class, mock_critic):
         """Test that clean_repair_output handles empty and simple text."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -232,7 +232,7 @@ class TestStyleTransfer:
         result = transfer._clean_repair_output(text)
         assert result == text
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_clean_repair_output_strips_whitespace(self, mock_generator_class, mock_critic):
         """Test that clean_repair_output strips whitespace."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -249,7 +249,7 @@ class TestStyleTransfer:
         result = transfer._clean_repair_output(text)
         assert result == "Some text with leading and trailing spaces."
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_transfer_paragraph_skips_short(self, mock_generator_class, mock_critic):
         """Test that short paragraphs are skipped."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -273,7 +273,7 @@ class TestStyleTransfer:
         assert result == para
         assert score == 1.0
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_get_partial_results(self, mock_generator_class, mock_critic):
         """Test getting partial results after interruption."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -306,7 +306,7 @@ class TestStyleTransfer:
 class TestDocumentTransfer:
     """Tests for full document transfer."""
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_transfer_document_basic(self, mock_generator_class):
         """Test basic document transfer with mocked paragraph transfer."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -341,7 +341,7 @@ class TestDocumentTransfer:
         assert len(output) > 0
         assert "Styled output" in output
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_transfer_document_preserves_headings(self, mock_generator_class):
         """Test that headings are passed through unchanged."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -374,7 +374,7 @@ class TestDocumentTransfer:
         # Heading should be preserved
         assert "# Heading" in output
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_transfer_document_callback(self, mock_generator_class):
         """Test that progress callback is called."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -418,7 +418,7 @@ class TestDocumentTransfer:
 class TestRepetitionReduction:
     """Tests for repetition reduction in transfer."""
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_repetition_reducer_applied(self, mock_generator_class):
         """Test that repetition reducer is applied to output."""
         from src.generation.transfer import StyleTransfer, TransferConfig
@@ -446,7 +446,7 @@ class TestRepetitionReduction:
 
         assert transfer.repetition_reducer is not None
 
-    @patch('src.generation.transfer.LoRAStyleGenerator')
+    @patch('src.generation.transfer.create_style_generator')
     def test_repetition_reducer_disabled(self, mock_generator_class):
         """Test that repetition reducer can be disabled."""
         from src.generation.transfer import StyleTransfer, TransferConfig

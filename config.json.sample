@@ -73,6 +73,22 @@
         "repetition_penalty": 1.08,
         "max_tokens": 1024,
         "worldview": "lovecraft_worldview.txt"
+      },
+      "yogthos/qwen2.5-32b-lovecraft-lora": {
+        "_comment": "PyTorch/PEFT adapter from HuggingFace (for Linux/CUDA systems)",
+        "enabled": false,
+        "backend": "pytorch",
+        "device": "cuda",
+        "load_in_4bit": true,
+        "hf_adapter_path": "yogthos/qwen2.5-32b-lovecraft-lora",
+        "checkpoint": "checkpoint-600",
+        "scale": 2.0,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "min_p": 0.03,
+        "repetition_penalty": 1.05,
+        "max_tokens": 1024,
+        "worldview": "lovecraft_worldview.txt"
       }
     },
     "_comment5": "Neutralization (skip for better fact preservation)",
