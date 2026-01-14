@@ -16,7 +16,7 @@ Usage:
         --output styles/sample_author.txt \
         --target-tokens 900000
 
-The curated output can then be passed to neutralize_corpus.py for training.
+The curated output can then be passed to generate_flat_training.py for training.
 """
 
 import argparse
@@ -324,7 +324,7 @@ def main():
 
     print(f"\nSaved curated corpus to {args.output}")
     print(f"\nNext step:")
-    print(f"  python scripts/neutralize_corpus.py --input {args.output} --output data/neutralized/author.jsonl --author 'Author Name'")
+    print(f"  python scripts/generate_flat_training.py --corpus {args.output} --author 'Author Name' --output data/training/author")
 
 
 if __name__ == "__main__":

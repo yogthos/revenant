@@ -1,4 +1,4 @@
-# Text Style Transfer
+# Revenant
 
 Transform text to match a target author's writing style while preserving semantic meaning. Uses LoRA-adapted language models for fast, consistent style transfer.
 

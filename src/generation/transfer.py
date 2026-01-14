@@ -14,7 +14,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Callable, Tuple
 import time
 
-from .lora_generator import LoRAStyleGenerator, GenerationConfig, AdapterSpec
+from .lora_generator import AdapterSpec
+from .base_generator import GenerationConfig
+from .factory import create_style_generator
+from ..config import get_adapter_config
 from .document_context import DocumentContext, extract_document_context
 from ..utils.nlp import (
     split_into_paragraphs,
@@ -220,19 +223,20 @@ class StyleTransfer:
             gen_config.temperature = self.config.temperature
         gen_config.skip_cleaning = False  # Always clean output to remove garbage
 
-        if adapters:
-            # Multiple adapters mode
-            self.generator = LoRAStyleGenerator(
-                config=gen_config,
-                adapters=adapters,
-            )
-        else:
-            # Single adapter mode (backward compatible)
-            self.generator = LoRAStyleGenerator(
-                adapter_path=adapter_path,
-                config=gen_config,
-                checkpoint=checkpoint,
-            )
+        # Get backend configuration from adapter config
+        adapter_cfg = get_adapter_config(primary_adapter_path)
+
+        # Use factory to create the appropriate generator based on backend
+        self.generator = create_style_generator(
+            adapter_path=adapter_cfg.hf_adapter_path or adapter_path,
+            config=gen_config,
+            checkpoint=checkpoint,
+            adapters=adapters,
+            backend=adapter_cfg.backend,
+            device=adapter_cfg.device,
+            load_in_4bit=adapter_cfg.load_in_4bit,
+            load_in_8bit=adapter_cfg.load_in_8bit,
+        )
 
         # Initialize repetition reducer for post-processing
         self.repetition_reducer = None
