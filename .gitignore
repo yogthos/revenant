@@ -50,9 +50,6 @@ atlas_cache/
 lora_adapters/
 models/
 
-# Cache files
-structure_cache.json
-
 # Logs
 logs/*.md
 !logs/.gitkeep
