@@ -1576,22 +1576,18 @@ def format_training_example(
     author: str,
     word_count: int,
     variation_type: str = "original",
+    output_format: str = "llama_factory",
 ) -> dict:
-    """Format a training example for BASE model (not instruct).
+    """Format a training example for LoRA training.
 
-    Base models need raw text completion format, not chat roles.
-    The model learns: given neutral text + instruction → produce styled text.
+    Supports two output formats:
+    - llama_factory: {"instruction": "...", "input": "...", "output": "..."}
+    - mlx: {"text": "prompt + completion"} for base models
 
     Uses Acting Directions (not Translation Instructions):
     - Persona Frame: Random scenario trigger from PERSONA_FRAMES
     - Structural Skeleton: 50% chance to include rhetorical structure
     - Negative Constraints: 30% chance to add ONE anti-AI-writing rule
-
-    Format:
-        [Persona Frame with word count, skeleton, constraint]
-        [neutral text with perturbations]
-        ###
-        [styled text]
     """
     # Persona-based instruction (Acting Direction)
     instruction = get_persona_instruction(
@@ -1610,17 +1606,23 @@ def format_training_example(
     else:
         perturbed_input = perturb_text(neutral_text, drop_adjectives=True)
 
-    # Build prompt
-    prompt = f"{instruction}\n\n{perturbed_input}\n###\n"
-
-    # For mlx_lm.lora with base models: {"text": "prompt + completion"}
-    # With mask_prompt=true, only the completion (after prompt) is trained
-    return {
-        "text": prompt + styled_text,
-        "prompt": prompt,
-        "word_count": word_count,
-        "variation_type": variation_type,
-    }
+    if output_format == "llama_factory":
+        # LLaMA-Factory SFT format: {"instruction": "...", "input": "...", "output": "..."}
+        return {
+            "instruction": instruction,
+            "input": perturbed_input,
+            "output": styled_text,
+        }
+    else:
+        # MLX format: {"text": "prompt + completion"} for base models
+        # With mask_prompt=true, only the completion (after prompt) is trained
+        prompt = f"{instruction}\n\n{perturbed_input}\n###\n"
+        return {
+            "text": prompt + styled_text,
+            "prompt": prompt,
+            "word_count": word_count,
+            "variation_type": variation_type,
+        }
 
 
 def generate_training_data(
@@ -1630,6 +1632,7 @@ def generate_training_data(
     workers: int = 1,
     monotone: bool = False,
     resume: bool = False,
+    output_format: str = "llama_factory",
 ) -> int:
     """Generate training data using RTT neutralization, writing progressively.
 
@@ -1649,6 +1652,7 @@ def generate_training_data(
         workers: Unused (kept for API compatibility)
         monotone: If True, apply extra flattening step (slower, +50% time)
         resume: If True, skip already-processed items and append to file
+        output_format: Output format - 'llama_factory' or 'mlx'
 
     Returns:
         Number of examples written
@@ -1757,9 +1761,11 @@ def generate_training_data(
                                 author=author,
                                 word_count=word_count,
                                 variation_type=variant_type,
+                                output_format=output_format,
                             )
-                            example["source_idx"] = idx
-                            example["many_to_one"] = len(variants) > 1
+                            if output_format == "mlx":
+                                example["source_idx"] = idx
+                                example["many_to_one"] = len(variants) > 1
 
                             f.write(json.dumps(example) + '\n')
                             success_count += 1
@@ -1827,9 +1833,11 @@ def generate_training_data(
                             author=author,
                             word_count=word_count,
                             variation_type=variant_type,
+                            output_format=output_format,
                         )
-                        example["source_idx"] = idx
-                        example["many_to_one"] = len(variants) > 1
+                        if output_format == "mlx":
+                            example["source_idx"] = idx
+                            example["many_to_one"] = len(variants) > 1
 
                         f.write(json.dumps(example) + '\n')
                         f.flush()
@@ -1876,10 +1884,12 @@ def main():
     parser.add_argument("--overlap-sentences", type=int, default=2, help="Sentence overlap between chunks")
     parser.add_argument("--resume-from", type=str, default=None, help="Resume from intermediate JSON (skips Steps 1-2)")
     parser.add_argument("--resume-from-chunks", type=str, default=None, help="Resume from chunks JSON (skips Steps 1-3)")
-    parser.add_argument("--resume", action="store_true", help="Resume from last processed item (checks all.jsonl)")
+    parser.add_argument("--resume", action="store_true", help="Resume from last processed item (checks train.jsonl)")
     parser.add_argument("--save-intermediate", type=str, default=None, help="Save intermediate paragraphs")
     parser.add_argument("--from-selected", type=str, default=None,
                         help="Load from selected paragraphs JSON (from select_diverse_paragraphs.py)")
+    parser.add_argument("--format", choices=["llama_factory", "mlx"], default="llama_factory",
+                        help="Output format: llama_factory (default) or mlx")
     parser.add_argument("--skip-curation", action="store_true",
                         help="Skip curation step (corpus is already curated, one paragraph per double-newline)")
 
@@ -2063,48 +2073,15 @@ def main():
     logger.info("STEP 4: Lossless neutralization and training data generation")
     logger.info("=" * 60)
 
-    all_output_path = output_dir / "all.jsonl"
-    logger.info("Using PERSONA-based training (Acting Directions + Many-to-One)")
+    # Output directly to train.jsonl
+    train_output_path = output_dir / "train.jsonl"
+    logger.info(f"Using PERSONA-based training (Acting Directions + Many-to-One)")
+    logger.info(f"Output format: {args.format}")
     num_examples = generate_training_data(
-        chunks, args.author, all_output_path,
+        chunks, args.author, train_output_path,
         workers=args.workers, monotone=not args.no_monotone,
-        resume=args.resume
+        resume=args.resume, output_format=args.format
     )
-
-    # Create train/valid/test split for mlx_lm.lora
-    logger.info("=" * 60)
-    logger.info("STEP 5: Creating train/valid/test split")
-    logger.info("=" * 60)
-
-    # Load all examples from output file
-    all_examples = []
-    with open(all_output_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.strip():
-                all_examples.append(json.loads(line))
-
-    # 80% train, 10% valid, 10% test
-    random.seed(42)  # Reproducible splits
-
-    shuffled = all_examples.copy()
-    random.shuffle(shuffled)
-
-    n = len(shuffled)
-    n_train = int(n * 0.8)
-    n_valid = int(n * 0.1)
-
-    train_examples = shuffled[:n_train]
-    valid_examples = shuffled[n_train:n_train + n_valid]
-    test_examples = shuffled[n_train + n_valid:]
-
-    # Write train/valid/test files (messages format only, no metadata)
-    for split_name, examples in [("train", train_examples), ("valid", valid_examples), ("test", test_examples)]:
-        split_path = output_dir / f"{split_name}.jsonl"
-        with open(split_path, 'w', encoding='utf-8') as f:
-            for ex in examples:
-                # Keep text field for base model format, strip other metadata
-                f.write(json.dumps({"text": ex["text"]}) + '\n')
-        logger.info(f"{split_name}: {len(examples)} examples -> {split_path}")
 
     # Summary
     total_time = time.time() - overall_start
@@ -2112,12 +2089,11 @@ def main():
     logger.info("SUMMARY")
     logger.info("=" * 60)
     logger.info(f"Author: {args.author}")
+    logger.info(f"Format: {args.format}")
     logger.info(f"Variation breakdown: {variation_counts}")
     logger.info(f"Overlapping chunks: {len(chunks)}")
     logger.info(f"Training examples: {num_examples}")
-    logger.info(f"Output directory: {output_dir}")
-    logger.info(f"  all.jsonl: {num_examples} examples (with metadata)")
-    logger.info(f"  train.jsonl: {len(train_examples)}, valid.jsonl: {len(valid_examples)}, test.jsonl: {len(test_examples)}")
+    logger.info(f"Output: {train_output_path}")
     logger.info(f"Total time: {total_time:.1f}s ({total_time/60:.1f} minutes)")
 
 
