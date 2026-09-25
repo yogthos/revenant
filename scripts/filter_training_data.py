@@ -172,19 +172,28 @@ def _sentences(text: str) -> List[str]:
     return [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if len(s.split()) >= 3]
 
 
-def _windows(sentences: List[str], max_words: int = 120) -> List[str]:
-    """Overlapping premise windows short enough for the NLI model's context."""
-    windows = []
-    for start in range(len(sentences)):
-        words = 0
-        end = start
-        while end < len(sentences) and (words == 0 or words + len(sentences[end].split()) <= max_words):
-            words += len(sentences[end].split())
-            end += 1
-        windows.append(" ".join(sentences[start:end]))
-        if end == len(sentences):
-            break
-    return windows or [" ".join(sentences)]
+def _content_words(text: str) -> set:
+    return {w for w in re.findall(r"[a-z']+", text.lower()) if len(w) > 3}
+
+
+def _aligned_spans(premise_sents: List[str], hyp: str, top: int = 2, width: int = 1) -> List[str]:
+    """Short premise spans around the sentences that best match ``hyp``.
+
+    nli-deberta-v3-small misreads long multi-sentence premises (a paragraph
+    can fail to entail its own first sentence), so each hypothesis sentence
+    is checked against 1-3 sentence spans around its closest lexical matches.
+    """
+    words = _content_words(hyp)
+    ranked = sorted(range(len(premise_sents)),
+                    key=lambda i: -len(words & _content_words(premise_sents[i])))[:top]
+    spans = []
+    for i in ranked:
+        for lo in range(max(0, i - width), i + 1):
+            for hi in range(i + 1, min(len(premise_sents), i + width + 1) + 1):
+                span = " ".join(premise_sents[lo:hi])
+                if span not in spans:
+                    spans.append(span)
+    return spans
 
 
 def _softmax(row) -> List[float]:
@@ -198,13 +207,16 @@ def _direction_problem(premise: str, hypothesis: str, nli, min_fraction: float,
     hyps = _sentences(hypothesis)
     if not hyps:
         return None
-    windows = _windows(_sentences(premise) or [premise])
-    pairs = [(w, h) for h in hyps for w in windows]
+    premise_sents = _sentences(premise) or [premise]
+    spans = [_aligned_spans(premise_sents, h) for h in hyps]
+    pairs = [(span, h) for h, hyp_spans in zip(hyps, spans) for span in hyp_spans]
     scores = [_softmax(list(r)) for r in nli.predict(pairs, show_progress_bar=False)]
 
     entailed = 0
-    for i, hyp in enumerate(hyps):
-        rows = scores[i * len(windows):(i + 1) * len(windows)]
+    start = 0
+    for hyp, hyp_spans in zip(hyps, spans):
+        rows = scores[start:start + len(hyp_spans)]
+        start += len(hyp_spans)
         best = max(r[ENTAILMENT] for r in rows)
         if best >= 0.5:
             entailed += 1

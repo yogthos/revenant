@@ -312,6 +312,24 @@ class TestTwoWayEntailment:
                 out.append([0.0, 5.0, 0.0] if entailed else [0.0, -5.0, 5.0])
             return np.array(out)
 
+    class ParagraphConfusedNLI(FakeNLI):
+        """Like nli-deberta-v3-small: long multi-sentence premises confuse it."""
+        def predict(self, pairs, **kwargs):
+            import numpy as np
+            rows = super().predict(pairs, **kwargs)
+            for i, (premise, _) in enumerate(pairs):
+                if premise.count(". ") >= 3:
+                    rows[i] = [0.0, -5.0, 5.0]
+            return np.array(rows)
+
+    def test_checks_sentences_against_short_aligned_spans(self):
+        # A paragraph must entail itself even when the model can't read the
+        # whole paragraph as one premise.
+        from filter_training_data import entailment_problem
+        text = ("The problem of liberty does not arise among savages. It arises among civilized men. "
+                "Government grows as they grow. Freedom becomes more urgent. Nobody escapes the question.")
+        assert entailment_problem(text, text, self.ParagraphConfusedNLI()) is None
+
     def test_rejects_added_content(self):
         from filter_training_data import entailment_problem
         neutral = "Men fear new ideas. They fear thought."

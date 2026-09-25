@@ -177,6 +177,19 @@ class MLXGenerator:
 # Neutral output must stay within these bounds of the source word count.
 MIN_RTT_LENGTH_RATIO = 0.6
 MAX_RTT_LENGTH_RATIO = 1.6
+# Share of the source's 4-word sequences an RTT output may repeat. DeepSeek
+# sometimes copies later items of a batch verbatim; real rewording of this
+# corpus stays well under this (median ~8%, p90 ~15%).
+MAX_RTT_NGRAM_OVERLAP = 0.5
+
+
+def ngram_overlap(source: str, text: str, n: int = 4) -> float:
+    """Share of the source's word n-grams that ``text`` repeats."""
+    def grams(s):
+        words = re.findall(r"[a-z0-9']+", s.lower())
+        return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+    src = grams(source)
+    return len(src & grams(text)) / len(src) if src else 0.0
 
 _PLACEHOLDER_RE = re.compile(r'(?<![A-Za-z0-9])_*ENT(\d+)_*(?![A-Za-z0-9])', re.IGNORECASE)
 
@@ -825,6 +838,9 @@ class DeepSeekRTTNeutralizer(BaseRTTNeutralizer):
             logger.debug(f"RTT length ratio {ratio:.2f} out of range")
             return None
 
+        if ngram_overlap(source, self._restore_entities(text, entity_map)) > MAX_RTT_NGRAM_OVERLAP:
+            logger.debug("RTT output copies the source")
+            return None
         if monotone:
             text = self._monotone_flatten(text)
         text = self._restore_entities(text, entity_map)

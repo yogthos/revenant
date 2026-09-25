@@ -358,8 +358,10 @@ class TestBatchTruncationAndLength:
         "One two three four five six seven eight nine ten eleven twelve.",
     ]
 
+    REWORDED = "Kappa iota theta eta zeta, epsilon delta gamma beta alpha."
+
     def test_truncated_response_drops_last_item(self):
-        response = ("[1] Alpha beta gamma delta epsilon zeta eta theta iota kappa.\n"
+        response = (f"[1] {self.REWORDED}\n"
                     "[2] One two three four")
         obj = self._neutralizer(response, finish_reason="length")
         results = dict(obj._process_single_batch((0, self.TEXTS)))
@@ -367,7 +369,7 @@ class TestBatchTruncationAndLength:
         assert 1 not in results
 
     def test_too_short_item_rejected(self):
-        response = ("[1] Alpha beta gamma delta epsilon zeta eta theta iota kappa.\n"
+        response = (f"[1] {self.REWORDED}\n"
                     "[2] One two.")
         obj = self._neutralizer(response)
         results = dict(obj._process_single_batch((0, self.TEXTS)))
@@ -381,6 +383,22 @@ class TestBatchTruncationAndLength:
         results = dict(obj._process_single_batch((0, texts)))
         assert results == {}
 
+    def test_echoed_item_is_rejected(self):
+        # DeepSeek sometimes copies later items of a batch verbatim; an echo
+        # is not neutral input and has to be retried.
+        texts = ["He then proceeds to consider common objects, such as a tree, and he shows that all we know "
+                 "immediately when we perceive the tree consists of ideas in his sense of the word."]
+        obj = self._neutralizer(f"[1] {texts[0]}")
+        assert obj._process_single_batch((0, texts)) == []
+
+    def test_reworded_item_with_shared_nouns_is_kept(self):
+        texts = ["He then proceeds to consider common objects, such as a tree, and he shows that all we know "
+                 "immediately when we perceive the tree consists of ideas in his sense of the word."]
+        reworded = ("Next he looks at everyday things like a tree. He argues that what we directly know when we "
+                    "see the tree is made of ideas, in the meaning he gives that word.")
+        obj = self._neutralizer(f"[1] {reworded}")
+        assert dict(obj._process_single_batch((0, texts))) == {0: reworded}
+
     def test_api_error_does_not_recurse(self):
         from src.llm.mlx_provider import DeepSeekRTTNeutralizer
         obj = DeepSeekRTTNeutralizer.__new__(DeepSeekRTTNeutralizer)
@@ -388,10 +406,10 @@ class TestBatchTruncationAndLength:
         assert obj._process_single_batch((0, self.TEXTS)) == []
 
     def test_single_neutralize_uses_batch_prompt(self):
-        response = "[1] Alpha beta gamma delta epsilon zeta eta theta iota kappa."
+        response = f"[1] {self.REWORDED}"
         obj = self._neutralizer(response)
         out = obj.neutralize(self.TEXTS[0], monotone=False)
-        assert out == "Alpha beta gamma delta epsilon zeta eta theta iota kappa."
+        assert out == self.REWORDED
         system = obj._call_api_full.call_args.kwargs["system"]
         from src.utils.prompts import load_prompt
         assert system == load_prompt("rtt_deepseek_batch")
@@ -405,6 +423,11 @@ class TestNeutralizerPromptsDontAddStyle:
         assert "vary sentence length" not in text
         assert "use contractions" not in text
         assert "hsk 5" in text or "hsk5" in text  # matches the documented pipeline
+
+    def test_asks_for_rewording(self):
+        from src.utils.prompts import load_prompt
+        text = load_prompt("rtt_deepseek_batch").lower()
+        assert "never copy a run of four or more words" in text
 
 
 class TestChunkedKeepsOuterPlaceholders:
