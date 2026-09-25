@@ -228,74 +228,45 @@ def _detect_content_type(content: str) -> bool:
     return is_narrative(content)
 
 
-def build_persona_prompt(
+def build_persona_instruction(
     content: str,
     structural_guidance: Optional[str] = None,
     grafting_guidance: Optional['GraftingGuidance'] = None,
     target_words: Optional[int] = None,
     deterministic_constraints: bool = False,
-    expand_for_texture: bool = False,
     adapter_path: Optional[str] = None,
 ) -> str:
-    """Build a prompt matching the training format EXACTLY.
+    """Build the instruction half of a training-format prompt.
 
-    CRITICAL: This format MUST mirror training to activate LoRA weights correctly.
-    The model was trained on simple prompts, not complex instruction-heavy ones.
+    Training rows keep the instruction and the neutral input in separate
+    fields, which LlamaFactory joins into one user turn. Keeping them
+    separate here lets the generator lay them out the same way.
 
-    Persona frames are loaded from the file specified in config.json lora.worldview.
-
-    Training format (from generate_flat_training.py line 1475):
-    ```
-    {persona_frame}
-
-    Write approximately {word_count} words.
-
-    Follow this structure: {skeleton}  (50% of training data)
-
-    [CONSTRAINT]: Do not use: 'Moreover'...
-    [CONSTRAINT]: Do not hedge...
-
-    {neutral_text}
-    ###
-    ```
-
-    That's IT. No worldview, no transformation directives, no style hints.
+    ``content`` is only used to pick a narrative or conceptual frame. Training
+    classifies the neutral input too, so the frame matches.
     """
-    # Detect content type to select appropriate frame
     is_narrative = _detect_content_type(content)
 
-    # Get situational persona frame from config file
+    # Situational persona frame from the config file (this is what triggers the LoRA)
     persona_frame = _get_persona_frame(is_narrative, adapter_path=adapter_path)
 
-    # Calculate target words if not provided
     if target_words is None:
         target_words = len(content.split())
 
-    # Build prompt parts
-    parts = []
-
-    # 1. Persona frame (REQUIRED - this is what triggers the LoRA)
-    parts.append(persona_frame)
-    parts.append("")  # blank line
-
-    # 2. Word count (REQUIRED) - must match training format EXACTLY
     # Training format: "Write approximately N words." on its own line, nothing else
-    # The model was trained to follow this instruction precisely (1.00 ratio)
-    parts.append(f"Write approximately {target_words} words.")
+    parts = [persona_frame, "", f"Write approximately {target_words} words."]
 
-    # 3. Skeleton structure (if available from grafting - matches training's 50% skeleton)
+    # Skeleton structure (matches training's 50% skeleton)
     if grafting_guidance and hasattr(grafting_guidance, 'skeleton') and grafting_guidance.skeleton:
         parts.append("")
         parts.append(f"Follow this structure: {grafting_guidance.skeleton.format_for_prompt()}")
 
-    # 4. Structural RAG guidance (rhythm patterns from corpus)
-    # Format as simple guidance, not as "[CRITICAL - AUTHOR STYLE PATTERNS]" blocks
+    # Structural RAG guidance (rhythm patterns from corpus)
     if structural_guidance:
         parts.append("")
-        # Extract just the key patterns, keep it concise
         parts.append(structural_guidance)
 
-    # 5. Constraints (TIERED - matching training distribution)
+    # Constraints (TIERED - matching training distribution)
     parts.append("")
     if deterministic_constraints:
         # For testing: include all constraints
@@ -304,16 +275,41 @@ def build_persona_prompt(
     else:
         parts.append(_build_constraints())
 
-    # Note: expand_for_texture is handled by the critic model before RTT,
-    # not as a constraint here. The parameter is kept for API compatibility.
+    return "\n".join(parts)
 
-    # 6. Content
-    parts.append("")
-    parts.append(content)
 
-    # 7. Stop token
-    parts.append("###")
+def build_persona_prompt(
+    content: str,
+    structural_guidance: Optional[str] = None,
+    grafting_guidance: Optional['GraftingGuidance'] = None,
+    target_words: Optional[int] = None,
+    deterministic_constraints: bool = False,
+    adapter_path: Optional[str] = None,
+) -> str:
+    """Build a flat prompt in the MLX training format:
 
-    prompt = "\n".join(parts)
+    ```
+    {persona_frame}
 
-    return prompt
+    Write approximately {word_count} words.
+
+    Follow this structure: {skeleton}  (50% of training data)
+
+    [CONSTRAINT]: Do not use: 'Moreover'...
+
+    {neutral_text}
+    ###
+    ```
+
+    Chat-template generators should use build_persona_instruction() and pass
+    the content separately instead.
+    """
+    instruction = build_persona_instruction(
+        content,
+        structural_guidance=structural_guidance,
+        grafting_guidance=grafting_guidance,
+        target_words=target_words,
+        deterministic_constraints=deterministic_constraints,
+        adapter_path=adapter_path,
+    )
+    return f"{instruction}\n\n{content}\n###"
