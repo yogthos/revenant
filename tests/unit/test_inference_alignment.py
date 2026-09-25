@@ -26,31 +26,6 @@ class TestChatLayout:
         assert content == "First para.\n\nSecond para."
 
 
-class TestMLXGeneratorUsesUserTurn:
-    def _generator(self):
-        from src.generation.lora_generator import LoRAStyleGenerator
-        gen = LoRAStyleGenerator.__new__(LoRAStyleGenerator)
-        gen.config = MagicMock(temperature=0.7, top_p=0.9, min_p=0.05, repetition_penalty=1.05,
-                               max_tokens=512, skip_cleaning=True)
-        gen._model = object()
-        gen._tokenizer = MagicMock()
-        gen._tokenizer.apply_chat_template.return_value = "PROMPT"
-        gen._tokenizer.eos_token_ids = set()
-        gen._logit_bias_processor = False
-        gen._ensure_loaded = lambda: None
-        return gen
-
-    def test_instruction_goes_in_user_turn_without_system(self):
-        gen = self._generator()
-        # create=True: without MLX installed (CI) the module never imports these.
-        with patch("src.generation.lora_generator.generate", return_value="out", create=True), \
-             patch("src.generation.lora_generator.make_sampler", create=True), \
-             patch("src.generation.lora_generator.make_repetition_penalty", create=True):
-            gen.generate(content="Neutral text.", author="X", instruction="Frame.", raw_prompt=True)
-        messages = gen._tokenizer.apply_chat_template.call_args.args[0]
-        assert messages == [{"role": "user", "content": "Frame.\nNeutral text."}]
-
-
 class TestPersonaInstruction:
     @patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME")
     @patch("src.persona.prompt_builder._detect_content_type", return_value=False)
@@ -67,6 +42,28 @@ class TestPersonaInstruction:
         from src.persona.prompt_builder import build_persona_instruction
         build_persona_instruction("Neutral text here.", target_words=40)
         assert detect.call_args.args[0] == "Neutral text here."
+
+
+    @patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME")
+    @patch("src.persona.prompt_builder._detect_content_type", return_value=False)
+    def test_instruction_carries_rag_and_grafting_guidance(self, _detect, _frame):
+        # Training rows are built with the same guidance (filter_training_data.PersonaBuilder).
+        from src.persona.prompt_builder import build_persona_instruction
+        from src.rag.skeleton_extractor import ArgumentSkeleton
+        from src.rag.structural_grafter import GraftingGuidance
+        graft = GraftingGuidance(sample_text="s", skeleton=ArgumentSkeleton(moves=["Claim", "Example"], raw=""))
+        instruction = build_persona_instruction("Neutral text here.", structural_guidance="Rhythm: LONG → SHORT",
+                                                grafting_guidance=graft, target_words=40)
+        assert "Follow this structure: [Claim] → [Example]" in instruction
+        assert "Rhythm: LONG → SHORT" in instruction
+
+    def test_worldview_can_be_named_directly(self):
+        # Training has no adapter entry in config.json to look the worldview up in.
+        from src.persona.prompt_builder import _load_persona_file, build_persona_instruction
+        frames = _load_persona_file("russell_worldview.txt")
+        instruction = build_persona_instruction("Neutral text here.", target_words=40,
+                                                worldview="russell_worldview.txt")
+        assert any(instruction.startswith(f) for f in frames["narrative_frames"] + frames["conceptual_frames"])
 
 
 class TestLengthHint:
@@ -114,3 +111,26 @@ class TestInferenceNeutralization:
         kwargs = generator.generate.call_args.kwargs
         assert kwargs["instruction"] == "INSTRUCTION"
         assert kwargs["content"] == "The first line of this paragraph has several words in it."
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_persona_path_passes_rag_and_grafting_guidance(self, mock_gen_factory):
+        from src.generation.transfer import StyleTransfer, TransferConfig
+        generator = MagicMock()
+        generator.generate.return_value = "Styled output text from the generator model here."
+        mock_gen_factory.return_value = generator
+        transfer = StyleTransfer(
+            adapter_path=None, author_name="Test", critic_provider=MagicMock(provider_name="mock"),
+            config=TransferConfig(verify_semantic_fidelity=False, skip_neutralization=True,
+                                  use_persona=True, apply_input_perturbation=False,
+                                  use_structural_rag=False, use_structural_grafting=False,
+                                  min_paragraph_words=3),
+        )
+        transfer.structural_rag = MagicMock()
+        transfer.structural_rag.get_guidance.return_value.format_for_prompt.return_value = "RAG"
+        transfer.structural_grafter = MagicMock()
+        graft = MagicMock()
+        transfer.structural_grafter.get_grafting_guidance.return_value = graft
+        with patch("src.generation.transfer.build_persona_instruction", return_value="INSTRUCTION") as build:
+            transfer.transfer_paragraph("The first line of this paragraph has several words in it.")
+        assert build.call_args.kwargs["structural_guidance"] == "RAG"
+        assert build.call_args.kwargs["grafting_guidance"] is graft

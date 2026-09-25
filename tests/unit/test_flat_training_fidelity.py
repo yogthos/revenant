@@ -160,6 +160,7 @@ class TestContentLabelFromInput:
                 styled_text="STYLED OUTPUT TEXT here.",
                 author="Bertrand Russell",
                 word_count=4,
+                output_format="mlx",
             )
         assert classify.call_args.args[0] == "NEUTRAL INPUT TEXT here."
 
@@ -296,6 +297,26 @@ class TestRowChecks:
         from filter_training_data import row_problem
         assert row_problem(_row((0,))) is None
 
+    def test_accepts_faithful_paraphrase_sharing_content_words(self):
+        # Today's DeepSeek keeps a paraphrase's content words; that alone is
+        # not copying (vocabulary overlap is ~62% at the median).
+        from filter_training_data import row_problem
+        out = ("The problem of individual liberty does not arise among savages, because they feel no need of it, "
+               "but it arises among civilized men with more and more urgency as they become more civilized.")
+        # 69% shared vocabulary, 17% shared 4-grams.
+        inp = ("The issue of individual liberty does not come up among savages, since they feel no need for it. "
+               "It comes up among civilized men, and more urgently as they become more civilized.")
+        assert row_problem(_row((0,), output=out, inp=inp)) is None
+
+    def test_rejects_copied_phrases(self):
+        from filter_training_data import row_problem
+        out = ("The problem of individual liberty does not arise among savages, because they feel no need of it, "
+               "but it arises among civilized men with more and more urgency as they become more civilized.")
+        inp = ("The problem of individual liberty does not come up among savages, because they feel no need of it, "
+               "but it arises among civilized men with more and more urgency as they become more civilized.")
+        problem = row_problem(_row((0,), output=out, inp=inp))
+        assert problem and "phrase" in problem
+
 
 class TestTwoWayEntailment:
     class FakeNLI:
@@ -310,6 +331,24 @@ class TestTwoWayEntailment:
                 # label order: contradiction, entailment, neutral
                 out.append([0.0, 5.0, 0.0] if entailed else [0.0, -5.0, 5.0])
             return np.array(out)
+
+    class ParagraphConfusedNLI(FakeNLI):
+        """Like nli-deberta-v3-small: long multi-sentence premises confuse it."""
+        def predict(self, pairs, **kwargs):
+            import numpy as np
+            rows = super().predict(pairs, **kwargs)
+            for i, (premise, _) in enumerate(pairs):
+                if premise.count(". ") >= 3:
+                    rows[i] = [0.0, -5.0, 5.0]
+            return np.array(rows)
+
+    def test_checks_sentences_against_short_aligned_spans(self):
+        # A paragraph must entail itself even when the model can't read the
+        # whole paragraph as one premise.
+        from filter_training_data import entailment_problem
+        text = ("The problem of liberty does not arise among savages. It arises among civilized men. "
+                "Government grows as they grow. Freedom becomes more urgent. Nobody escapes the question.")
+        assert entailment_problem(text, text, self.ParagraphConfusedNLI()) is None
 
     def test_rejects_added_content(self):
         from filter_training_data import entailment_problem
@@ -336,7 +375,8 @@ class TestFinalize:
         rows = [_row((i,), idx=i) for i in range(100)]
         raw.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
         lf_dir = tmp_path / "LlamaFactory"
-        stats = finalize(raw, lf_dir, dataset_name="russell", val_fraction=0.1, nli=False, seed=3, block_size=5)
+        stats = finalize(raw, lf_dir, dataset_name="russell", val_fraction=0.1, nli=False, seed=3, block_size=5,
+                         persona=lambda row: "PERSONA")
 
         info = json.loads((lf_dir / "dataset_info.json").read_text())
         assert info["russell_sft"]["file_name"] == "train.jsonl"
@@ -345,4 +385,40 @@ class TestFinalize:
         val = [json.loads(l) for l in (lf_dir / "val.jsonl").read_text().splitlines()]
         assert len(train) == stats["train"] and len(val) == stats["val"] and val
         # LlamaFactory rows keep only the columns dataset_info maps.
-        assert set(train[0]) == {"instruction", "input", "output"}
+        assert set(train[0]) == {"system", "input", "output"}
+
+
+class TestSingleTextBatches:
+    """DeepSeek echoes later texts of a multi-text request, so RTT sends one
+    text per request, and generation still runs those requests in parallel."""
+
+    def test_default_batch_size_is_one(self):
+        root = Path(__file__).parent.parent.parent
+        config = json.loads((root / "config.json.sample").read_text())
+        assert config["llm"]["providers"]["deepseek_rtt"]["batch_size"] == 1
+
+    def test_batch_size_one_still_uses_the_parallel_pipeline(self, tmp_path):
+        import generate_flat_training as gft
+        neutralizer = MagicMock(spec=["neutralize", "neutralize_batch", "batch_size", "concurrent_batches"])
+        neutralizer.batch_size = 1
+        neutralizer.concurrent_batches = 8
+        chunks = [(f"Styled text number {i} with enough words.", "snowflake", (i,)) for i in range(3)]
+        with patch.object(gft, "get_rtt_neutralizer", return_value=(neutralizer, MagicMock())), \
+             patch.object(gft, "neutralize_batch", return_value=["plain words here"] * 3) as batch, \
+             patch.object(gft, "check_lexical_bleed", return_value=(True, 0.0)):
+            gft.generate_training_data(chunks, "X", tmp_path / "train.jsonl", output_format="llama_factory")
+        batch.assert_called_once()
+        neutralizer.neutralize.assert_not_called()
+
+
+class TestSentenceSplitting:
+    def test_lowercase_fragment_rejoins_its_sentence(self):
+        # spaCy breaks after "Part III.)" and after a quoted "fly!" mid-sentence,
+        # which made chunks start in the middle of a sentence.
+        import generate_flat_training as gft
+        text = ('I shall assume (what I shall argue in Part III.) that, when we are speaking of physical space, '
+                'all our percepts are in our head. It costs little to send the words "All is discovered; fly!" '
+                'but the effect is said to be amazing.')
+        sents = gft.split_into_sentences(text)
+        assert not any(s[0].islower() for s in sents)
+        assert " ".join(sents) == text

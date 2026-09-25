@@ -236,9 +236,6 @@ class StructuralRAG:
             if top_patterns:
                 opening_hint = f"Vary: {', '.join(top_patterns)}"
 
-        # Get exemplar sentences from corpus - these are the most important!
-        exemplar_sentences = self._get_exemplar_sentences(input_text)
-
         return StructuralGuidance(
             rhythm_pattern=self.get_rhythm_pattern(target_sentences),
             punctuation_hints=self.get_punctuation_hints(),
@@ -246,7 +243,6 @@ class StructuralRAG:
             fragment_hint=self.get_fragment_hint(),
             opening_hint=opening_hint,
             enhanced_profile=self._enhanced_profile,
-            exemplar_sentences=exemplar_sentences,
         )
 
     def _get_exemplar_sentences(self, input_text: str, n: int = 5) -> List[str]:

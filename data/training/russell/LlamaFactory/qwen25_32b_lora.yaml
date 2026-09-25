@@ -11,7 +11,8 @@ do_train: true
 finetuning_type: lora
 lora_target: all
 # Rank 256 with alpha 512 (2:1 ratio).
-# Baked-in scale = alpha/rank = 2.0. Runtime scale adds on top.
+# Baked-in scale = alpha/rank = 2.0. config.json's "scale" multiplies it
+# at inference (1.0 = as trained).
 # Dense architecture handles this without incoherence.
 # No rsLoRA needed — standard LoRA scaling works well on dense models.
 lora_rank: 256
@@ -25,7 +26,7 @@ neftune_noise_alpha: 5.0
 dataset: russell_sft
 template: qwen
 cutoff_len: 2048
-packing: true
+packing: false  # packed rows attend to each other; see hemmingway1_27b_lora.yaml
 overwrite_cache: true
 preprocessing_num_workers: 1
 

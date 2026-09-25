@@ -38,7 +38,6 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from ..rag.structural_grafter import GraftingGuidance
 
-
 # =============================================================================
 # Persona File Loading
 # =============================================================================
@@ -136,9 +135,10 @@ def _get_worldview_filename(adapter_path: Optional[str] = None) -> str:
     return "default_persona.txt"
 
 
-def _get_persona_frame(is_narrative: bool, adapter_path: Optional[str] = None) -> str:
-    """Get a persona frame from the configured worldview file."""
-    filename = _get_worldview_filename(adapter_path)
+def _get_persona_frame(is_narrative: bool, adapter_path: Optional[str] = None,
+                       worldview: Optional[str] = None) -> str:
+    """Get a persona frame from the worldview file (named, or from config)."""
+    filename = worldview or _get_worldview_filename(adapter_path)
     persona_data = _load_persona_file(filename)
 
     if is_narrative:
@@ -235,29 +235,29 @@ def build_persona_instruction(
     target_words: Optional[int] = None,
     deterministic_constraints: bool = False,
     adapter_path: Optional[str] = None,
+    worldview: Optional[str] = None,
 ) -> str:
-    """Build the instruction half of a training-format prompt.
+    """Build the persona instruction for one paragraph.
 
-    Training rows keep the instruction and the neutral input in separate
-    fields, which LlamaFactory joins into one user turn. Keeping them
-    separate here lets the generator lay them out the same way.
+    Training rows (filter_training_data.PersonaBuilder) and inference both
+    build it here, so they get the same frame, guidance and constraints.
 
-    ``content`` is only used to pick a narrative or conceptual frame. Training
-    classifies the neutral input too, so the frame matches.
+    ``content`` picks the narrative or conceptual frame. ``worldview`` names
+    the persona file directly; otherwise it comes from the adapter's entry in
+    config.json.
     """
     is_narrative = _detect_content_type(content)
 
-    # Situational persona frame from the config file (this is what triggers the LoRA)
-    persona_frame = _get_persona_frame(is_narrative, adapter_path=adapter_path)
+    # Situational persona frame from the worldview file (this is what triggers the LoRA)
+    persona_frame = _get_persona_frame(is_narrative, adapter_path=adapter_path, worldview=worldview)
 
     if target_words is None:
         target_words = len(content.split())
 
-    # Training format: "Write approximately N words." on its own line, nothing else
     parts = [persona_frame, "", f"Write approximately {target_words} words."]
 
-    # Skeleton structure (matches training's 50% skeleton)
-    if grafting_guidance and hasattr(grafting_guidance, 'skeleton') and grafting_guidance.skeleton:
+    # Rhetorical skeleton of the most similar corpus paragraph
+    if grafting_guidance and getattr(grafting_guidance, "skeleton", None):
         parts.append("")
         parts.append(f"Follow this structure: {grafting_guidance.skeleton.format_for_prompt()}")
 
@@ -293,7 +293,7 @@ def build_persona_prompt(
 
     Write approximately {word_count} words.
 
-    Follow this structure: {skeleton}  (50% of training data)
+    Follow this structure: {skeleton}
 
     [CONSTRAINT]: Do not use: 'Moreover'...
 

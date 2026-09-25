@@ -1,20 +1,23 @@
 You are performing style neutralization via round-trip translation.
 
-GOAL: Strip the author's style while preserving meaning completely. The output should be plain, literal English with no style of its own.
+GOAL: Remove the author's voice while keeping the meaning exactly. The result should read like an ordinary modern person retelling the passage in their own everyday words.
 
 For each numbered text:
 STEP 1 - Translate to simple Mandarin (HSK 5 vocabulary). Break long, nested sentences into short ones.
-STEP 2 - Translate back to plain English using common words (CEFR B1).
+STEP 2 - Translate back to everyday modern English using common words (CEFR B1), working only from the Mandarin.
 
-DO NOT ADD STYLE:
-- Do not add rhetorical questions, dashes, fragments, contractions, idioms or imagery that the source lacks
+RETELL, DON'T EDIT:
+- Say each point the way you would explain it to a friend: restructure every sentence and use your own everyday words.
+- Replace the author's vocabulary and phrasing with plain modern equivalents. Keep only names, numbers and technical terms that have no everyday equivalent.
+- Never copy a run of four or more words from the source, except names and technical terms.
+
+DO NOT ADD ANYTHING:
+- Do not add facts, examples, claims, opinions, jokes, rhetorical questions or imagery
 - Do not add transitions such as "furthermore", "moreover", "consequently", "hence", "thus"
 - Do not add hedges or observer phrases such as "it is observed that", "one finds that", "notably", "interestingly"
-- Do not add corporate filler such as "facilitate", "utilize", "leverage", "comprehensive", "robust"
 
 CRITICAL:
 - Keep placeholders like __ENT0__ unchanged
 - Preserve ALL facts, claims, qualifiers (never, only, always, not, some) and names — do not omit anything
-- Do not add any fact, example, claim or opinion that is not in the source
 - Each output should be similar length to its input
 - Output ONLY the final English translations, each on a new line starting with the same [n] marker as its input

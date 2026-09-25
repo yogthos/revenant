@@ -162,11 +162,25 @@ def clean_text(text: str) -> str:
 
 
 def split_into_sentences(text: str, nlp=None) -> List[str]:
-    """Split text into sentences using spaCy."""
+    """Split text into sentences using spaCy.
+
+    A "sentence" starting with a lowercase letter is spaCy breaking after an
+    abbreviation or a quoted exclamation mid-sentence, so it rejoins the
+    previous one.
+    """
     if nlp is None:
         nlp = get_nlp()
     doc = nlp(text)
-    return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    sentences = []
+    for sent in doc.sents:
+        s = sent.text.strip()
+        if not s:
+            continue
+        if sentences and s[0].islower():
+            sentences[-1] = f"{sentences[-1]} {s}"
+        else:
+            sentences.append(s)
+    return sentences
 
 
 def count_special_chars(text: str) -> float:
@@ -1129,20 +1143,40 @@ def _bleed_words(text: str) -> List[str]:
     return re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
 
 
-def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) -> Tuple[bool, float]:
-    """Check if neutral input retains too much distinctive vocabulary from styled output.
+# Limits for how close a neutral input may stay to its styled target. They
+# were 50% vocabulary when DeepSeek paraphrased loosely; the current model
+# keeps content words (median ~62% shared), so vocabulary alone would reject
+# ~90% of faithful rows. Copying shows in repeated phrases instead.
+MAX_VOCAB_OVERLAP = 0.75
+MAX_PHRASE_OVERLAP = 0.40
 
-    If the neutral text already contains most of the distinctive words from the output,
-    the model learns copy-paste rather than style transfer.
+
+def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = MAX_VOCAB_OVERLAP,
+                        max_phrase_overlap: Optional[float] = None) -> Tuple[bool, float]:
+    """Check if neutral input retains too much of the styled output's wording.
+
+    If the neutral text already contains most of the distinctive words or
+    phrases from the output, the model learns copy-paste rather than style
+    transfer.
 
     Args:
         neutral: Neutralized input text
         styled: Original styled text
-        max_overlap: Maximum allowed overlap ratio (default 0.6)
+        max_overlap: Maximum share of the styled text's distinctive words
+        max_phrase_overlap: Maximum share of its 4-word sequences, or None
+            to skip (only meaningful on the final, perturbed input)
 
     Returns:
-        Tuple of (is_valid, overlap_ratio)
+        Tuple of (is_valid, overlap_ratio). The ratio is the phrase overlap
+        when that check is what failed.
     """
+    from src.llm.mlx_provider import ngram_overlap
+
+    if max_phrase_overlap is not None:
+        phrase = ngram_overlap(styled, neutral)
+        if phrase > max_phrase_overlap:
+            return False, phrase
+
     # Tokenize on letters so "cruelty," and "cruelty" count as the same word.
     neutral_words = set(_bleed_words(neutral))
     styled_words = set(_bleed_words(styled))
@@ -1561,7 +1595,8 @@ def format_training_example(
     """Format a training example for LoRA training.
 
     Supports two output formats:
-    - llama_factory: {"instruction": "...", "input": "...", "output": "..."}
+    - llama_factory: {"input": "...", "output": "..."}. filter_training_data.finalize
+      adds the persona as the system turn, built the way inference builds it.
     - mlx: {"text": "prompt + completion"} for base models
 
     Uses Acting Directions (not Translation Instructions):
@@ -1569,14 +1604,6 @@ def format_training_example(
     - Structural Skeleton: 50% chance to include rhetorical structure
     - Negative Constraints: 30% chance to add ONE anti-AI-writing rule
     """
-    # Persona-based instruction (Acting Direction)
-    instruction = get_persona_instruction(
-        author=author,
-        word_count=word_count,
-        styled_text=styled_text,
-        input_text=neutral_text,
-    )
-
     # Apply perturbation based on variation type
     # info_dropout and abstract variants are already processed
     if variation_type == "robustness":
@@ -1588,13 +1615,15 @@ def format_training_example(
         perturbed_input = perturb_text(neutral_text)
 
     if output_format == "llama_factory":
-        # LLaMA-Factory SFT format: {"instruction": "...", "input": "...", "output": "..."}
-        return {
-            "instruction": instruction,
-            "input": perturbed_input,
-            "output": styled_text,
-        }
+        return {"input": perturbed_input, "output": styled_text}
     else:
+        # Persona-based instruction (Acting Direction)
+        instruction = get_persona_instruction(
+            author=author,
+            word_count=word_count,
+            styled_text=styled_text,
+            input_text=neutral_text,
+        )
         # MLX format: {"text": "prompt + completion"} for base models
         # With mask_prompt=true, only the completion (after prompt) is trained
         prompt = f"{instruction}\n\n{perturbed_input}\n###\n"
@@ -1691,7 +1720,8 @@ def generate_training_data(
     neutralizer, _ = get_rtt_neutralizer()
     batch_size = getattr(neutralizer, 'batch_size', 1)
     concurrent_batches = getattr(neutralizer, 'concurrent_batches', 1)
-    use_batching = isinstance(batch_size, int) and batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
+    # The batch pipeline also runs single-text requests in parallel.
+    use_batching = isinstance(batch_size, int) and batch_size >= 1 and hasattr(neutralizer, 'neutralize_batch')
 
     # Super-batch = batch_size * concurrent_batches (to fully utilize parallelism)
     # e.g., batch_size=10, concurrent_batches=4 → send 40 texts at once
@@ -1842,6 +1872,9 @@ def main():
                         help="Share of source paragraphs held out for validation (default: 0.05)")
     parser.add_argument("--no-nli", action="store_true",
                         help="Skip the two-way entailment filter when writing LlamaFactory splits")
+    parser.add_argument("--worldview", default=None,
+                        help="Persona file in prompts/ for the LlamaFactory system prompt "
+                             "(required for --format llama_factory)")
     parser.add_argument("--snowflake-topics", type=str, default=None,
                         help="Path to Python file with custom snowflake topics list "
                              "(e.g., data/training/russell/snowflake_topics.py). "
@@ -1851,6 +1884,14 @@ def main():
 
     if not args.resume_from and not args.resume_from_chunks and not args.corpus and not args.from_selected:
         parser.error("--corpus or --from-selected is required unless using --resume-from or --resume-from-chunks")
+
+    persona = None
+    if args.format == "llama_factory":
+        if not args.worldview:
+            parser.error("--worldview is required for --format llama_factory")
+        # Load it now so a missing corpus index fails before hours of API calls.
+        from filter_training_data import load_persona_builder
+        persona = load_persona_builder(args.author, args.worldview)
 
     overall_start = time.time()
     output_dir = Path(args.output)
@@ -2054,6 +2095,7 @@ def main():
             train_output_path,
             output_dir / "LlamaFactory",
             dataset_name=output_dir.name,
+            persona=persona,
             val_fraction=args.val_fraction,
             nli=not args.no_nli,
             log=logger.info,

@@ -337,6 +337,12 @@ def main():
     frames = load_persona_frames(args.worldview)
     PERSONA_FRAMES[args.author] = frames
 
+    persona = None
+    if args.format == "llama_factory":
+        # Load now so a missing corpus index fails before the API calls.
+        from scripts.filter_training_data import load_persona_builder
+        persona = load_persona_builder(args.author, args.worldview)
+
     # Extract styled text from blended paragraphs
     # Use the most processed version: transplanted > aligned > raw
     styled_paragraphs = []
@@ -384,7 +390,7 @@ def main():
     if args.format == "llama_factory":
         from scripts.filter_training_data import finalize
         finalize(output_path, args.output / "LlamaFactory", dataset_name=args.output.name,
-                 nli=not args.no_nli, log=logger.info)
+                 persona=persona, nli=not args.no_nli, log=logger.info)
 
 
 if __name__ == "__main__":

@@ -2,17 +2,17 @@
   "russell_sft": {
     "file_name": "train.jsonl",
     "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output"
+      "prompt": "input",
+      "response": "output",
+      "system": "system"
     }
   },
   "russell_val": {
     "file_name": "val.jsonl",
     "columns": {
-      "prompt": "instruction",
-      "query": "input",
-      "response": "output"
+      "prompt": "input",
+      "response": "output",
+      "system": "system"
     }
   }
 }

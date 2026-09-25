@@ -35,14 +35,14 @@ neftune_noise_alpha: 5.0
 dataset: howard_russell_sft
 template: qwen3_5_nothink
 cutoff_len: 2048
-packing: true
+packing: false  # packed rows attend to each other; see hemmingway1_27b_lora.yaml
 overwrite_cache: true
 preprocessing_num_workers: 16
 
 ### Output
 output_dir: saves/Qwen3.5-35B-A3B/lora/howard_russell
 logging_steps: 10
-save_steps: 100
+save_steps: 200
 plot_loss: true
 overwrite_output_dir: true
 

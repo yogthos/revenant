@@ -31,8 +31,9 @@
         "model": "deepseek-chat",
         "max_tokens": 8192,
         "temperature": 0.1,
-        "batch_size": 10,
-        "concurrent_batches": 8,
+        "_comment_batch": "One text per request: with several, DeepSeek copies the later ones back verbatim",
+        "batch_size": 1,
+        "concurrent_batches": 16,
         "timeout": 180
       }
     },
@@ -54,6 +55,8 @@
     "models": {
       "models/Qwen2.5-32B-howard-lovecraft-10200": {
         "_comment": "Fused Qwen2.5-32B + checkpoint-10200 adapter via scripts/fuse_model.py",
+        "_comment_template": "chat_template: LlamaFactory template used in training. Adapters converted with --train-config record it in metadata.json; set it here for older ones.",
+        "chat_template": "qwen",
         "enabled": true,
         "author": "Howard Russell",
         "temperature": 0.7,
@@ -68,11 +71,24 @@
     },
     "_comment4a": "LoRA adapters with per-adapter generation settings (enabled: true/false to toggle)",
     "lora_adapters": {
+      "lora_adapters/russell_hemmingway_mlx": {
+        "_comment": "Hemmingway-1 27B, data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml. Template comes from metadata.json.",
+        "enabled": false,
+        "_comment_scale": "scale multiplies the strength the adapter was trained at: 1.0 = as trained",
+        "scale": 1.0,
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "min_p": 0.03,
+        "repetition_penalty": 1.05,
+        "max_tokens": 1024,
+        "worldview": "russell_worldview.txt"
+      },
       "lora_adapters/lovecraft_32b": {
         "_comment": "Qwen2.5-32B trained on RunPod A100, checkpoint-600 has best val_loss",
         "enabled": true,
         "expand_for_texture": false,
-        "scale": 2.0,
+        "scale": 1.0,
+        "chat_template": "qwen",
         "temperature": 0.7,
         "top_p": 0.95,
         "min_p": 0.03,
@@ -91,7 +107,7 @@
       "lora_adapters/lovecraft_14b": {
         "_comment": "Qwen2.5-14B local MLX training",
         "enabled": false,
-        "scale": 2.0,
+        "scale": 1.0,
         "temperature": 0.8,
         "top_p": 0.96,
         "min_p": 0.03,
@@ -106,6 +122,7 @@
         "device": "cuda",
         "load_in_4bit": true,
         "hf_adapter_path": "yogthos/qwen2.5-32b-lovecraft-lora",
+        "chat_template": "qwen",
         "checkpoint": "checkpoint-600",
         "scale": 2.0,
         "temperature": 0.7,
@@ -121,7 +138,7 @@
     "_comment7": "Document handling",
     "pass_headings_unchanged": true,
     "min_paragraph_words": 10,
-    "_comment8": "RAG settings",
+    "_comment8": "RAG settings. Training rows get the same RAG hints and grafted skeletons (filter_training_data.py), so keep these on for adapters trained that way.",
     "use_structural_rag": true,
     "use_structural_grafting": true,
     "rag_sample_size": 300,

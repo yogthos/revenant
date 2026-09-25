@@ -1,0 +1,110 @@
+### Model
+# Altworld/Hemmingway-1: dense 27B Qwen3.8 fine-tune (Qwen3_5ForCausalLM,
+# text only). 48 Gated DeltaNet linear-attention layers + 16 full-attention
+# layers. It is a chat model with a thinking chat template. CC BY-NC 4.0.
+model_name_or_path: Altworld/Hemmingway-1
+
+### Method
+stage: sft
+do_train: true
+finetuning_type: lora
+# All linear layers: attention q/k/v/o, DeltaNet in_proj_*/out_proj and the
+# MLP. LlamaFactory leaves lm_head alone.
+lora_target: all
+# Rank 256 per docs/style_transfer_training.md (rank is the biggest lever on
+# style capture). That is ~2B trainable parameters on this model.
+lora_rank: 256
+# rsLoRA scales by alpha/sqrt(rank): 16/16 = 1.0, the scale the MLX converter
+# bakes in. config.json's "scale" multiplies it at inference (1.0 = as trained).
+lora_alpha: 16
+use_rslora: true
+lora_dropout: 0.1
+neftune_noise_alpha: 5.0
+
+### Dataset
+dataset: russell_sft
+# qwen3_8 matches Hemmingway-1's own chat template. With enable_thinking
+# false the prompt ends in an empty <think></think> block and the loss is on
+# the answer only, which is exactly what inference renders
+# (src/generation/base_generator.render_chat_prompt).
+template: qwen3_8
+enable_thinking: false
+# filter_training_data.py drops rows longer than this, so nothing is cut.
+cutoff_len: 2048
+# No packing: packed rows attend to each other, and the DeltaNet layers carry
+# their recurrent state across them (LlamaFactory only isolates rows with
+# neat_packing + fa2 + flash-linear-attention). With batch size 1 there is no
+# padding to save anyway.
+packing: false
+overwrite_cache: true
+preprocessing_num_workers: 8
+
+### Output
+output_dir: saves/Hemmingway-1/lora/russell
+logging_steps: 10
+save_steps: 200
+save_total_limit: 3
+plot_loss: true
+overwrite_output_dir: true
+report_to: none
+
+### Training
+# Effective batch 8 (small batches keep style quirks). ~10k rows / 8 = ~1,300
+# steps per epoch on one GPU.
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+# Neutral rsLoRA scaling; the Qwen3.5 runs used 2e-5 at this setting.
+learning_rate: 2.0e-5
+num_train_epochs: 3.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+# The DeltaNet layers produce the occasional gradient spike early on.
+max_grad_norm: 0.3
+bf16: true
+
+### Evaluation
+# val.jsonl holds out whole source paragraphs (filter_training_data.py), so
+# eval loss measures generalisation and picks the checkpoint to keep.
+eval_dataset: russell_val
+per_device_eval_batch_size: 4
+eval_strategy: steps
+eval_steps: 200
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+greater_is_better: false
+
+### Memory (1x A100/H100 80GB, ~45GB used)
+# QLoRA: 4-bit base ~15GB plus bf16 embeddings/lm_head ~5GB, LoRA params,
+# grads and 8-bit Adam ~20GB, activations a few GB. bf16 weights alone are
+# 54GB, which leaves no room for rank 256 on one card. For bf16 LoRA use two
+# 80GB GPUs with DeepSpeed ZeRO-3 (deepspeed: pointing at
+# data/training/howard_russell/LlamaFactory/ds_z3_config.json) and drop
+# quantization_bit.
+quantization_bit: 4
+flash_attn: sdpa
+gradient_checkpointing: true
+optim: paged_adamw_8bit
+
+# =============================================================================
+# POST-TRAINING: run locally with MLX (see docs/runpod.md)
+# =============================================================================
+#
+# 1. Convert the base model. mlx_lm has no "qwen3_5_text" model type, but its
+#    qwen3_5 module loads the flat text config:
+#
+#    hf download Altworld/Hemmingway-1 --local-dir models/Hemmingway-1
+#    python -c "import json; p='models/Hemmingway-1/config.json'; c=json.load(open(p)); \
+#        c['model_type']='qwen3_5'; json.dump(c, open(p, 'w'), indent=2)"
+#    python -m mlx_lm convert --hf-path models/Hemmingway-1 \
+#        --mlx-path models/Hemmingway-1-6bit-MLX -q --q-bits 6
+#
+# 2. Convert the adapter (--train-config records the chat template):
+#
+#    python scripts/convert_peft_to_mlx.py \
+#        --input saves/Hemmingway-1/lora/russell \
+#        --output lora_adapters/russell_hemmingway_mlx \
+#        --mlx-model models/Hemmingway-1-6bit-MLX \
+#        --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+#
+# 3. python restyle.py input.md -o output.md \
+#        --adapter lora_adapters/russell_hemmingway_mlx --author "Bertrand Russell"

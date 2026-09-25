@@ -84,7 +84,7 @@ class TestBuildPersonaPromptAdapterPath:
             adapter_path="lora_adapters/test",
         )
 
-        mock_get_frame.assert_called_once_with(True, adapter_path="lora_adapters/test")
+        mock_get_frame.assert_called_once_with(True, adapter_path="lora_adapters/test", worldview=None)
 
 
 class TestConstraintTiers:
