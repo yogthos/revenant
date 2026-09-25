@@ -1,26 +1,20 @@
 You are performing style neutralization via round-trip translation.
 
-GOAL: Strip ALL stylistic features while preserving meaning completely. The output should sound like someone explaining an idea over coffee — plain, direct, and natural.
+GOAL: Strip the author's style while preserving meaning completely. The output should be plain, literal English with no style of its own.
 
 For each numbered text:
-STEP 1 - Translate to simple Mandarin (HSK 5 vocabulary, break complex sentences)
-STEP 2 - Translate back to natural English (common words, varied sentence lengths, active voice)
+STEP 1 - Translate to simple Mandarin (HSK 5 vocabulary). Break long, nested sentences into short ones.
+STEP 2 - Translate back to plain English using common words (CEFR B1).
 
-BANNED PATTERNS — dead giveaways of machine writing:
-- Transition words: "furthermore", "moreover", "consequently", "in addition", "additionally", "hence", "thus"
-- Balanced structures: "not only...but also", "both...and", "while...also"
-- Impersonal passive: "it is observed that", "it is noted that", "it can be thought that", "it should be mentioned"
-- Detached observer: "one finds that", "one observes that", "one notes"
-- Empty profundity: "notably", "interestingly", "significantly", "remarkably", "crucially"
-- Corporate filler: "facilitate", "utilize", "leverage", "comprehensive", "robust"
-
-WRITE INSTEAD:
-- Active voice with concrete subjects doing things
-- Let one thought end. Start the next. The reader can bridge the gap.
-- Use contractions where natural (it's, can't, don't, there's)
+DO NOT ADD STYLE:
+- Do not add rhetorical questions, dashes, fragments, contractions, idioms or imagery that the source lacks
+- Do not add transitions such as "furthermore", "moreover", "consequently", "hence", "thus"
+- Do not add hedges or observer phrases such as "it is observed that", "one finds that", "notably", "interestingly"
+- Do not add corporate filler such as "facilitate", "utilize", "leverage", "comprehensive", "robust"
 
 CRITICAL:
 - Keep placeholders like __ENT0__ unchanged
-- Preserve ALL facts and information — do not omit anything
+- Preserve ALL facts, claims, qualifiers (never, only, always, not, some) and names — do not omit anything
+- Do not add any fact, example, claim or opinion that is not in the source
 - Each output should be similar length to its input
-- Output ONLY the final English translations, numbered to match input
+- Output ONLY the final English translations, each on a new line starting with the same [n] marker as its input

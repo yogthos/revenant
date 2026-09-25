@@ -33,6 +33,7 @@ class LLMResponse:
     input_tokens: int = 0
     output_tokens: int = 0
     model: str = ""
+    finish_reason: str = ""  # "length" means the reply hit max_tokens
 
     @property
     def total_tokens(self) -> int:

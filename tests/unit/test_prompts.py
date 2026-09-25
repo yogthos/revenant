@@ -83,7 +83,7 @@ class TestListPrompts:
         prompts = list_prompts()
         assert len(prompts) > 0
         assert "style_transfer" in prompts
-        assert "rtt_deepseek" in prompts
+        assert "rtt_deepseek_batch" in prompts
 
     def test_list_prompts_returns_paths(self):
         """Test that list_prompts returns Path objects."""
@@ -132,7 +132,7 @@ class TestPromptFiles:
             "style_transfer",
             "rtt_to_mandarin",
             "rtt_to_english",
-            "rtt_deepseek",
+            "rtt_deepseek_batch",
         ]
         prompts = list_prompts()
         for name in required_prompts:
