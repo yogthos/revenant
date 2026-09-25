@@ -8,6 +8,8 @@ Rows are dropped when:
 - the input still has an entity placeholder or starts with stray punctuation
 - the input keeps too much of the target's distinctive vocabulary (lexical bleed)
 - the output/input word ratio is too high, or the input is too short
+- the row won't fit in the training cutoff_len, which would cut off the output
+  and its end-of-turn token
 - (with NLI) the target states things the input lacks, or the input states
   things the target lacks, checked sentence by sentence in both directions
 
@@ -36,15 +38,29 @@ LLAMA_FACTORY_COLUMNS = ("instruction", "input", "output")
 CONTRADICTION, ENTAILMENT, NEUTRAL = 0, 1, 2
 
 
+# Matches cutoff_len in the LlamaFactory yamls.
+DEFAULT_MAX_TOKENS = 2048
+# Qwen tokenizers average ~4.6 characters per token on this corpus and never
+# went below 3.6, so 3.5 overestimates. The template adds about 20 tokens.
+CHARS_PER_TOKEN = 3.5
+TEMPLATE_TOKENS = 32
+
+
 def word_count(text: str) -> int:
     return len(text.split())
+
+
+def estimate_tokens(text: str) -> int:
+    """Upper-bound token estimate that needs no tokenizer."""
+    return math.ceil(len(text) / CHARS_PER_TOKEN)
 
 
 # ---------------------------------------------------------------------------
 # Row checks
 # ---------------------------------------------------------------------------
 
-def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15) -> Optional[str]:
+def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15,
+                max_tokens: int = DEFAULT_MAX_TOKENS) -> Optional[str]:
     """Why a row should be dropped, or None if it's fine."""
     from src.llm.mlx_provider import has_placeholder_residue
     from generate_flat_training import check_lexical_bleed
@@ -63,6 +79,9 @@ def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15) ->
     ok, overlap = check_lexical_bleed(inp, out)
     if not ok:
         return f"lexical bleed {overlap:.0%}"
+    tokens = estimate_tokens(f"{row.get('instruction', '')}\n{inp}{out}") + TEMPLATE_TOKENS
+    if tokens > max_tokens:
+        return f"too long for cutoff_len (~{tokens} tokens)"
     return None
 
 
@@ -197,7 +216,8 @@ def _write_jsonl(path: Path, rows: List[dict]) -> None:
 def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str,
              val_fraction: float = 0.05, nli: bool = True, seed: int = 42,
              block_size: int = 20, max_ratio: float = 2.0, min_input_words: int = 15,
-             nli_min_fraction: float = 0.75, nli_model=None, log=print) -> dict:
+             nli_min_fraction: float = 0.75, nli_model=None, max_tokens: int = DEFAULT_MAX_TOKENS,
+             log=print) -> dict:
     """Filter raw rows, split by source paragraph, write LlamaFactory files."""
     rows = list(_read_jsonl(raw_path))
     reasons: dict = {}
@@ -209,7 +229,8 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str,
 
     kept = []
     for row in rows:
-        problem = row_problem(row, max_ratio=max_ratio, min_input_words=min_input_words)
+        problem = row_problem(row, max_ratio=max_ratio, min_input_words=min_input_words,
+                              max_tokens=max_tokens)
         if problem:
             reject(problem)
         else:
@@ -265,13 +286,16 @@ def main():
                         help="Share of sentences that must be entailed in each direction")
     parser.add_argument("--max-ratio", type=float, default=2.0, help="Max output/input word ratio")
     parser.add_argument("--min-input-words", type=int, default=15)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
+                        help="Drop rows longer than this (the yaml's cutoff_len)")
     args = parser.parse_args()
 
     out_dir = args.llama_factory_dir or args.input.parent / "LlamaFactory"
     name = args.name or args.input.parent.name
     finalize(args.input, out_dir, name, val_fraction=args.val_fraction, nli=not args.no_nli,
              seed=args.seed, block_size=args.block_size, max_ratio=args.max_ratio,
-             min_input_words=args.min_input_words, nli_min_fraction=args.nli_min_fraction)
+             min_input_words=args.min_input_words, nli_min_fraction=args.nli_min_fraction,
+             max_tokens=args.max_tokens)
 
 
 if __name__ == "__main__":

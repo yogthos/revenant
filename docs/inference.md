@@ -67,7 +67,7 @@ Generation parameters are in `config.json` under `lora_adapters`:
     "top_p": 0.92,
     "min_p": 0.05,
     "repetition_penalty": 1.15,
-    "scale": 2.0,
+    "scale": 1.0,
     "max_tokens": 512,
     "worldview": "russell_worldview.txt",
     "use_structural_rag": true,
@@ -88,7 +88,9 @@ Most generation-wide settings can be overridden per-adapter. Omit the field to i
 | `perspective` | string | Output POV (`preserve`, `first_person_singular`, …) |
 | `verify_entailment` | bool | Run NLI semantic fidelity check |
 | `merge_paragraphs` | int | Merge N paragraphs before LoRA |
-| `use_structural_rag` | bool | Pull rhythm patterns from corpus |
+| `use_structural_rag` | bool | Pull rhythm patterns from corpus (non-persona prompt only) |
+| `chat_template` | string | LlamaFactory template the adapter was trained with (`qwen`, `qwen3_5_nothink`, `qwen3_5`, `qwen3_8`). Overrides `metadata.json`. |
+| `enable_thinking` | bool | LlamaFactory `enable_thinking` used in training (default true) |
 | `logit_bias` | object | Additive bias per character/string (see below) |
 
 ### `logit_bias` — per-character logit bias
@@ -152,12 +154,23 @@ The full style transfer pipeline:
 
 ## Qwen 3.5 Specific Issues
 
-### Thinking Tokens
+### Chat Template and Thinking Tokens
 
-The base model tokenizer injects `<think>` tags in the generation prompt by default.
-The code overrides this with a nothink chat template. If you see `<think>` in output
-or the model produces reasoning/analysis instead of restyled text, check that the
-override in `lora_generator.py` is in place.
+The generators never use the tokenizer's own chat template (Qwen 3.5 and
+Hemmingway-1 templates open a `<think>` block, Qwen 2.5's adds a different
+system prompt). `render_chat_prompt` in `base_generator.py` rebuilds the exact
+text LlamaFactory trained on for the adapter's template: `metadata.json`
+(written by `convert_peft_to_mlx.py --train-config`) or `chat_template` in
+config.json. For `qwen3_8`/`qwen3_5` with `enable_thinking: false` the prompt
+ends in an empty `<think>\n\n</think>\n\n` block.
+
+### Scale
+
+`scale` multiplies the strength the adapter was trained at (1.0 = as trained,
+0.0 = base model). Before this, MLX never applied it at all (it didn't reach
+LoRA layers inside `model.layers`) and PyTorch multiplied, so MLX configs that
+said 2.0 were running at 1.0. Blending several adapters stacks them into one
+LoRA of combined rank, which is exactly the weighted sum of the adapters.
 
 ### Stop Tokens
 

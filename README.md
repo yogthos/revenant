@@ -28,7 +28,8 @@ python -m mlx_lm convert \
 python scripts/convert_peft_to_mlx.py \
     --input lora_adapters/author_peft \
     --output lora_adapters/author_mlx \
-    --mlx-model models/Qwen3.5-35B-A3B-Base-6bit-MLX
+    --mlx-model models/Qwen3.5-35B-A3B-Base-6bit-MLX \
+    --train-config data/training/author/LlamaFactory/qwen35_35b_lora.yaml
 
 # Run style transfer
 python restyle.py input.md -o output.md \
@@ -153,7 +154,9 @@ python scripts/filter_training_data.py data/training/author/train.jsonl
 ### 3. Train LoRA
 
 Training requires a GPU with 80GB+ VRAM (A100 or H100 on RunPod).
-See [docs/runpod.md](docs/runpod.md) for cloud training setup.
+See [docs/runpod.md](docs/runpod.md) for cloud training setup. The Russell
+config for Altworld/Hemmingway-1 is
+`data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml`.
 
 ### 4. Convert to MLX
 
@@ -161,7 +164,8 @@ See [docs/runpod.md](docs/runpod.md) for cloud training setup.
 python scripts/convert_peft_to_mlx.py \
     --input lora_adapters/author_peft \
     --output lora_adapters/author_mlx \
-    --mlx-model models/Qwen3.5-35B-A3B-Base-6bit-MLX
+    --mlx-model models/Qwen3.5-35B-A3B-Base-6bit-MLX \
+    --train-config data/training/author/LlamaFactory/qwen35_35b_lora.yaml
 ```
 
 See [docs/inference.md](docs/inference.md) for detailed inference setup.

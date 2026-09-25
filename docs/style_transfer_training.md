@@ -39,7 +39,7 @@ The LoRA's quality depends on matching inference conditions to training conditio
 | RTT neutralization | YES | Same neutralizer at training and inference |
 | Perspective conversion | YES | Happens BEFORE RTT, not after |
 | Word count ratio | Fixed | ~1.21x, cannot change via config |
-| LoRA scale | YES | Match training scale in config.json |
+| LoRA scale | Baked in | config.json `scale` multiplies it; 1.0 = as trained |
 
 ### 3. Input Perturbation Is Critical
 
@@ -451,7 +451,7 @@ and eval loss only.
 6. **Create worldview file** in `prompts/` with EXACT same persona frames as training
 7. **Configure LlamaFactory** yaml and dataset_info.json
 8. **Train on RunPod** (see docs/runpod.md)
-9. **Convert adapter** to MLX for local inference (see docs/inference.md)
+9. **Convert adapter** to MLX for local inference with `--train-config <yaml>` so the chat template is recorded (see docs/runpod.md)
 
 ## References
 
