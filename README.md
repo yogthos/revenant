@@ -117,6 +117,21 @@ python scripts/curate_corpus.py \
     --output data/corpus/curated/author.txt
 ```
 
+Then clean it. Anything left in the corpus (Gutenberg markup, footnote marks, stripped
+formulas, OCR errors) ends up in training targets:
+
+```bash
+python scripts/clean_corpus.py data/corpus/curated/author.txt
+```
+
+A badly scanned book can be rebuilt from its raw OCR text, with DeepSeek fixing spelling and
+OCR errors only (replies that reword are rejected; results are cached next to the raw file):
+
+```bash
+python scripts/clean_corpus.py data/corpus/curated/author.txt \
+    --rebuild data/corpus/author/scanned_book.txt --ocr-fix
+```
+
 ### 2. Generate Training Data
 
 ```bash
