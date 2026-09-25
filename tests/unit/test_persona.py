@@ -180,37 +180,6 @@ class TestWorldviewLookupLogging:
         assert "corrupt config" in str(mock_logger.warning.call_args)
 
 
-class TestGraftingSkeletonStringification:
-    """Tests for grafting skeleton being formatted via format_for_prompt(), not __repr__."""
-
-    def test_skeleton_in_prompt_uses_format_for_prompt(self):
-        """Skeleton should appear as '[Move1] → [Move2]', not as Python repr."""
-        from src.persona.prompt_builder import build_persona_prompt
-        from src.rag.skeleton_extractor import ArgumentSkeleton
-        from src.rag.structural_grafter import GraftingGuidance
-
-        skeleton = ArgumentSkeleton(
-            moves=["Concrete Analogy", "Abstract Claim", "Conclusion"],
-            raw="[Concrete Analogy] -> [Abstract Claim] -> [Conclusion]",
-        )
-        guidance = GraftingGuidance(
-            sample_text="Sample author text here.",
-            skeleton=skeleton,
-        )
-
-        prompt = build_persona_prompt(
-            content="Test content for style transfer.",
-            target_words=50,
-            grafting_guidance=guidance,
-        )
-
-        # Should contain the formatted skeleton, not the Python repr
-        assert "[Concrete Analogy]" in prompt
-        assert "ArgumentSkeleton(" not in prompt, (
-            f"Prompt contains Python repr instead of formatted skeleton: {prompt}"
-        )
-
-
 class TestUnusedParameters:
     """Bug: build_persona_prompt accepts vocabulary_palette and persona
     parameters but never uses them."""

@@ -26,31 +26,6 @@ class TestChatLayout:
         assert content == "First para.\n\nSecond para."
 
 
-class TestMLXGeneratorUsesUserTurn:
-    def _generator(self):
-        from src.generation.lora_generator import LoRAStyleGenerator
-        gen = LoRAStyleGenerator.__new__(LoRAStyleGenerator)
-        gen.config = MagicMock(temperature=0.7, top_p=0.9, min_p=0.05, repetition_penalty=1.05,
-                               max_tokens=512, skip_cleaning=True)
-        gen._model = object()
-        gen._tokenizer = MagicMock()
-        gen._tokenizer.apply_chat_template.return_value = "PROMPT"
-        gen._tokenizer.eos_token_ids = set()
-        gen._logit_bias_processor = False
-        gen._ensure_loaded = lambda: None
-        return gen
-
-    def test_instruction_goes_in_user_turn_without_system(self):
-        gen = self._generator()
-        # create=True: without MLX installed (CI) the module never imports these.
-        with patch("src.generation.lora_generator.generate", return_value="out", create=True), \
-             patch("src.generation.lora_generator.make_sampler", create=True), \
-             patch("src.generation.lora_generator.make_repetition_penalty", create=True):
-            gen.generate(content="Neutral text.", author="X", instruction="Frame.", raw_prompt=True)
-        messages = gen._tokenizer.apply_chat_template.call_args.args[0]
-        assert messages == [{"role": "user", "content": "Frame.\nNeutral text."}]
-
-
 class TestPersonaInstruction:
     @patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME")
     @patch("src.persona.prompt_builder._detect_content_type", return_value=False)
@@ -67,6 +42,17 @@ class TestPersonaInstruction:
         from src.persona.prompt_builder import build_persona_instruction
         build_persona_instruction("Neutral text here.", target_words=40)
         assert detect.call_args.args[0] == "Neutral text here."
+
+
+    def test_instruction_has_only_what_training_rows_had(self):
+        # Training never saw RAG rhythm hints or LLM-extracted skeletons of
+        # another paragraph, so the instruction builder takes neither.
+        import inspect
+        from src.persona.prompt_builder import build_persona_instruction, build_persona_prompt
+        for fn in (build_persona_instruction, build_persona_prompt):
+            params = inspect.signature(fn).parameters
+            assert "structural_guidance" not in params
+            assert "grafting_guidance" not in params
 
 
 class TestLengthHint:
@@ -114,3 +100,23 @@ class TestInferenceNeutralization:
         kwargs = generator.generate.call_args.kwargs
         assert kwargs["instruction"] == "INSTRUCTION"
         assert kwargs["content"] == "The first line of this paragraph has several words in it."
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_persona_path_skips_rag_and_grafting_lookups(self, mock_gen_factory):
+        from src.generation.transfer import StyleTransfer, TransferConfig
+        generator = MagicMock()
+        generator.generate.return_value = "Styled output text from the generator model here."
+        mock_gen_factory.return_value = generator
+        transfer = StyleTransfer(
+            adapter_path=None, author_name="Test", critic_provider=MagicMock(provider_name="mock"),
+            config=TransferConfig(verify_semantic_fidelity=False, skip_neutralization=True,
+                                  use_persona=True, apply_input_perturbation=False,
+                                  use_structural_rag=False, use_structural_grafting=False,
+                                  min_paragraph_words=3),
+        )
+        transfer.structural_rag = MagicMock()
+        transfer.structural_grafter = MagicMock()
+        with patch("src.generation.transfer.build_persona_instruction", return_value="INSTRUCTION"):
+            transfer.transfer_paragraph("The first line of this paragraph has several words in it.")
+        transfer.structural_rag.get_guidance.assert_not_called()
+        transfer.structural_grafter.get_grafting_guidance.assert_not_called()

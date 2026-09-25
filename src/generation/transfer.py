@@ -751,41 +751,21 @@ class StyleTransfer:
         # Use 2.5x target words to ensure complete sentences
         max_tokens = max(150, int(target_words * 2.5))
 
-        # Get structural guidance from AUTHOR'S CORPUS (not source text)
-        # This is the key to adopting the author's style - their rhythm patterns,
-        # sentence lengths, punctuation usage, etc. come from ChromaDB
-        structural_guidance = None
-        if self.structural_rag:
-            guidance = self.structural_rag.get_guidance(paragraph)
-            structural_guidance = guidance.format_for_prompt()
-            logger.debug(
-                f"Using author structural guidance: {structural_guidance[:100]}..."
-            )
-
-        # Get grafting guidance if available
-        grafting_guidance = None
-        if self.structural_grafter:
-            grafting_guidance = self.structural_grafter.get_grafting_guidance(paragraph)
-            if grafting_guidance:
-                logger.debug(
-                    f"Using grafting skeleton: {grafting_guidance.skeleton.format_for_prompt()}"
-                )
-
-        # Build persona-injected prompt if enabled
-        # CRITICAL: Prompt format must match training format exactly
-        # The instruction and the input stay separate so the generator can lay
-        # them out like the training rows (one user turn, joined by a newline).
+        # The persona instruction carries only what the training rows had, so
+        # the RAG rhythm hints and grafting skeletons are for the legacy prompt.
         instruction = None
+        structural_guidance = None
         if self.config.use_persona and PERSONA_AVAILABLE:
             instruction = build_persona_instruction(
                 content=content_for_generation,
-                structural_guidance=structural_guidance,
-                grafting_guidance=grafting_guidance,
                 target_words=target_words,  # Pass word count to match training format
                 adapter_path=self.adapter_path,
             )
-            structural_guidance = None  # Already included in the instruction
             logger.debug(f"Using persona prompt (target={target_words} words)")
+        elif self.structural_rag:
+            # Structural guidance from the AUTHOR'S CORPUS (not source text)
+            structural_guidance = self.structural_rag.get_guidance(paragraph).format_for_prompt()
+            logger.debug(f"Using author structural guidance: {structural_guidance[:100]}...")
 
         output = self.generator.generate(
             content=content_for_generation,

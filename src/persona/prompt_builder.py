@@ -29,15 +29,11 @@ CONFIGURATION:
 import random
 import re
 from pathlib import Path
-from typing import Any, Optional, Dict, TYPE_CHECKING
+from typing import Any, Optional, Dict
 from functools import lru_cache
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-if TYPE_CHECKING:
-    from ..rag.structural_grafter import GraftingGuidance
-
 
 # =============================================================================
 # Persona File Loading
@@ -230,8 +226,6 @@ def _detect_content_type(content: str) -> bool:
 
 def build_persona_instruction(
     content: str,
-    structural_guidance: Optional[str] = None,
-    grafting_guidance: Optional['GraftingGuidance'] = None,
     target_words: Optional[int] = None,
     deterministic_constraints: bool = False,
     adapter_path: Optional[str] = None,
@@ -244,6 +238,11 @@ def build_persona_instruction(
 
     ``content`` is only used to pick a narrative or conceptual frame. Training
     classifies the neutral input too, so the frame matches.
+
+    Nothing else goes in. Training rows never had RAG rhythm hints, and their
+    "Follow this structure" skeletons described the target itself (half the
+    rows have none), so a skeleton of some other paragraph is out of
+    distribution.
     """
     is_narrative = _detect_content_type(content)
 
@@ -255,16 +254,6 @@ def build_persona_instruction(
 
     # Training format: "Write approximately N words." on its own line, nothing else
     parts = [persona_frame, "", f"Write approximately {target_words} words."]
-
-    # Skeleton structure (matches training's 50% skeleton)
-    if grafting_guidance and hasattr(grafting_guidance, 'skeleton') and grafting_guidance.skeleton:
-        parts.append("")
-        parts.append(f"Follow this structure: {grafting_guidance.skeleton.format_for_prompt()}")
-
-    # Structural RAG guidance (rhythm patterns from corpus)
-    if structural_guidance:
-        parts.append("")
-        parts.append(structural_guidance)
 
     # Constraints (TIERED - matching training distribution)
     parts.append("")
@@ -280,8 +269,6 @@ def build_persona_instruction(
 
 def build_persona_prompt(
     content: str,
-    structural_guidance: Optional[str] = None,
-    grafting_guidance: Optional['GraftingGuidance'] = None,
     target_words: Optional[int] = None,
     deterministic_constraints: bool = False,
     adapter_path: Optional[str] = None,
@@ -292,8 +279,6 @@ def build_persona_prompt(
     {persona_frame}
 
     Write approximately {word_count} words.
-
-    Follow this structure: {skeleton}  (50% of training data)
 
     [CONSTRAINT]: Do not use: 'Moreover'...
 
@@ -306,8 +291,6 @@ def build_persona_prompt(
     """
     instruction = build_persona_instruction(
         content,
-        structural_guidance=structural_guidance,
-        grafting_guidance=grafting_guidance,
         target_words=target_words,
         deterministic_constraints=deterministic_constraints,
         adapter_path=adapter_path,
