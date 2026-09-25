@@ -18,7 +18,13 @@ from typing import Dict, Optional, List
 
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
-from .base_generator import BaseStyleGenerator, GenerationConfig, generate_style_tag
+from .base_generator import (
+    BaseStyleGenerator,
+    GenerationConfig,
+    chat_messages,
+    generate_style_tag,
+    split_legacy_prompt,
+)
 
 logger = get_logger(__name__)
 
@@ -459,6 +465,7 @@ class LoRAStyleGenerator(BaseStyleGenerator):
         structural_guidance: Optional[str] = None,
         raw_prompt: bool = False,
         temperature: Optional[float] = None,
+        instruction: Optional[str] = None,
     ) -> str:
         """Generate styled text from content description.
 
@@ -472,6 +479,8 @@ class LoRAStyleGenerator(BaseStyleGenerator):
             raw_prompt: If True, use content directly as prompt without formatting.
                        Used when content is already a fully-formed prompt (e.g., persona prompt).
             temperature: Override for sampling temperature (defaults to config).
+            instruction: Persona instruction. When given, ``content`` is only the
+                input text and the two share one user turn, as in training.
                         Lower values (0.1-0.3) for more deterministic repairs.
 
         Returns:
@@ -493,7 +502,9 @@ class LoRAStyleGenerator(BaseStyleGenerator):
         # Use 2x input to allow for style variation
         auto_max_tokens = max(100, int(input_words * 2.0 * 1.3))
 
-        if raw_prompt:
+        if instruction is not None:
+            prompt = f"{instruction}\n\n{content}\n###"
+        elif raw_prompt:
             # Use content directly as prompt (for persona-injected prompts)
             prompt = content
         else:
@@ -517,29 +528,13 @@ class LoRAStyleGenerator(BaseStyleGenerator):
 
         # Wrap prompt in chat format if tokenizer supports it
         # LLaMA-Factory trained models expect Qwen chat format
-        # Training format: instruction (persona+constraints) | input (content) | output
         if hasattr(self._tokenizer, "apply_chat_template"):
-            # Split at "###" - everything before last content block is instruction
-            # Format: {instruction}\n\n{content}\n###
-            if "###" in prompt:
-                # Find the content by looking for the last double-newline before ###
-                prompt_no_stop = prompt.rsplit("###", 1)[0].rstrip()
-                # Split instruction from content - content is after last \n\n
-                parts = prompt_no_stop.rsplit("\n\n", 1)
-                if len(parts) == 2:
-                    instruction, user_content = parts
-                else:
-                    instruction = ""
-                    user_content = parts[0]
+            # Same layout as the LlamaFactory training rows: one user turn,
+            # instruction and input joined by a newline, no system turn.
+            if instruction is not None:
+                messages = chat_messages(instruction, content)
             else:
-                # Fallback: use whole prompt as user content
-                instruction = ""
-                user_content = prompt
-
-            messages = [
-                {"role": "system", "content": instruction},
-                {"role": "user", "content": user_content},
-            ]
+                messages = chat_messages(*split_legacy_prompt(prompt))
 
             # Use a nothink template to avoid <think> tokens that Qwen 3.5
             # injects by default. The LoRA was trained with qwen3_5_nothink

@@ -35,6 +35,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -351,31 +352,73 @@ Preserve ALL factual content and the logical flow of ideas.""",
 }
 
 
+# Snowflake thresholds. The variant must keep the author's sentences and
+# wording and change only the topic words.
+SNOWFLAKE_MIN_PUNCT_SIMILARITY = 0.8
+SNOWFLAKE_MIN_SKELETON_SIMILARITY = 0.75
+SNOWFLAKE_MAX_SENTENCE_LENGTH_DRIFT = 0.25
+SNOWFLAKE_MAX_CONTENT_OVERLAP = 0.8
+
+_PUNCT_CHARS = set(',;:—–-()?!"')
+
+
+def _punctuation_signature(text: str) -> List[str]:
+    return [c for c in text if c in _PUNCT_CHARS or c == '.']
+
+
+def _function_skeleton(text: str) -> List[str]:
+    """Tokens with content words blanked out: "the _ of the _ ;"."""
+    from spacy.lang.en.stop_words import STOP_WORDS
+    tokens = re.findall(r"[\w']+|[^\w\s]", text.lower())
+    return [t if (t in STOP_WORDS or not t[0].isalnum()) else '_' for t in tokens]
+
+
+def _content_words(text: str) -> set:
+    from spacy.lang.en.stop_words import STOP_WORDS
+    return {w for w in re.findall(r"[a-z']+", text.lower()) if w not in STOP_WORDS and len(w) > 2}
+
+
+def _similarity(a: list, b: list) -> float:
+    return SequenceMatcher(None, a, b, autojunk=False).ratio()
+
+
 def validate_variation(original: str, varied: str, nlp=None) -> Tuple[bool, str]:
-    """Validate that topic variation preserved approximate structure."""
+    """Check a snowflake variant kept the original's structure and wording.
+
+    Sentence count must match, each sentence stays about as long, and the
+    punctuation and function-word skeleton match closely. The content words
+    must still differ enough to show the topic actually changed.
+    """
     orig_words = len(original.split())
     varied_words = len(varied.split())
-
-    # Allow 20% word count variance for topic changes
     if abs(orig_words - varied_words) > orig_words * 0.20:
         return False, f"Word count too different: {orig_words} vs {varied_words}"
 
     if nlp is None:
         nlp = get_nlp()
-    orig_sentences = len(split_into_sentences(original, nlp))
-    varied_sentences = len(split_into_sentences(varied, nlp))
+    orig_sents = split_into_sentences(original, nlp)
+    varied_sents = split_into_sentences(varied, nlp)
+    if len(orig_sents) != len(varied_sents):
+        return False, f"Sentence count mismatch: {len(orig_sents)} vs {len(varied_sents)}"
 
-    # Sentence count should be close
-    if abs(orig_sentences - varied_sentences) > 1:
-        return False, f"Sentence count mismatch: {orig_sentences} vs {varied_sentences}"
+    for o, v in zip(orig_sents, varied_sents):
+        o_len, v_len = len(o.split()), len(v.split())
+        if abs(o_len - v_len) > max(3, o_len * SNOWFLAKE_MAX_SENTENCE_LENGTH_DRIFT):
+            return False, f"Sentence length changed: {o_len} vs {v_len}"
 
-    # Check it's not just the original with minor changes
-    orig_words_set = set(original.lower().split())
-    varied_words_set = set(varied.lower().split())
-    overlap = len(orig_words_set & varied_words_set) / len(orig_words_set) if orig_words_set else 0
+    punct = _similarity(_punctuation_signature(original), _punctuation_signature(varied))
+    if punct < SNOWFLAKE_MIN_PUNCT_SIMILARITY:
+        return False, f"Punctuation pattern changed ({punct:.0%} similar)"
 
-    if overlap > 0.85:
-        return False, f"Too similar to original ({overlap:.0%} overlap)"
+    skeleton = _similarity(_function_skeleton(original), _function_skeleton(varied))
+    if skeleton < SNOWFLAKE_MIN_SKELETON_SIMILARITY:
+        return False, f"Sentence structure changed ({skeleton:.0%} similar)"
+
+    orig_content = _content_words(original)
+    if orig_content:
+        overlap = len(orig_content & _content_words(varied)) / len(orig_content)
+        if overlap > SNOWFLAKE_MAX_CONTENT_OVERLAP:
+            return False, f"Topic not changed ({overlap:.0%} content overlap)"
 
     return True, "OK"
 
@@ -386,42 +429,32 @@ def create_topic_variation(
     topic: str,
     max_attempts: int = 2
 ) -> Optional[str]:
-    """Create a topic variation (Snowflake) that maintains the author's style.
+    """Create a topic variation (Snowflake) that keeps the author's own wording.
 
-    The Snowflake variation teaches that sentence STRUCTURE applies to any topic.
-    By using mundane everyday topics, the model can't rely on subject matter
-    similarity - it must learn the structural patterns.
-
-    The variation should:
-    1. Be about the mundane topic (completely different subject matter)
-    2. Maintain the EXACT sentence structure and rhythm
-    3. Use the author's characteristic vocabulary patterns
+    Snowflake rows teach the model to write about subjects the corpus never
+    covers. The target is still mostly the author's text: every sentence,
+    clause, connective and non-topical word stays as written, and only the
+    words tied to the subject are swapped for ones about ``topic``. A free
+    rewrite would train the model on the LLM's imitation of the author.
     """
-    system = f"""You are a literary style transfer assistant specializing in {author}'s writing style.
+    system = f"""You are editing a passage by {author}. You change what it is about, never how it is written.
 
-Your task: Rewrite the given passage to be about a mundane everyday topic while preserving:
-- The EXACT sentence structure (same number of sentences, same clause patterns)
-- The author's characteristic rhythm and cadence
-- Similar vocabulary complexity and word choices
-- The same punctuation patterns (semicolons, dashes, parentheticals)
+Replace only the words tied to the topic (the subject nouns, the names, the examples, and the verbs and adjectives that only make sense for that subject) with words about the new topic.
 
-The goal is to prove that {author}'s STYLE can make even mundane activities sound distinctive."""
+Keep every other word exactly as written: connectives, qualifiers, evaluative words, idioms, pronouns, sentence openings and endings. Keep every sentence, in the same order, with the same clauses and the same punctuation. Do not add, merge, split or drop sentences. Do not add new ideas, jokes or flourishes."""
 
-    prompt = f"""Rewrite this passage by {author} to be about "{topic}".
+    prompt = f"""Change the topic of this passage by {author} to "{topic}".
 
 Original passage:
 {paragraph}
 
-Requirements:
-1. The new passage must be ENTIRELY about "{topic}" - a mundane everyday activity
-2. Preserve the EXACT sentence structure: {len(split_into_sentences(paragraph))} sentences, same clause patterns
-3. Use {author}'s distinctive vocabulary and phrasing style
-4. Match the word count closely (~{len(paragraph.split())} words)
-5. Keep the same punctuation patterns and rhythm
+Rules:
+1. Swap only the words tied to the topic for words about "{topic}".
+2. Keep every other word as it is, in place.
+3. Same {len(split_into_sentences(paragraph))} sentences in the same order, each about the same length, with the same punctuation.
+4. About {len(paragraph.split())} words.
 
-The result should sound unmistakably like {author} writing about {topic}.
-
-Output only the rewritten passage, nothing else."""
+Output only the edited passage, nothing else."""
 
     for attempt in range(max_attempts):
         try:
@@ -431,7 +464,6 @@ Output only the rewritten passage, nothing else."""
                 varied = re.sub(r'^```\w*\n?', '', varied)
                 varied = re.sub(r'\n?```$', '', varied)
 
-            # Validate the variation
             is_valid, reason = validate_variation(paragraph, varied)
             if is_valid:
                 return varied
@@ -441,6 +473,13 @@ Output only the rewritten passage, nothing else."""
             logger.debug(f"Variation attempt {attempt+1} failed: {e}")
 
     return None
+
+
+# A perspective variant that keeps more than this share of the original's
+# first-person-singular pronouns is treated as a copy.
+MAX_KEPT_PRONOUN_FRACTION = 0.25
+
+_FIRST_PERSON_SINGULAR = re.compile(r"\b(I|me|my|mine|myself)\b")
 
 
 def validate_perspective_variation(original: str, varied: str, nlp=None) -> Tuple[bool, str]:
@@ -460,6 +499,13 @@ def validate_perspective_variation(original: str, varied: str, nlp=None) -> Tupl
     # Sentence count should be exactly the same (perspective change doesn't add sentences)
     if orig_sentences != varied_sentences:
         return False, f"Sentence count mismatch: {orig_sentences} vs {varied_sentences}"
+
+    # A copy of the original teaches nothing and duplicates the target, so
+    # most of the first-person-singular pronouns must actually be gone.
+    before = len(_FIRST_PERSON_SINGULAR.findall(original))
+    after = len(_FIRST_PERSON_SINGULAR.findall(varied))
+    if varied.strip() == original.strip() or after > before * MAX_KEPT_PRONOUN_FRACTION:
+        return False, f"Perspective unchanged ({after}/{before} first-person pronouns kept)"
 
     return True, "OK"
 
@@ -487,6 +533,11 @@ def create_perspective_variation(
     """
     if perspective_key not in PERSPECTIVE_TRANSFORMS:
         logger.warning(f"Unknown perspective key: {perspective_key}")
+        return None
+
+    # The transforms rewrite first-person singular text. Without it there is
+    # nothing to change and the model just returns the original.
+    if not _FIRST_PERSON_SINGULAR.search(paragraph):
         return None
 
     transform = PERSPECTIVE_TRANSFORMS[perspective_key]
@@ -536,108 +587,45 @@ Output only the transformed passage, nothing else."""
     return None
 
 
-def create_heavy_perturbation(text: str, perturbation_rate: float = 0.15) -> str:
-    """Apply heavy perturbations for Robustness entries (Entry 3 of Triad).
-
-    This is stronger than the light perturbation applied to all examples.
-    Simulates NEFTune by heavily corrupting the input while keeping output clean.
-
-    Applies ~15% random changes:
-    - Synonym swap: Replace word with synonym
-    - Word drop: Remove articles and filler words
-    - Typo: Swap adjacent characters
-    - Case errors: Random case changes
-
-    Args:
-        text: Input text to perturb
-        perturbation_rate: Probability of perturbing each word (default 15%)
-
-    Returns:
-        Heavily perturbed text
-    """
-    words = text.split()
-    result = []
-    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite', 'some', 'this', 'that'}
-
-    for word in words:
-        if random.random() > perturbation_rate:
-            result.append(word)
-            continue
-
-        # Choose perturbation type
-        choice = random.random()
-
-        if choice < 0.30:
-            # Synonym swap (30% of perturbations)
-            word_lower = word.lower().rstrip('.,!?;:')
-            if word_lower in SYNONYMS:
-                synonym = random.choice(SYNONYMS[word_lower])
-                # Preserve case
-                if word[0].isupper():
-                    synonym = synonym.capitalize()
-                result.append(synonym + word[len(word_lower):])
-            else:
-                result.append(word)
-
-        elif choice < 0.50:
-            # Word drop (20% of perturbations)
-            if word.lower() in droppable:
-                pass  # Drop the word
-            else:
-                result.append(word)
-
-        elif choice < 0.75:
-            # Typo - swap two adjacent chars (25% of perturbations)
-            if len(word) > 3:
-                i = random.randint(1, len(word) - 2)
-                word = word[:i] + word[i+1] + word[i] + word[i+2:]
-            result.append(word)
-
-        elif choice < 0.90:
-            # Double letter typo (15% of perturbations)
-            if len(word) > 2:
-                i = random.randint(0, len(word) - 1)
-                word = word[:i] + word[i] + word[i:]
-            result.append(word)
-
-        else:
-            # Case error (10% of perturbations)
-            if random.random() < 0.5:
-                result.append(word.lower())
-            else:
-                result.append(word.upper() if len(word) <= 4 else word)
-
-    return ' '.join(result)
+# Items flowing through the pipeline are (text, variation_type, source_paragraphs):
+# source_paragraphs holds the indices of the corpus paragraphs the text came
+# from, so the train/val split can hold out whole paragraphs.
+Item = Tuple[str, str, Tuple[int, ...]]
 
 
-def save_intermediate(items: List[Tuple[str, str]], path: Path, stage: str = "items") -> None:
+def save_intermediate(items: List[Item], path: Path, stage: str = "items") -> None:
     """Save intermediate data to JSON file.
 
-    Items are tuples of (text, variation_type) where variation_type is:
+    variation_type is one of:
     - 'original': Original author text
-    - 'concrete': Concrete topic variation
-    - 'abstract': Abstract topic variation
-    - 'action': Action topic variation
+    - 'snowflake': Topic swap of an original
+    - 'robustness': Original, marked for heavy input perturbation
+    - 'perspective_*': Original in another grammatical person
     """
-    data = [{"text": text, "variation_type": vtype} for text, vtype in items]
+    data = [
+        {"text": text, "variation_type": vtype, "source_paragraphs": list(src)}
+        for text, vtype, src in items
+    ]
     with open(path, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     logger.info(f"Saved {len(items)} {stage} to {path}")
 
 
-def load_intermediate(path: Path, stage: str = "items") -> List[Tuple[str, str]]:
-    """Load intermediate data from JSON file."""
+def load_intermediate(path: Path, stage: str = "items") -> List[Item]:
+    """Load intermediate data from JSON file.
+
+    Files written before source ids existed load with an empty id tuple.
+    """
     with open(path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    # Handle both old format (is_varied bool) and new format (variation_type str)
     items = []
     for item in data:
         if "variation_type" in item:
-            items.append((item["text"], item["variation_type"]))
+            vtype = item["variation_type"]
         else:
             # Old format compatibility
             vtype = "varied" if item.get("is_varied", False) else "original"
-            items.append((item["text"], vtype))
+        items.append((item["text"], vtype, tuple(item.get("source_paragraphs", ()))))
     logger.info(f"Loaded {len(items)} {stage} from {path}")
     return items
 
@@ -683,7 +671,7 @@ def expand_corpus_with_variations(
     skip_variation: bool = False,
     skip_perspective: bool = False,
     snowflake_topics: Optional[List[str]] = None,
-) -> List[Tuple[str, str]]:
+) -> List[Item]:
     """Expand corpus using enhanced Triad strategy with perspective variations.
 
     For each original paragraph, creates variations:
@@ -705,7 +693,7 @@ def expand_corpus_with_variations(
         skip_perspective: If True, skip perspective variations
 
     Returns:
-        List of (text, variation_type) tuples where variation_type is:
+        List of (text, variation_type, (paragraph_index,)) tuples where variation_type is:
         - 'original': Real author text (Entry 1 - Anchor)
         - 'snowflake': Mundane topic swap (Entry 2 - Snowflake)
         - 'robustness': Same as original, marked for heavy perturbation (Entry 3)
@@ -714,7 +702,7 @@ def expand_corpus_with_variations(
         - 'perspective_impersonal': Impersonal/passive version
     """
     # Entry 1: Anchor (original author text)
-    result = [(para, "original") for para in paragraphs]
+    result = [(para, "original", (idx,)) for idx, para in enumerate(paragraphs)]
 
     if skip_variation:
         logger.info("Skipping all variations (--skip-variation flag)")
@@ -722,7 +710,7 @@ def expand_corpus_with_variations(
 
     # Entry 3: Robustness (same text, will get heavy input perturbation)
     # Add these now - they use original text but will be processed differently
-    robustness_entries = [(para, "robustness") for para in paragraphs]
+    robustness_entries = [(para, "robustness", (idx,)) for idx, para in enumerate(paragraphs)]
 
     logger.info(f"Enhanced Triad Strategy: 1 original + 1 snowflake + 1 robustness + 3 perspective per paragraph")
     logger.info(f"Creating {len(paragraphs)} snowflake (topic swap) variations...")
@@ -752,7 +740,7 @@ def expand_corpus_with_variations(
             try:
                 idx, varied = future.result()
                 if varied:
-                    result.append((varied, "snowflake"))
+                    result.append((varied, "snowflake", (idx,)))
                     snowflake_count += 1
                 else:
                     failed_count += 1
@@ -816,7 +804,7 @@ def expand_corpus_with_variations(
                 try:
                     idx, perspective_key, varied = future.result()
                     if varied:
-                        result.append((varied, f"perspective_{perspective_key}"))
+                        result.append((varied, f"perspective_{perspective_key}", (idx,)))
                         perspective_counts[perspective_key] += 1
                     else:
                         perspective_failed += 1
@@ -847,7 +835,7 @@ def expand_corpus_with_variations(
 
     # Log final breakdown
     category_counts = {}
-    for _, vtype in result:
+    for _, vtype, _ in result:
         category_counts[vtype] = category_counts.get(vtype, 0) + 1
     logger.info(f"Final breakdown: {category_counts}")
 
@@ -869,7 +857,7 @@ def expand_corpus_with_variations(
 # Key insight: Same source material → more training examples by restructuring,
 # not by adding content.
 
-def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: OverlapConfig) -> List[Tuple[str, str]]:
+def create_overlapping_chunks(paragraphs: List[Item], config: OverlapConfig) -> List[Item]:
     """Create overlapping chunks that cross paragraph boundaries.
 
     IMPORTANT: Overlapping only applies to ORIGINALS (continuous narrative).
@@ -877,21 +865,20 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
     to a DIFFERENT topic - combining them creates "Frankenstein" narratives.
 
     Args:
-        paragraphs: List of (text, variation_type) tuples
+        paragraphs: List of (text, variation_type, source_paragraphs) tuples
         config: Overlap configuration (min/max words, overlap sentences)
 
     Returns:
-        List of (chunk_text, variation_type) tuples
+        List of (chunk_text, variation_type, source_paragraphs) tuples. An
+        original chunk lists every paragraph it spans.
     """
     start_time = time.time()
     nlp = get_nlp()
 
     # Group paragraphs by variation_type
     by_type = {}
-    for text, vtype in paragraphs:
-        if vtype not in by_type:
-            by_type[vtype] = []
-        by_type[vtype].append(text)
+    for text, vtype, src in paragraphs:
+        by_type.setdefault(vtype, []).append((text, tuple(src)))
 
     logger.info(f"Processing {len(paragraphs)} paragraphs into chunks...")
     logger.info(f"Variation types: {list(by_type.keys())}")
@@ -909,14 +896,10 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
         # - 'perspective_*': Keep separate (each is same content in different POV)
         if vtype != "original":
             chunks_for_type = []
-            for para_text in texts:
-                word_count = len(para_text.split())
-                # Only include if it meets minimum size
-                if word_count >= config.min_words:
-                    chunks_for_type.append((para_text, vtype))
-                elif word_count >= config.min_words * 0.7:
-                    # Include slightly smaller ones too
-                    chunks_for_type.append((para_text, vtype))
+            for para_text, src in texts:
+                # Include slightly smaller ones too
+                if len(para_text.split()) >= config.min_words * 0.7:
+                    chunks_for_type.append((para_text, vtype, src))
 
             all_chunks.extend(chunks_for_type)
             logger.info(f"  {vtype}: {len(texts)} paragraphs -> {len(chunks_for_type)} chunks (no overlap)")
@@ -924,7 +907,7 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
 
         # For ORIGINALS: Use sliding window with overlap (continuous narrative)
         sentences = []
-        for para_idx, para_text in enumerate(texts):
+        for para_idx, (para_text, src) in enumerate(texts):
             para_sentences = split_into_sentences(para_text, nlp)
             for sent_idx, sent in enumerate(para_sentences):
                 word_count = len(sent.split())
@@ -936,6 +919,7 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
                     'para_start': is_para_start,
                     'para_end': is_para_end,
                     'para_idx': para_idx,
+                    'src': src,
                 })
 
         if not sentences:
@@ -965,10 +949,8 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
             # Only keep chunk if it meets minimum size
             if chunk_words >= config.min_words:
                 chunk_text = ' '.join(s['text'] for s in chunk_sentences)
-                chunks_for_type.append((chunk_text, vtype))
-
-                # Count paragraph transitions in this chunk (for stats)
-                transitions = sum(1 for s in chunk_sentences if s['para_start'] and chunk_sentences.index(s) > 0)
+                chunk_src = tuple(sorted({p for s in chunk_sentences for p in s['src']}))
+                chunks_for_type.append((chunk_text, vtype, chunk_src))
 
             # Move start position: advance by (sentences_used - overlap)
             # This creates the overlap where style lives
@@ -1005,7 +987,7 @@ def create_overlapping_chunks(paragraphs: List[Tuple[str, str]], config: Overlap
 #
 # 1. English → Mandarin: Grammar distance forces syntax flattening
 #    - Mandarin's Topic-Prominent structure can't support nested clauses
-#    - HSK3 vocabulary constraint strips literary words
+#    - HSK 5 vocabulary constraint strips literary words
 #    - No cognates means no fancy word preservation
 #
 # 2. Mandarin → English: Restores natural English but without style
@@ -1056,7 +1038,7 @@ def clean_neutral_text(text: str) -> str:
 def neutralize_text(styled_text: str, max_retries: int = 2, monotone: bool = True) -> Optional[str]:
     """Round-Trip Translation neutralization via Mandarin pivot.
 
-    Step 1 (Scrub): English → Mandarin (HSK3 vocabulary)
+    Step 1 (Scrub): English → Mandarin (HSK 5 vocabulary)
     Step 2 (Rinse): Mandarin → Plain English
     Step 3 (Flatten): Break into short SVO sentences (if monotone=True)
 
@@ -1143,6 +1125,10 @@ COMMON_WORDS = {
 }
 
 
+def _bleed_words(text: str) -> List[str]:
+    return re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
+
+
 def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) -> Tuple[bool, float]:
     """Check if neutral input retains too much distinctive vocabulary from styled output.
 
@@ -1157,8 +1143,9 @@ def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) ->
     Returns:
         Tuple of (is_valid, overlap_ratio)
     """
-    neutral_words = set(neutral.lower().split())
-    styled_words = set(styled.lower().split())
+    # Tokenize on letters so "cruelty," and "cruelty" count as the same word.
+    neutral_words = set(_bleed_words(neutral))
+    styled_words = set(_bleed_words(styled))
 
     # Find distinctive words in styled text (not common)
     distinctive_styled = styled_words - COMMON_WORDS
@@ -1189,15 +1176,10 @@ def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) ->
 # Uses shared classifier from src/utils/content_classifier.py to ensure
 # training and inference use identical classification logic.
 
-import sys
-from pathlib import Path
-
-# Add src to path for shared module imports
-_src_path = Path(__file__).parent.parent / "src"
-if str(_src_path) not in sys.path:
-    sys.path.insert(0, str(_src_path))
-
-from utils.content_classifier import ContentType, classify_content_type
+# Import through the src package (PROJECT_ROOT is on sys.path). Importing
+# "utils.*" as a top-level package breaks its relative imports.
+from src.utils.content_classifier import ContentType, classify_content_type
+from src.utils.perturbation import heavy_perturb_text as create_heavy_perturbation, perturb_text
 
 
 # Persona frames split by content type to avoid instruction-content mismatch
@@ -1304,22 +1286,6 @@ ROTATING_CONSTRAINTS = [
     "End on an image or action, not a summary.",
 ]
 
-# Simple synonym map for input perturbation
-SYNONYMS = {
-    "big": ["large", "huge", "great"],
-    "small": ["little", "tiny", "minor"],
-    "old": ["ancient", "aged", "elderly"],
-    "new": ["fresh", "recent", "modern"],
-    "good": ["fine", "nice", "great"],
-    "bad": ["poor", "awful", "terrible"],
-    "house": ["building", "home", "dwelling"],
-    "said": ["stated", "spoke", "remarked"],
-    "walked": ["went", "moved", "traveled"],
-    "looked": ["appeared", "seemed", "gazed"],
-    "very": ["quite", "rather", "extremely"],
-    "really": ["truly", "actually", "indeed"],
-}
-
 # Common concrete nouns to replace with placeholders in Abstract Summary
 CONCRETE_NOUNS = {
     'house', 'car', 'tree', 'door', 'window', 'table', 'chair', 'book', 'phone',
@@ -1388,10 +1354,29 @@ def extract_rhetorical_skeleton(text: str) -> str:
 # Many-to-One Input Variants
 # =============================================================================
 
-def strip_modifiers(text: str) -> str:
-    """Strip adjectives and adverbs, leaving only nouns/verbs (Information Dropout).
+# Modifiers that carry the claim itself. Dropping "never", "only" or "always"
+# flips or changes what a sentence says, so information dropout keeps them.
+MEANING_MODIFIERS = frozenset({
+    'not', "n't", 'never', 'no', 'only', 'always', 'often', 'sometimes', 'rarely',
+    'seldom', 'hardly', 'scarcely', 'barely', 'almost', 'nearly', 'even', 'also',
+    'too', 'still', 'yet', 'already', 'again', 'ever', 'once', 'just', 'merely',
+    'solely', 'mostly', 'usually', 'generally', 'entirely', 'wholly', 'partly',
+    'less', 'more', 'most', 'least', 'very', 'so', 'as', 'then', 'now', 'here',
+    'there', 'perhaps', 'probably', 'possibly', 'certainly', 'necessarily',
+    'many', 'much', 'few', 'several', 'all', 'some', 'any', 'each', 'every',
+    'other', 'same', 'such', 'own', 'first', 'last', 'next', 'false', 'true',
+    'possible', 'impossible', 'necessary', 'certain', 'uncertain',
+})
 
-    Forces the model to hallucinate stylistic details rather than copy them.
+
+def strip_modifiers(text: str) -> str:
+    """Drop decorative modifiers (Information Dropout).
+
+    Only plain attributive adjectives ("the clever student") and -ly manner
+    adverbs go. Negation, frequency, degree and quantity words, comparatives,
+    superlatives and predicate adjectives ("the problem is hard") carry the
+    claim and are kept.
+
     Uses token.text_with_ws to preserve original whitespace and contractions
     (spaCy splits "doesn't" into ["does", "n't"] — using text_with_ws keeps
     the original spacing so contractions re-join correctly).
@@ -1401,14 +1386,18 @@ def strip_modifiers(text: str) -> str:
     parts = []
 
     for token in doc:
-        # Keep nouns, verbs, and essential function words
-        if token.pos_ in ['ADJ', 'ADV']:
-            continue  # Drop modifiers
-        else:
+        lower = token.text.lower()
+        droppable = lower not in MEANING_MODIFIERS and token.dep_ != 'neg' and (
+            (token.pos_ == 'ADJ' and token.tag_ == 'JJ' and token.dep_ == 'amod')
+            or (token.pos_ == 'ADV' and token.tag_ == 'RB' and lower.endswith('ly'))
+        )
+        if not droppable:
             parts.append(token.text_with_ws)
+        elif parts and token.whitespace_ == '' :
+            # Keep the space before punctuation that followed the dropped word.
+            parts[-1] = parts[-1].rstrip()
 
     result = ''.join(parts)
-    # Clean up double spaces from dropped tokens
     result = re.sub(r'  +', ' ', result)
     return result.strip()
 
@@ -1480,6 +1469,7 @@ def get_persona_instruction(
     word_count: int,
     styled_text: str = None,
     use_skeleton: bool = True,
+    input_text: str = None,
 ) -> str:
     """Generate persona-based instruction with tiered constraints.
 
@@ -1501,15 +1491,18 @@ def get_persona_instruction(
     Args:
         author: Author name to get persona frames for
         word_count: Target word count
-        styled_text: Original styled text (for skeleton extraction and content classification)
+        styled_text: Original styled text (for skeleton extraction)
         use_skeleton: If True, 50% chance to include rhetorical skeleton
+        input_text: Neutral input the model sees (for content classification)
 
     Returns:
         Persona-based instruction string
     """
-    # Classify content type (NARRATIVE vs CONCEPTUAL)
-    if styled_text:
-        content_type = classify_content_type(styled_text)
+    # Classify content type (NARRATIVE vs CONCEPTUAL). Inference only sees the
+    # neutral input, so classify that, not the styled target.
+    classify_source = input_text or styled_text
+    if classify_source:
+        content_type = classify_content_type(classify_source)
     else:
         content_type = ContentType.NARRATIVE  # Default for missing text
 
@@ -1557,87 +1550,6 @@ def get_persona_instruction(
     return instruction
 
 
-def perturb_text(
-    text: str,
-    perturbation_rate: float = 0.08,
-    drop_adjectives: bool = False
-) -> str:
-    """Apply random perturbations to text (Poor Man's NEFTune).
-
-    Applies 5-10% random changes:
-    - Synonym swap: Replace word with synonym
-    - Word drop: Remove non-essential words (the, a, an)
-    - Typo: Swap adjacent characters
-    - Adjective drop (optional): Forces model to hallucinate stylistic details
-
-    Args:
-        text: Input text to perturb
-        perturbation_rate: Probability of perturbing each word (default 8%)
-        drop_adjectives: If True, 30% chance to strip adjectives (forces style generation)
-
-    Returns:
-        Perturbed text
-    """
-    words = text.split()
-    result = []
-    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite'}
-
-    # Common adjectives to drop (forces model to regenerate them in author's style)
-    adjectives_to_drop = {
-        'great', 'small', 'large', 'old', 'new', 'good', 'bad', 'long', 'short',
-        'high', 'low', 'young', 'little', 'big', 'dark', 'light', 'strange',
-        'ancient', 'terrible', 'horrible', 'beautiful', 'ugly', 'quiet', 'loud',
-        'soft', 'hard', 'cold', 'hot', 'warm', 'cool', 'wet', 'dry', 'empty',
-        'full', 'deep', 'shallow', 'thick', 'thin', 'wide', 'narrow', 'vast',
-        'immense', 'enormous', 'tiny', 'massive', 'peculiar', 'odd', 'weird',
-    }
-
-    # Decide if we're dropping adjectives this time (30% chance when enabled)
-    should_drop_adjs = drop_adjectives and random.random() < 0.30
-
-    for word in words:
-        word_lower = word.lower().rstrip('.,!?;:')
-
-        # Adjective dropping (Information Dropout)
-        if should_drop_adjs and word_lower in adjectives_to_drop:
-            # Drop the adjective, forcing model to hallucinate the author's preferred one
-            continue
-
-        if random.random() > perturbation_rate:
-            result.append(word)
-            continue
-
-        # Choose perturbation type
-        choice = random.random()
-
-        if choice < 0.4:
-            # Synonym swap (40% of perturbations)
-            if word_lower in SYNONYMS:
-                synonym = random.choice(SYNONYMS[word_lower])
-                # Preserve case
-                if word[0].isupper():
-                    synonym = synonym.capitalize()
-                result.append(synonym + word[len(word_lower):])
-            else:
-                result.append(word)
-
-        elif choice < 0.7:
-            # Word drop (30% of perturbations)
-            if word.lower() in droppable:
-                pass  # Drop the word
-            else:
-                result.append(word)
-
-        else:
-            # Typo - swap two adjacent chars (30% of perturbations)
-            if len(word) > 3:
-                i = random.randint(1, len(word) - 2)
-                word = word[:i] + word[i+1] + word[i] + word[i+2:]
-            result.append(word)
-
-    return ' '.join(result)
-
-
 def format_training_example(
     neutral_text: str,
     styled_text: str,
@@ -1662,6 +1574,7 @@ def format_training_example(
         author=author,
         word_count=word_count,
         styled_text=styled_text,
+        input_text=neutral_text,
     )
 
     # Apply perturbation based on variation type
@@ -1672,7 +1585,7 @@ def format_training_example(
         # These variants are already processed, just apply light perturbation
         perturbed_input = perturb_text(neutral_text, perturbation_rate=0.05)
     else:
-        perturbed_input = perturb_text(neutral_text, drop_adjectives=True)
+        perturbed_input = perturb_text(neutral_text)
 
     if output_format == "llama_factory":
         # LLaMA-Factory SFT format: {"instruction": "...", "input": "...", "output": "..."}
@@ -1693,8 +1606,34 @@ def format_training_example(
         }
 
 
+def _read_processed_indices(output_path: Path) -> set:
+    """Chunk indices already written to ``output_path``.
+
+    Exits rather than returning an empty set when the file has rows but no
+    source ids: resuming would then rewrite it from scratch and lose them.
+    """
+    processed = set()
+    rows = 0
+    with open(output_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rows += 1
+            if 'source_idx' in entry:
+                processed.add(entry['source_idx'])
+    if rows and not processed:
+        logger.error(
+            f"{output_path} has {rows} rows without source_idx, so --resume can't tell "
+            "which chunks are done. Move the file aside or run without --resume."
+        )
+        sys.exit(1)
+    return processed
+
+
 def generate_training_data(
-    chunks: List[Tuple[str, str]],
+    chunks: List[Item],
     author: str,
     output_path: Path,
     workers: int = 1,
@@ -1713,8 +1652,12 @@ def generate_training_data(
     - Structural skeletons: 50% chance to include rhetorical structure
     - Negative constraints: 30% chance to add ONE anti-AI-writing rule
 
+    Every row carries ``source_idx`` (its chunk) and ``source_paragraphs``
+    (corpus paragraphs it came from), in both formats. Resume uses the first,
+    the grouped train/val split the second.
+
     Args:
-        chunks: List of (styled_text, variation_type) tuples
+        chunks: List of (styled_text, variation_type, source_paragraphs) tuples
         author: Author name for system prompt
         output_path: Output JSONL file path
         workers: Unused (kept for API compatibility)
@@ -1728,17 +1671,9 @@ def generate_training_data(
     total = len(chunks)
     mode = "monotone" if monotone else "standard"
 
-    # Check for existing progress if resuming
     processed_indices = set()
     if resume and output_path.exists():
-        with open(output_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                try:
-                    entry = json.loads(line)
-                    if 'source_idx' in entry:
-                        processed_indices.add(entry['source_idx'])
-                except Exception:
-                    pass
+        processed_indices = _read_processed_indices(output_path)
         logger.info(f"Resuming: found {len(processed_indices)} already processed items")
 
     remaining = total - len(processed_indices)
@@ -1747,7 +1682,7 @@ def generate_training_data(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    success_count = len(processed_indices)
+    success_count = 0
     failed_count = 0
     type_counts = {}
     start_time = time.time()
@@ -1756,171 +1691,111 @@ def generate_training_data(
     neutralizer, _ = get_rtt_neutralizer()
     batch_size = getattr(neutralizer, 'batch_size', 1)
     concurrent_batches = getattr(neutralizer, 'concurrent_batches', 1)
-    use_batching = batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
+    use_batching = isinstance(batch_size, int) and batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
 
     # Super-batch = batch_size * concurrent_batches (to fully utilize parallelism)
     # e.g., batch_size=10, concurrent_batches=4 → send 40 texts at once
-    super_batch_size = batch_size * concurrent_batches
+    super_batch_size = batch_size * concurrent_batches if use_batching else 1
 
     if use_batching:
         logger.info(f"Using batched RTT with batch_size={batch_size}, concurrent={concurrent_batches}, super_batch={super_batch_size}")
     else:
         logger.info("Using sequential RTT (batch_size=1)")
 
-    # Filter out already processed chunks
-    pending_chunks = [(idx, styled_text, vtype) for idx, (styled_text, vtype) in enumerate(chunks)
-                      if idx not in processed_indices]
+    pending_chunks = [
+        (idx, styled_text, vtype, tuple(src))
+        for idx, (styled_text, vtype, src) in enumerate(chunks)
+        if idx not in processed_indices
+    ]
+
+    def write_rows(f, idx, styled_text, vtype, src, neutral) -> None:
+        nonlocal success_count, failed_count
+        neutral = clean_neutral_text(neutral)
+        word_count = len(styled_text.split())
+
+        # Many-to-One: 3 input variants per anchor (standard, info_dropout, abstract)
+        if vtype == "original":
+            variants = create_input_variants(styled_text, neutral)
+        else:
+            variants = [(neutral, vtype)]
+
+        for variant_neutral, variant_type in variants:
+            # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
+            is_valid, overlap_ratio = check_lexical_bleed(variant_neutral, styled_text)
+            if not is_valid:
+                failed_count += 1
+                logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap) for {variant_type}")
+                continue
+
+            example = format_training_example(
+                neutral_text=variant_neutral,
+                styled_text=styled_text,
+                author=author,
+                word_count=word_count,
+                variation_type=variant_type,
+                output_format=output_format,
+            )
+            example["source_idx"] = idx
+            example["source_paragraphs"] = list(src)
+            example["variation_type"] = variant_type
+            if output_format == "mlx":
+                example["many_to_one"] = len(variants) > 1
+
+            f.write(json.dumps(example, ensure_ascii=False) + '\n')
+            success_count += 1
+            type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
 
     # Append if resuming, otherwise overwrite
     file_mode = 'a' if resume and processed_indices else 'w'
     with open(output_path, file_mode, encoding='utf-8') as f:
-        if use_batching:
-            # Process in super-batches (batch_size * concurrent_batches)
-            for batch_start in range(0, len(pending_chunks), super_batch_size):
-                batch_end = min(batch_start + super_batch_size, len(pending_chunks))
-                batch = pending_chunks[batch_start:batch_end]
+        for batch_start in range(0, len(pending_chunks), super_batch_size):
+            batch = pending_chunks[batch_start:batch_start + super_batch_size]
 
-                # Extract texts for batch neutralization
-                batch_texts = [styled_text for _, styled_text, _ in batch]
-
-                # Progress update
+            if batch_start % max(super_batch_size, 10) == 0:
                 elapsed = time.time() - start_time
                 processed = len(processed_indices) + batch_start
-                if processed > 0:
-                    rate = processed / elapsed
-                    eta = (total - processed) / rate if rate > 0 else 0
-                    logger.info(
-                        f"[{processed}/{total}] ({processed*100//total}%) | "
-                        f"✓{success_count} ✗{failed_count} | "
-                        f"{rate:.2f}/s | ETA: {eta/60:.1f}m | super_batch {batch_start//super_batch_size + 1}"
-                    )
+                rate = batch_start / elapsed if elapsed > 0 and batch_start else 0
+                eta = (total - processed) / rate if rate > 0 else 0
+                logger.info(
+                    f"[{processed}/{total}] ({processed*100//max(total, 1)}%) | "
+                    f"✓{success_count} ✗{failed_count} | "
+                    f"{rate:.2f}/s | ETA: {eta/60:.1f}m"
+                )
 
-                # Batch neutralization (retries handled internally by queue-based pipeline)
+            if use_batching:
+                # Retries are handled inside the queue-based pipeline
                 try:
-                    neutrals = neutralize_batch(batch_texts, monotone=monotone)
+                    neutrals = neutralize_batch([styled for _, styled, _, _ in batch], monotone=monotone)
                 except Exception as e:
                     logger.warning(f"Batch RTT error: {e}")
                     neutrals = [None] * len(batch)
-
-                # Process results
-                for (idx, styled_text, vtype), neutral in zip(batch, neutrals):
-                    if neutral:
-                        neutral = clean_neutral_text(neutral)
-                        word_count = len(styled_text.split())
-
-                        # Many-to-One: Create 3 input variants per anchor
-                        # (standard, info_dropout, abstract)
-                        if vtype == "original":
-                            variants = create_input_variants(styled_text, neutral)
-                        else:
-                            # For non-original types, just use standard neutral
-                            variants = [(neutral, vtype)]
-
-                        for variant_neutral, variant_type in variants:
-                            # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
-                            is_valid, overlap_ratio = check_lexical_bleed(variant_neutral, styled_text)
-                            if not is_valid:
-                                failed_count += 1
-                                logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap) for {variant_type}")
-                                continue
-
-                            example = format_training_example(
-                                neutral_text=variant_neutral,
-                                styled_text=styled_text,
-                                author=author,
-                                word_count=word_count,
-                                variation_type=variant_type,
-                                output_format=output_format,
-                            )
-                            if output_format == "mlx":
-                                example["source_idx"] = idx
-                                example["many_to_one"] = len(variants) > 1
-
-                            f.write(json.dumps(example) + '\n')
-                            success_count += 1
-                            type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
-                    else:
-                        failed_count += 1
-
-                f.flush()  # Flush after each batch
-        else:
-            # Sequential processing (original behavior)
-            for batch_idx, (idx, styled_text, vtype) in enumerate(pending_chunks):
-                # Progress header every 10 items
-                if batch_idx % 10 == 0:
-                    elapsed = time.time() - start_time
-                    processed = len(processed_indices) + batch_idx
-                    if processed > 0:
-                        rate = processed / elapsed
-                        eta = (total - processed) / rate if rate > 0 else 0
-                        logger.info(
-                            f"[{processed}/{total}] ({processed*100//total}%) | "
-                            f"✓{success_count} ✗{failed_count} | "
-                            f"{rate:.2f}/s | ETA: {eta/60:.1f}m"
-                        )
-                    else:
-                        logger.info(f"[{processed}/{total}] Starting...")
-
-                # RTT neutralization with retries
-                neutral = None
-                max_individual_retries = 3
-                for retry in range(max_individual_retries):
-                    try:
-                        neutral = neutralize_text(styled_text, monotone=monotone)
+            else:
+                neutrals = []
+                for idx, styled_text, _, _ in batch:
+                    neutral = None
+                    for retry in range(3):
+                        try:
+                            neutral = neutralize_text(styled_text, monotone=monotone)
+                        except Exception as e:
+                            logger.debug(f"  [{idx}] RTT attempt {retry + 1} error: {e}")
                         if neutral:
                             break
-                    except Exception as e:
-                        logger.debug(f"  [{idx}] RTT attempt {retry + 1} error: {e}")
-                    if retry < max_individual_retries - 1:
-                        logger.debug(f"  [{idx}] Retrying... ({retry + 2}/{max_individual_retries})")
+                    if not neutral:
+                        logger.warning(f"  [{idx}] ✗ All retries exhausted ({len(styled_text.split())}w)")
+                    neutrals.append(neutral)
 
-                if not neutral:
-                    logger.warning(f"  [{idx}] ✗ All {max_individual_retries} retries exhausted ({len(styled_text.split())}w)")
-
+            for (idx, styled_text, vtype, src), neutral in zip(batch, neutrals):
                 if neutral:
-                    neutral = clean_neutral_text(neutral)
-                    word_count = len(styled_text.split())
-
-                    # Many-to-One: Create 3 input variants per anchor
-                    # (standard, info_dropout, abstract)
-                    if vtype == "original":
-                        variants = create_input_variants(styled_text, neutral)
-                    else:
-                        # For non-original types, just use standard neutral
-                        variants = [(neutral, vtype)]
-
-                    for variant_neutral, variant_type in variants:
-                        # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
-                        is_valid, overlap_ratio = check_lexical_bleed(variant_neutral, styled_text)
-                        if not is_valid:
-                            failed_count += 1
-                            logger.debug(f"  [{idx}] ✗ Lexical bleed ({overlap_ratio:.0%} overlap) for {variant_type}")
-                            continue
-
-                        example = format_training_example(
-                            neutral_text=variant_neutral,
-                            styled_text=styled_text,
-                            author=author,
-                            word_count=word_count,
-                            variation_type=variant_type,
-                            output_format=output_format,
-                        )
-                        if output_format == "mlx":
-                            example["source_idx"] = idx
-                            example["many_to_one"] = len(variants) > 1
-
-                        f.write(json.dumps(example) + '\n')
-                        f.flush()
-                        success_count += 1
-                        type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
+                    write_rows(f, idx, styled_text, vtype, src, neutral)
                 else:
                     failed_count += 1
 
+            f.flush()
+
     elapsed = time.time() - start_time
-    pct = f"{success_count/total*100:.1f}%" if total > 0 else "N/A"
     logger.info(
-        f"Complete: {success_count}/{total} examples written "
-        f"({pct}) in {elapsed:.1f}s"
+        f"Complete: {success_count} examples written from {remaining} chunks "
+        f"({failed_count} rejected or failed) in {elapsed:.1f}s"
     )
     logger.info(f"By variation type: {type_counts}")
     return success_count
@@ -1963,6 +1838,10 @@ def main():
                         help="Output format: llama_factory (default) or mlx")
     parser.add_argument("--skip-curation", action="store_true",
                         help="Skip curation step (corpus is already curated, one paragraph per double-newline)")
+    parser.add_argument("--val-fraction", type=float, default=0.05,
+                        help="Share of source paragraphs held out for validation (default: 0.05)")
+    parser.add_argument("--no-nli", action="store_true",
+                        help="Skip the two-way entailment filter when writing LlamaFactory splits")
     parser.add_argument("--snowflake-topics", type=str, default=None,
                         help="Path to Python file with custom snowflake topics list "
                              "(e.g., data/training/russell/snowflake_topics.py). "
@@ -1989,7 +1868,7 @@ def main():
         logger.info("=" * 60)
 
         chunks = load_intermediate(Path(args.resume_from_chunks), stage="chunks")
-        for _, vtype in chunks:
+        for _, vtype, _ in chunks:
             variation_counts[vtype] = variation_counts.get(vtype, 0) + 1
         logger.info(f"Chunks: {len(chunks)} total | Breakdown: {variation_counts}")
 
@@ -2000,7 +1879,7 @@ def main():
         logger.info("=" * 60)
 
         expanded = load_intermediate(Path(args.resume_from), stage="paragraphs")
-        for _, vtype in expanded:
+        for _, vtype, _ in expanded:
             variation_counts[vtype] = variation_counts.get(vtype, 0) + 1
         logger.info(f"Corpus: {len(expanded)} total | Breakdown: {variation_counts}")
 
@@ -2055,7 +1934,7 @@ def main():
             snowflake_topics=snowflake_topics,
         )
 
-        for _, vtype in expanded:
+        for _, vtype, _ in expanded:
             variation_counts[vtype] = variation_counts.get(vtype, 0) + 1
         logger.info(f"Corpus: {len(expanded)} total | Breakdown: {variation_counts}")
 
@@ -2124,7 +2003,7 @@ def main():
             snowflake_topics=snowflake_topics,
         )
 
-        for _, vtype in expanded:
+        for _, vtype, _ in expanded:
             variation_counts[vtype] = variation_counts.get(vtype, 0) + 1
         logger.info(f"Corpus: {len(expanded)} total | Breakdown: {variation_counts}")
 
@@ -2164,6 +2043,21 @@ def main():
         workers=args.workers, monotone=not args.no_monotone,
         resume=args.resume, output_format=args.format
     )
+
+    # Step 5: filter and split by source paragraph for LlamaFactory
+    if args.format == "llama_factory":
+        logger.info("=" * 60)
+        logger.info("STEP 5: Filtering rows and writing train/val splits")
+        logger.info("=" * 60)
+        from filter_training_data import finalize
+        finalize(
+            train_output_path,
+            output_dir / "LlamaFactory",
+            dataset_name=output_dir.name,
+            val_fraction=args.val_fraction,
+            nli=not args.no_nli,
+            log=logger.info,
+        )
 
     # Summary
     total_time = time.time() - overall_start

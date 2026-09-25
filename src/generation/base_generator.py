@@ -7,7 +7,7 @@ shared between MLX and PyTorch backends.
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Optional, List
+from typing import Dict, List, Optional, Tuple
 
 from ..utils.logging import get_logger
 
@@ -158,6 +158,7 @@ class BaseStyleGenerator(ABC):
         structural_guidance: Optional[str] = None,
         raw_prompt: bool = False,
         temperature: Optional[float] = None,
+        instruction: Optional[str] = None,
     ) -> str:
         """Generate styled text from content.
 
@@ -169,6 +170,8 @@ class BaseStyleGenerator(ABC):
             structural_guidance: Formatted structural guidance (rhythm, punctuation hints).
             raw_prompt: If True, use content directly as prompt without formatting.
             temperature: Override for sampling temperature (defaults to config).
+            instruction: Persona instruction. When given, ``content`` is only
+                the input text, and the two are laid out like the training rows.
 
         Returns:
             Generated text in the author's style.
@@ -395,3 +398,30 @@ class BaseStyleGenerator(ABC):
                 return fixed_text
 
         return text
+
+
+def chat_messages(instruction: str, content: str) -> List[dict]:
+    """Chat messages laid out the way LlamaFactory built training rows.
+
+    LlamaFactory's alpaca converter puts instruction and input in one user
+    turn joined by a newline, and the qwen3_5_nothink template adds no
+    system prompt.
+    """
+    user = f"{instruction}\n{content}" if instruction else content
+    return [{"role": "user", "content": user}]
+
+
+def split_legacy_prompt(prompt: str, content: Optional[str] = None) -> Tuple[str, str]:
+    """Split a flat "{instruction}\\n\\n{content}\\n###" prompt.
+
+    When the content is known the split is exact; otherwise fall back to the
+    last blank line, which is wrong for multi-paragraph content.
+    """
+    body = prompt.rsplit("###", 1)[0].rstrip() if "###" in prompt else prompt
+    if content and content in body:
+        instruction = body[:body.rindex(content)].rstrip()
+        return instruction, content
+    if "###" not in prompt:
+        return "", prompt
+    parts = body.rsplit("\n\n", 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])

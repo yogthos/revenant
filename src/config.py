@@ -121,7 +121,7 @@ class GenerationConfig:
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = (
-        1.5  # Target for LoRA generation (1.5 = 50% expansion for flourish)
+        1.25  # Median output/input word ratio in the training rows
     )
     expand_for_texture: bool = (
         False  # Add stronger expansion prompt to encourage elaboration/flourishes
@@ -399,7 +399,7 @@ def load_config(config_path: str = "config.json") -> Config:
         gen = data["generation"]
         config.generation = GenerationConfig(
             max_expansion_ratio=gen.get("max_expansion_ratio", 2.5),
-            target_expansion_ratio=gen.get("target_expansion_ratio", 1.5),
+            target_expansion_ratio=gen.get("target_expansion_ratio", 1.25),
             expand_for_texture=gen.get("expand_for_texture", False),
             use_adapter=gen.get("use_adapter", True),
             models=_parse_fused_models(gen.get("models", {})),

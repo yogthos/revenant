@@ -228,3 +228,196 @@ class TestDeadActiveWorkersRemoved:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# =============================================================================
+# Training-data fidelity fixes
+# =============================================================================
+
+@pytest.fixture
+def base_neutralizer():
+    from src.llm.mlx_provider import DeepSeekRTTNeutralizer
+    return DeepSeekRTTNeutralizer.__new__(DeepSeekRTTNeutralizer)
+
+
+class TestMonotoneFlattenKeepsContent:
+    """Flattening must never delete words from the text."""
+
+    @staticmethod
+    def _words(text):
+        import re
+        return sorted(re.findall(r"[a-z0-9']+", text.lower()))
+
+    def test_keeps_text_between_dashes(self, base_neutralizer):
+        text = "Men fear thought — more than ruin — and they fear it more than death."
+        out = base_neutralizer._monotone_flatten(text)
+        assert "more than ruin" in out
+        assert self._words(out) == self._words(text)
+
+    def test_dashes_across_sentences_keep_both_sentences(self, base_neutralizer):
+        text = "The war began — slowly. Then the peace came — and nobody noticed."
+        out = base_neutralizer._monotone_flatten(text)
+        assert "slowly" in out and "Then the peace came" in out
+        assert self._words(out) == self._words(text)
+
+    def test_keeps_parentheticals(self, base_neutralizer):
+        text = "The book (published in 1918) was banned in several countries."
+        out = base_neutralizer._monotone_flatten(text)
+        assert "published in 1918" in out
+        assert self._words(out) == self._words(text)
+
+    def test_keeps_short_clause_fragments(self, base_neutralizer):
+        text = ("He studied logic and mathematics for many years at Cambridge, but failed, "
+                "and he then turned his attention toward politics and the war.")
+        out = base_neutralizer._monotone_flatten(text)
+        assert "failed" in out
+        conjunctions = {"and", "but", "or", "yet", "so", "however", "although", "while", "whereas"}
+        assert [w for w in self._words(out) if w not in conjunctions] == \
+            [w for w in self._words(text) if w not in conjunctions]
+
+
+class TestEntityMaskingSentenceStart:
+    def test_sentence_initial_word_not_masked(self, base_neutralizer):
+        masked, entity_map = base_neutralizer._extract_entities(
+            "Religion is fear. Nothing else explains its hold on the mind."
+        )
+        assert "Nothing" not in entity_map.values()
+        assert "Religion" not in entity_map.values()
+        assert "__ENT" not in masked
+
+    def test_sentence_initial_after_quote_or_newline_not_masked(self, base_neutralizer):
+        masked, entity_map = base_neutralizer._extract_entities(
+            'He said "Nothing matters." Philosophers\ndisagree.\nCertainly not.'
+        )
+        assert "Nothing" not in entity_map.values()
+        assert "Certainly" not in entity_map.values()
+
+    def test_mid_sentence_name_still_masked(self, base_neutralizer):
+        masked, entity_map = base_neutralizer._extract_entities(
+            "The argument that Wittgenstein made was obscure."
+        )
+        assert "Wittgenstein" in entity_map.values()
+
+    def test_sentence_initial_multiword_name_still_masked(self, base_neutralizer):
+        masked, entity_map = base_neutralizer._extract_entities(
+            "It rained. Alfred Whitehead arrived late."
+        )
+        assert "Alfred Whitehead" in entity_map.values()
+
+
+class TestPlaceholderRecovery:
+    def test_restores_mangled_placeholders(self, base_neutralizer):
+        entity_map = {"__ENT0__": "Wittgenstein", "__ENT1__": "Cambridge"}
+        text = "__ENT0_ went to ENT1 and later __ent0__ left."
+        out = base_neutralizer._restore_entities(text, entity_map)
+        assert out == "Wittgenstein went to Cambridge and later Wittgenstein left."
+
+    def test_has_placeholder_residue(self, base_neutralizer):
+        from src.llm.mlx_provider import has_placeholder_residue
+        assert has_placeholder_residue("He met __ENT3__ there.")
+        assert has_placeholder_residue("He met ENT3 there.")
+        assert not has_placeholder_residue("He met Kant there.")
+
+
+class TestBatchResponseParser:
+    def test_line_starting_with_year_is_not_an_item_marker(self):
+        from src.llm.mlx_provider import parse_numbered_response
+        response = "[1] The war ended.\n1918 was a hard year for everyone.\n[2] Peace came slowly."
+        items = parse_numbered_response(response, expected=2)
+        assert items[1] == "The war ended. 1918 was a hard year for everyone."
+        assert items[2] == "Peace came slowly."
+
+    def test_no_dot_prefix_on_numbered_items(self):
+        from src.llm.mlx_provider import parse_numbered_response
+        items = parse_numbered_response("1. First text here.\n2. Second text here.", expected=2)
+        assert items == {1: "First text here.", 2: "Second text here."}
+
+    def test_out_of_range_numbers_are_text(self):
+        from src.llm.mlx_provider import parse_numbered_response
+        items = parse_numbered_response("[1] Alpha.\n3. Beta continues.", expected=2)
+        assert items == {1: "Alpha. 3. Beta continues."}
+
+    def test_bracketed_markers_preferred_when_present(self):
+        from src.llm.mlx_provider import parse_numbered_response
+        response = "[1] Points:\n2. not a marker\n[2] Second."
+        items = parse_numbered_response(response, expected=2)
+        assert items == {1: "Points: 2. not a marker", 2: "Second."}
+
+
+class TestBatchTruncationAndLength:
+    def _neutralizer(self, response, finish_reason="stop"):
+        from src.llm.mlx_provider import DeepSeekRTTNeutralizer
+        obj = DeepSeekRTTNeutralizer.__new__(DeepSeekRTTNeutralizer)
+        obj.temperature = 0.1
+        obj.max_tokens = 4000
+        obj._call_api_full = MagicMock(return_value=(response, finish_reason))
+        return obj
+
+    TEXTS = [
+        "Alpha beta gamma delta epsilon zeta eta theta iota kappa.",
+        "One two three four five six seven eight nine ten eleven twelve.",
+    ]
+
+    def test_truncated_response_drops_last_item(self):
+        response = ("[1] Alpha beta gamma delta epsilon zeta eta theta iota kappa.\n"
+                    "[2] One two three four")
+        obj = self._neutralizer(response, finish_reason="length")
+        results = dict(obj._process_single_batch((0, self.TEXTS)))
+        assert 0 in results
+        assert 1 not in results
+
+    def test_too_short_item_rejected(self):
+        response = ("[1] Alpha beta gamma delta epsilon zeta eta theta iota kappa.\n"
+                    "[2] One two.")
+        obj = self._neutralizer(response)
+        results = dict(obj._process_single_batch((0, self.TEXTS)))
+        assert 0 in results
+        assert 1 not in results
+
+    def test_unrestorable_placeholder_rejected(self):
+        texts = ["The idea that Wittgenstein held was that language pictures the world as facts."]
+        response = "[1] The idea __ENT9__ held was that language pictures the world as facts."
+        obj = self._neutralizer(response)
+        results = dict(obj._process_single_batch((0, texts)))
+        assert results == {}
+
+    def test_api_error_does_not_recurse(self):
+        from src.llm.mlx_provider import DeepSeekRTTNeutralizer
+        obj = DeepSeekRTTNeutralizer.__new__(DeepSeekRTTNeutralizer)
+        obj._call_api_full = MagicMock(side_effect=RuntimeError("boom"))
+        assert obj._process_single_batch((0, self.TEXTS)) == []
+
+    def test_single_neutralize_uses_batch_prompt(self):
+        response = "[1] Alpha beta gamma delta epsilon zeta eta theta iota kappa."
+        obj = self._neutralizer(response)
+        out = obj.neutralize(self.TEXTS[0], monotone=False)
+        assert out == "Alpha beta gamma delta epsilon zeta eta theta iota kappa."
+        system = obj._call_api_full.call_args.kwargs["system"]
+        from src.utils.prompts import load_prompt
+        assert system == load_prompt("rtt_deepseek_batch")
+
+
+class TestNeutralizerPromptsDontAddStyle:
+    @pytest.mark.parametrize("name", ["rtt_deepseek_batch"])
+    def test_no_style_instructions(self, name):
+        from src.utils.prompts import load_prompt
+        text = load_prompt(name).lower()
+        assert "vary sentence length" not in text
+        assert "use contractions" not in text
+        assert "hsk 5" in text or "hsk5" in text  # matches the documented pipeline
+
+
+class TestChunkedKeepsOuterPlaceholders:
+    def test_chunks_with_outer_placeholders_are_not_rejected(self):
+        from src.llm.mlx_provider import RTTNeutralizer
+        obj = RTTNeutralizer.__new__(RTTNeutralizer)
+        obj._model = None
+        obj._tokenizer = None
+        # Echo the chunk back: outer placeholders survive until the caller restores them.
+        obj._rtt_once = MagicMock(side_effect=lambda text, wc: text)
+        sentence = "The philosopher Wittgenstein argued at length about the limits of language and thought. "
+        text = sentence * 30  # > 300 words forces chunking
+        out = obj.neutralize(text, max_retries=1)
+        assert out is not None
+        assert "Wittgenstein" in out
+        assert "__ENT" not in out

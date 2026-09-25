@@ -51,7 +51,7 @@ except ImportError:
 
 # Persona system for subjective style transfer
 try:
-    from ..persona import build_persona_prompt
+    from ..persona import build_persona_instruction
 
     PERSONA_AVAILABLE = True
 except ImportError:
@@ -142,7 +142,7 @@ class TransferConfig:
     # Length control settings
     max_expansion_ratio: float = 2.5  # Max output/input word ratio before warning
     target_expansion_ratio: float = (
-        1.5  # Target for LoRA generation (1.5 = 50% expansion for author flourish)
+        1.25  # Median output/input word ratio in the training rows
     )
     expand_for_texture: bool = (
         False  # Add stronger expansion prompt for texture/flourishes
@@ -423,7 +423,7 @@ class StyleTransfer:
         """Round-Trip Translation neutralization via Mandarin pivot.
 
         This matches the training data generation process:
-        Step 1 (Scrub): English → Mandarin (HSK3 vocabulary)
+        Step 1 (Scrub): English → Mandarin (HSK 5 vocabulary)
         Step 2 (Rinse): Mandarin → Plain English
 
         Uses provider from config.json under llm.provider.rtt.
@@ -447,7 +447,8 @@ class StyleTransfer:
                 logger.error(f"Failed to initialize RTT neutralizer: {e}")
                 return None
 
-        return self._rtt_neutralizer.neutralize(text, max_retries=max_retries)
+        # Training neutralized with monotone flattening; match it.
+        return self._rtt_neutralizer.neutralize(text, max_retries=max_retries, monotone=True)
 
     def _expand_with_texture(self, text: str) -> str:
         """Expand text with texture using the critic model.
@@ -732,11 +733,10 @@ class StyleTransfer:
             content_for_generation = perturb_text(
                 content_for_generation,
                 perturbation_rate=0.08,
-                drop_adjectives=True,
             )
             post_perturb_words = len(content_for_generation.split())
             logger.info(
-                f"PERTURBATION: {pre_perturb_words} → {post_perturb_words} words (adjective drops + 8% noise)"
+                f"PERTURBATION: {pre_perturb_words} → {post_perturb_words} words (8% noise)"
             )
 
         # ========================================
@@ -773,30 +773,28 @@ class StyleTransfer:
 
         # Build persona-injected prompt if enabled
         # CRITICAL: Prompt format must match training format exactly
-        final_content = content_for_generation
-        use_raw_prompt = False
+        # The instruction and the input stay separate so the generator can lay
+        # them out like the training rows (one user turn, joined by a newline).
+        instruction = None
         if self.config.use_persona and PERSONA_AVAILABLE:
-            final_content = build_persona_prompt(
+            instruction = build_persona_instruction(
                 content=content_for_generation,
                 structural_guidance=structural_guidance,
                 grafting_guidance=grafting_guidance,
                 target_words=target_words,  # Pass word count to match training format
-                expand_for_texture=self.config.expand_for_texture,
                 adapter_path=self.adapter_path,
             )
-            structural_guidance = None  # Already included in persona prompt
-            use_raw_prompt = (
-                True  # Use persona prompt directly without additional formatting
-            )
+            structural_guidance = None  # Already included in the instruction
             logger.debug(f"Using persona prompt (target={target_words} words)")
 
         output = self.generator.generate(
-            content=final_content,
+            content=content_for_generation,
             author=self.author,
             max_tokens=max_tokens,
             target_words=target_words,
             structural_guidance=structural_guidance,
-            raw_prompt=use_raw_prompt,
+            raw_prompt=instruction is not None,
+            instruction=instruction,
         )
         lora_output_words = len(output.split())
         logger.info(

@@ -174,6 +174,60 @@ class MLXGenerator:
         logger.info("Model unloaded")
 
 
+# Neutral output must stay within these bounds of the source word count.
+MIN_RTT_LENGTH_RATIO = 0.6
+MAX_RTT_LENGTH_RATIO = 1.6
+
+_PLACEHOLDER_RE = re.compile(r'(?<![A-Za-z0-9])_*ENT(\d+)_*(?![A-Za-z0-9])', re.IGNORECASE)
+
+
+def has_placeholder_residue(text: str) -> bool:
+    """True if an entity placeholder (possibly mangled) survived restoration."""
+    return bool(_PLACEHOLDER_RE.search(text))
+
+
+def _is_sentence_initial(text: str, pos: int) -> bool:
+    """True if the word at ``pos`` opens a sentence, line, quote or bracket."""
+    before = text[:pos].rstrip(' \t')
+    return not before or before[-1] in '.!?\n"\'(“‘:[' 
+
+
+_BRACKET_MARKER_RE = re.compile(r'^\s*\[(\d+)\]\s*(.*)$')
+_PLAIN_MARKER_RE = re.compile(r'^\s*(\d+)[.):]\s+(.*)$')
+
+
+def parse_numbered_response(response: str, expected: int) -> dict:
+    """Parse a batched "[n] text" response into {n: text}.
+
+    Only in-range markers count. When the model used "[n]" anywhere, plain
+    "n." lines are treated as text; otherwise a plain marker must be the next
+    number in sequence. This keeps lines like "1918 was..." or "2. a list item"
+    inside the item they belong to.
+    """
+    lines = response.strip().split('\n')
+    use_brackets = any(
+        (m := _BRACKET_MARKER_RE.match(line)) and 1 <= int(m.group(1)) <= expected
+        for line in lines
+    )
+
+    items: dict = {}
+    current = None
+    for line in lines:
+        match = (_BRACKET_MARKER_RE if use_brackets else _PLAIN_MARKER_RE).match(line)
+        if match:
+            num = int(match.group(1))
+            in_range = 1 <= num <= expected and num not in items
+            if in_range and (use_brackets or num == (current or 0) + 1):
+                current = num
+                items[num] = [match.group(2)] if match.group(2) else []
+                continue
+        if current is not None and line.strip():
+            items[current].append(line.strip())
+
+    parsed = {num: ' '.join(parts).strip() for num, parts in items.items()}
+    return {num: text for num, text in parsed.items() if text}
+
+
 class BaseRTTNeutralizer:
     """Shared logic for RTT neutralizers (entity masking + monotone flattening).
 
@@ -216,15 +270,28 @@ class BaseRTTNeutralizer:
 
         def make_replacer():
             def replace_entity(match):
-                word = match.group(1).strip()
-                if not word or word in self._SKIP_WORDS:
-                    return match.group(0)
+                word = match.group(1)
                 if word.startswith('__ENT'):
                     return match.group(0)
+                # Leading function words ("Then Kant") are not part of the name;
+                # masking them would copy them verbatim into the neutral text.
+                offset = 0
+                for token in re.finditer(r'\S+', word):
+                    if token.group() not in self._SKIP_WORDS:
+                        offset = token.start()
+                        break
+                else:
+                    return match.group(0)
+                name = word[offset:]
+                name_pos = match.start(1) + offset
+                if ' ' not in name and _is_sentence_initial(match.string, name_pos):
+                    # A lone capitalized word at a sentence start is ordinary
+                    # capitalization, not a proper noun.
+                    return match.group(0)
                 placeholder = f"__ENT{counter[0]}__"
-                entity_map[placeholder] = word
+                entity_map[placeholder] = name
                 counter[0] += 1
-                prefix = match.group(0)[:-len(word)] if match.group(0).endswith(word) else ''
+                prefix = match.group(0)[:name_pos - match.start(0)]
                 return prefix + placeholder
             return replace_entity
 
@@ -237,7 +304,8 @@ class BaseRTTNeutralizer:
             masked
         )
 
-        # Single capitalized words (only mid-sentence, not sentence-initial).
+        # Single capitalized words. Sentence-initial ones are skipped in the
+        # replacer, since the lookbehind alone can't see a preceding period.
         masked = re.sub(
             r'(?<=[,;:\s"\'(])([A-Z][a-z]{2,})(?=[\s.,;:!?\'")\-]|$)',
             make_replacer(),
@@ -248,10 +316,15 @@ class BaseRTTNeutralizer:
 
     def _restore_entities(self, text: str, entity_map: dict) -> str:
         """Restore original entities from __ENT{n}__ placeholders."""
-        result = text
-        for placeholder, original in entity_map.items():
-            result = result.replace(placeholder, original)
-        return result
+        if not entity_map:
+            return text
+
+        # The translation step often mangles placeholders (__ENT0_, ENT0,
+        # __ent0__), so match loosely on the number.
+        def restore(match):
+            return entity_map.get(f"__ENT{match.group(1)}__", match.group(0))
+
+        return _PLACEHOLDER_RE.sub(restore, text)
 
     def _monotone_flatten(self, text: str) -> str:
         """Flatten text into uniform short sentences (rule-based, no LLM).
@@ -263,9 +336,22 @@ class BaseRTTNeutralizer:
         """
         import re
 
-        # Remove parentheticals
-        text = re.sub(r'\([^)]*\)', '', text)
-        text = re.sub(r'—[^—]*—', '', text)
+        # Asides become ordinary clauses. Deleting them (the old behaviour)
+        # dropped content, so the styled target said things the input lacked.
+        text = re.sub(r'\s*\(([^)]*)\)\s*', r', \1, ', text)
+        text = re.sub(r'\s*[—–]\s*', ', ', text)
+        text = re.sub(r'\s*,(\s*,)+\s*', ', ', text)
+        text = re.sub(r'\s*,\s*([.!?;:])', r'\1', text)
+        text = re.sub(r'^\s*,\s*', '', text)
+
+        conjunctions = {'and', 'but', 'or', 'yet', 'so', 'however', 'although', 'while', 'whereas'}
+        conj_pattern = r'\s*,?\s*\b(and|but|or|yet|so|however|although|while|whereas)\b\s*'
+
+        def finish(segment: str) -> str:
+            segment = segment.strip(' ,')
+            if not segment.endswith(('.', '!', '?')):
+                segment += '.'
+            return segment[0].upper() + segment[1:]
 
         sentences = re.split(r'(?<=[.!?])\s+', text)
         result = []
@@ -275,29 +361,36 @@ class BaseRTTNeutralizer:
             if not sent:
                 continue
 
-            parts = re.split(r'\s*;\s*', sent)
-
-            for part in parts:
-                part = part.strip()
+            for part in re.split(r'\s*;\s*', sent):
+                part = part.strip(' ,')
                 if not part:
                     continue
 
-                words = part.split()
-                if len(words) > 15:
-                    conj_pattern = r'\s*,?\s*\b(and|but|or|yet|so|however|although|while|whereas)\b\s*'
-                    sub_parts = re.split(conj_pattern, part, flags=re.IGNORECASE)
-                    for sub in sub_parts:
-                        sub = sub.strip(' ,')
-                        if sub and len(sub.split()) >= 3 and sub.lower() not in ['and', 'but', 'or', 'yet', 'so', 'however', 'although', 'while', 'whereas']:
-                            if not sub.endswith(('.', '!', '?')):
-                                sub += '.'
-                            sub = sub[0].upper() + sub[1:] if len(sub) > 1 else sub.upper()
-                            result.append(sub)
-                else:
-                    if not part.endswith(('.', '!', '?')):
-                        part += '.'
-                    part = part[0].upper() + part[1:] if len(part) > 1 else part.upper()
-                    result.append(part)
+                if len(part.split()) <= 15:
+                    result.append(finish(part))
+                    continue
+
+                # Split long parts at conjunctions. The conjunction stays at the
+                # head of the following clause, and clauses under 3 words are
+                # folded back into the previous one rather than thrown away.
+                segments = []
+                conj = None
+                for piece in re.split(conj_pattern, part, flags=re.IGNORECASE):
+                    piece = piece.strip(' ,')
+                    if not piece:
+                        continue
+                    if piece.lower() in conjunctions:
+                        conj = piece.lower()
+                        continue
+                    clause = f"{conj} {piece}" if conj else piece
+                    conj = None
+                    if segments and len(piece.split()) < 3:
+                        segments[-1] = f"{segments[-1].rstrip('.!?')}, {clause}"
+                    else:
+                        segments.append(clause)
+                if conj and segments:
+                    segments[-1] = f"{segments[-1]} {conj}"
+                result.extend(finish(seg) for seg in segments)
 
         return ' '.join(result) if result else text
 
@@ -444,6 +537,7 @@ class RTTNeutralizer(BaseRTTNeutralizer):
         text: str,
         max_retries: int = 2,
         monotone: bool = False,
+        _outer_masked: bool = False,
     ) -> Optional[str]:
         """Neutralize text via round-trip translation through Mandarin.
 
@@ -468,7 +562,9 @@ class RTTNeutralizer(BaseRTTNeutralizer):
         if word_count > 300:
             result = self._neutralize_chunked(masked_text, max_retries, monotone)
             if result:
-                return self._restore_entities(result, entity_map)
+                result = self._restore_entities(result, entity_map)
+                if not has_placeholder_residue(result):
+                    return result
             return None
 
         for attempt in range(max_retries):
@@ -496,6 +592,11 @@ class RTTNeutralizer(BaseRTTNeutralizer):
 
                 if entity_map:
                     english = self._restore_entities(english, entity_map)
+                # Chunks of a longer text still carry the caller's placeholders;
+                # the caller checks residue after restoring them.
+                if not _outer_masked and has_placeholder_residue(english):
+                    logger.debug(f"RTT kept an unrestorable placeholder (attempt {attempt + 1})")
+                    continue
 
                 logger.debug(f"RTT success: {word_count} → {len(english.split())} words")
                 return english
@@ -589,7 +690,7 @@ class RTTNeutralizer(BaseRTTNeutralizer):
                 result = self._do_neutralize(chunk, max_retries=max_retries, monotone=False)
             else:
                 # Short enough chunk — safe to call neutralize (won't recurse)
-                result = self.neutralize(chunk, max_retries=max_retries, monotone=False)
+                result = self.neutralize(chunk, max_retries=max_retries, monotone=False, _outer_masked=True)
             if result:
                 results.append(result)
             else:
@@ -675,14 +776,19 @@ class DeepSeekRTTNeutralizer(BaseRTTNeutralizer):
 
         logger.debug(f"DeepSeek RTT: model={self.model}, batch_size={self.batch_size}, concurrent={self.concurrent_batches}")
 
-    def _call_api(self, system: str, user: str, max_tokens: Optional[int] = None) -> str:
-        """Delegate a single chat completion to the DeepSeek provider."""
-        return self._provider.call(
-            system_prompt=system,
-            user_prompt=user,
-            temperature=self.temperature,
-            max_tokens=max_tokens or self.max_tokens,
-        ).strip()
+    def _call_api_full(self, system: str, user: str, max_tokens: Optional[int] = None) -> tuple:
+        """One chat completion via the DeepSeek provider -> (content, finish_reason)."""
+        from ..models.base import Message, MessageRole
+        response = self._provider._call_with_retry(
+            [
+                Message(role=MessageRole.SYSTEM, content=system),
+                Message(role=MessageRole.USER, content=user),
+            ],
+            self.temperature,
+            max_tokens or self.max_tokens,
+            False,
+        )
+        return response.content.strip(), response.finish_reason
 
     def neutralize(
         self,
@@ -692,60 +798,40 @@ class DeepSeekRTTNeutralizer(BaseRTTNeutralizer):
     ) -> Optional[str]:
         """Neutralize a single text via DeepSeek RTT.
 
-        Args:
-            text: Text to neutralize.
-            max_retries: Number of retry attempts.
-            monotone: If True, apply monotone flattening.
+        Goes through the same batch prompt and checks as training data
+        generation, so inference inputs look like training inputs.
 
         Returns:
             Neutralized text, or None if failed.
         """
-        import re
-
-        # Extract and mask entities
-        masked_text, entity_map = self._extract_entities(text)
-        if entity_map:
-            logger.debug(f"Masked {len(entity_map)} entities")
-
-        word_count = len(text.split())
-
         for attempt in range(max_retries):
-            try:
-                # Single RTT call - DeepSeek handles English→Mandarin→English with optimized prompts
-                rtt_deepseek_prompt = load_prompt("rtt_deepseek")
-                result = self._call_api(
-                    system=rtt_deepseek_prompt,
-                    user=f"Input ({word_count} words - output must also be ~{word_count} words):\n\n{masked_text}",
-                    max_tokens=min(int(word_count * 2) + 100, 2000),
-                )
-
-                if not result or len(result) < 10:
-                    continue
-
-                # Clean response
-                result = result.strip()
-                result = re.sub(r'^```\w*\n?', '', result)
-                result = re.sub(r'\n?```$', '', result)
-
-                # Check for Chinese characters
-                if re.search(r'[\u4e00-\u9fff]', result):
-                    logger.debug(f"RTT failed: contains Chinese (attempt {attempt + 1})")
-                    continue
-
-                # Apply monotone flattening if requested
-                if monotone:
-                    result = self._monotone_flatten(result)
-
-                # Restore entities
-                if entity_map:
-                    result = self._restore_entities(result, entity_map)
-
-                return result
-
-            except Exception as e:
-                logger.warning(f"DeepSeek RTT attempt {attempt + 1} failed: {e}")
-
+            results = self._process_single_batch((0, [text]), monotone=monotone)
+            if results:
+                return results[0][1]
+            logger.debug(f"DeepSeek RTT attempt {attempt + 1} failed")
         return None
+
+    def _accept_item(self, source: str, text: str, entity_map: dict, monotone: bool) -> Optional[str]:
+        """Clean one parsed item, or return None if it can't be trusted."""
+        text = re.sub(r'^```\w*\n?', '', text)
+        text = re.sub(r'\n?```$', '', text).strip()
+        if not text or re.search(r'[\u4e00-\u9fff]', text):
+            return None
+
+        # The prompt asks for similar length. Much shorter means content was
+        # dropped; much longer means content was added.
+        ratio = len(text.split()) / max(len(source.split()), 1)
+        if ratio < MIN_RTT_LENGTH_RATIO or ratio > MAX_RTT_LENGTH_RATIO:
+            logger.debug(f"RTT length ratio {ratio:.2f} out of range")
+            return None
+
+        if monotone:
+            text = self._monotone_flatten(text)
+        text = self._restore_entities(text, entity_map)
+        if has_placeholder_residue(text):
+            logger.debug("RTT output kept an unrestorable entity placeholder")
+            return None
+        return text
 
     def _process_single_batch(
         self,
@@ -759,14 +845,11 @@ class DeepSeekRTTNeutralizer(BaseRTTNeutralizer):
             monotone: If True, apply monotone flattening.
 
         Returns:
-            List of (global_index, result) tuples.
+            List of (global_index, result) tuples. Items that failed a check
+            are left out; the caller retries them.
         """
-        import re
-
         batch_start, batch = batch_info
-        results = []
 
-        # Extract entities for each text in batch
         masked_batch = []
         entity_maps = []
         for text in batch:
@@ -774,71 +857,39 @@ class DeepSeekRTTNeutralizer(BaseRTTNeutralizer):
             masked_batch.append(masked)
             entity_maps.append(entity_map)
 
-        # Build batched prompt
         batch_prompt = "Perform 'Chemical Dissolution' on each numbered text below.\n"
-        batch_prompt += "Output the final neutral English on a new line prefixed with the same number.\n"
+        batch_prompt += "Output each final neutral English text on a new line starting with the same [n] marker.\n"
         batch_prompt += "Keep all __ENT*__ placeholders unchanged.\n\n"
-
         for i, masked in enumerate(masked_batch):
             batch_prompt += f"[{i+1}] {masked}\n\n"
 
-        try:
-            # Estimate tokens needed
-            total_words = sum(len(t.split()) for t in batch)
-            max_tokens = min(int(total_words * 2) + 100, 4000)
+        total_words = sum(len(t.split()) for t in batch)
+        max_tokens = min(int(total_words * 2) + 100, 8000)
 
-            rtt_batch_prompt = load_prompt("rtt_deepseek_batch")
-            response = self._call_api(
-                system=rtt_batch_prompt,
+        try:
+            response, finish_reason = self._call_api_full(
+                system=load_prompt("rtt_deepseek_batch"),
                 user=batch_prompt,
                 max_tokens=max_tokens,
             )
-
-            # Parse numbered responses
-            lines = response.strip().split('\n')
-            current_num = None
-            current_text = []
-
-            for line in lines:
-                # Check if line starts with a number
-                match = re.match(r'^\[?(\d+)\]?\s*(.*)$', line.strip())
-                if match:
-                    # Save previous if exists
-                    if current_num is not None and current_text:
-                        idx = current_num - 1
-                        if 0 <= idx < len(batch):
-                            text = ' '.join(current_text).strip()
-                            if not re.search(r'[\u4e00-\u9fff]', text):
-                                if monotone:
-                                    text = self._monotone_flatten(text)
-                                text = self._restore_entities(text, entity_maps[idx])
-                                results.append((batch_start + idx, text))
-
-                    current_num = int(match.group(1))
-                    current_text = [match.group(2)] if match.group(2) else []
-                elif current_num is not None:
-                    current_text.append(line)
-
-            # Don't forget last item
-            if current_num is not None and current_text:
-                idx = current_num - 1
-                if 0 <= idx < len(batch):
-                    text = ' '.join(current_text).strip()
-                    if not re.search(r'[\u4e00-\u9fff]', text):
-                        if monotone:
-                            text = self._monotone_flatten(text)
-                        text = self._restore_entities(text, entity_maps[idx])
-                        results.append((batch_start + idx, text))
-
         except Exception as e:
-            batch_end = batch_start + len(batch)
-            logger.warning(f"Batch {batch_start}-{batch_end} failed: {e}")
-            # Fall back to individual processing for this batch
-            for i, text in enumerate(batch):
-                result = self.neutralize(text, monotone=monotone)
-                if result:
-                    results.append((batch_start + i, result))
+            # No per-item fallback here: neutralize() and neutralize_batch()
+            # already retry, and falling back to neutralize() would recurse.
+            logger.warning(f"Batch {batch_start}-{batch_start + len(batch)} failed: {e}")
+            return []
 
+        items = parse_numbered_response(response, expected=len(batch))
+        if finish_reason == "length" and items:
+            # The last item was cut off mid-text.
+            logger.debug("RTT batch response truncated, dropping last item")
+            items.pop(max(items))
+
+        results = []
+        for num, text in items.items():
+            idx = num - 1
+            accepted = self._accept_item(batch[idx], text, entity_maps[idx], monotone)
+            if accepted:
+                results.append((batch_start + idx, accepted))
         return results
 
     def neutralize_batch(

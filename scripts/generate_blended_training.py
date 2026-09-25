@@ -55,6 +55,8 @@ from scripts.generate_flat_training import (
     create_overlapping_chunks,
     create_topic_variation,
     generate_training_data,
+    load_intermediate,
+    save_intermediate,
 )
 
 
@@ -163,16 +165,17 @@ def load_persona_frames(worldview_path: Path) -> dict:
 
 
 def generate_snowflakes(
-    paragraphs: List[str],
+    paragraphs: List[Tuple[str, Tuple[int, ...]]],
     author: str,
     topics: List[str],
     max_snowflakes: int = 0,
     workers: int = 4,
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str, Tuple[int, ...]]]:
     """Generate snowflake topic variations for blended paragraphs.
 
-    Uses a mix of book-specific topics and mundane topics.
-    Returns list of (varied_paragraph, "snowflake") tuples.
+    Uses a mix of book-specific topics and mundane topics. Takes
+    (text, source_paragraphs) pairs and returns
+    (varied_paragraph, "snowflake", source_paragraphs) tuples.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -197,18 +200,18 @@ def generate_snowflakes(
     topic_iter = itertools.cycle(topic_pool)
 
     tasks = []
-    for para in paragraphs:
+    for para, src in paragraphs:
         if max_snowflakes and len(tasks) >= max_snowflakes:
             break
-        tasks.append((para, next(topic_iter)))
+        tasks.append((para, src, next(topic_iter)))
 
     logger.info(f"Generating {len(tasks)} snowflake variations ({workers} workers)...")
     logger.info(f"  Topic pool: {len(topics)} book topics + {len(MUNDANE_TOPICS)} mundane topics")
     results = []
 
     def _make_variation(args):
-        para, topic = args
-        return create_topic_variation(para, author, topic)
+        para, src, topic = args
+        return create_topic_variation(para, author, topic), src
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_make_variation, t): i for i, t in enumerate(tasks)}
@@ -217,12 +220,75 @@ def generate_snowflakes(
             done += 1
             if done % 50 == 0:
                 logger.info(f"  Snowflakes: {done}/{len(tasks)} ({len(results)} ok)")
-            result = future.result()
+            result, src = future.result()
             if result:
-                results.append((result, "snowflake"))
+                results.append((result, "snowflake", src))
 
     logger.info(f"  Generated {len(results)}/{len(tasks)} snowflake variations")
     return results
+
+
+def build_chunks(args, styled_paragraphs: List[str]) -> list:
+    """Chunk, add snowflakes and robustness rows, shuffle."""
+    # =========================================================================
+    # Step 1: Word-based overlapping chunks (matches proven Lovecraft pipeline)
+    #
+    # Uses create_overlapping_chunks() from generate_flat_training.py — the SAME
+    # function that produced the working Lovecraft adapter. Key properties:
+    #   - Chunks of 150-400 words (200-530 tokens), capturing multi-sentence arcs
+    #   - 2-sentence overlap at chunk boundaries (moderate, ~1.2× exposure)
+    #   - Cross-paragraph spans: treats the corpus as a flat sentence stream
+    #
+    # Why cross-paragraph spans are OK for a blended corpus:
+    #   - Each blended paragraph is a self-contained Russell+Lovecraft unit
+    #   - Chunks spanning boundaries teach style invariance across topics
+    #     (same lesson snowflakes teach, extended to within-sequence variation)
+    #   - The Lovecraft adapter was trained this way and works in production
+    #   - The base model's attention handles topic boundaries; the LoRA only
+    #     modulates style
+    # =========================================================================
+    overlap_config = OverlapConfig(
+        min_words=args.min_chunk_words,
+        max_words=args.max_chunk_words,
+        overlap_sentences=args.overlap_sentences,
+    )
+
+    raw_entries = [(p, "original", (i,)) for i, p in enumerate(styled_paragraphs)]
+    chunks = create_overlapping_chunks(raw_entries, overlap_config)
+    logger.info(f"Chunking: {len(styled_paragraphs)} blended paragraphs → {len(chunks)} chunks "
+                f"(min {args.min_chunk_words}w, max {args.max_chunk_words}w, "
+                f"{args.overlap_sentences}-sentence overlap)")
+
+    # =========================================================================
+    # Step 2: Generate snowflake topic variations
+    # Uses book-specific topics (60%) + mundane topics (40%)
+    # =========================================================================
+    if not args.skip_snowflakes:
+        # Extract just the text from original-type chunks for snowflake generation
+        originals = [(text, src) for text, vtype, src in chunks if vtype == "original"]
+        snowflakes = generate_snowflakes(
+            originals, args.author,
+            topics=BOOK_TOPICS,
+            workers=args.snowflake_workers,
+        )
+        chunks.extend(snowflakes)
+        logger.info(f"After snowflakes: {len(chunks)} total chunks")
+    else:
+        logger.info(f"Snowflakes skipped. Total chunks: {len(chunks)}")
+
+    # =========================================================================
+    # Step 3: Add robustness entries (heavy perturbation variants)
+    # =========================================================================
+    originals = [(text, src) for text, vtype, src in chunks if vtype == "original"]
+    n_robustness = len(originals) // 3
+    robustness = [(p, "robustness", src) for p, src in random.sample(originals, n_robustness)]
+    chunks.extend(robustness)
+    logger.info(f"  + {len(robustness)} robustness entries = {len(chunks)} total")
+
+    # Shuffle
+    random.shuffle(chunks)
+
+    return chunks
 
 
 def main():
@@ -238,6 +304,8 @@ def main():
                         help="Path to worldview file with persona frames")
     parser.add_argument("--output", type=Path, required=True,
                         help="Output directory (train.jsonl written here)")
+    parser.add_argument("--no-nli", action="store_true",
+                        help="Skip the two-way entailment filter when writing LlamaFactory splits")
     parser.add_argument("--format", choices=["llama_factory", "mlx"],
                         default="llama_factory",
                         help="Output format (default: llama_factory)")
@@ -279,63 +347,15 @@ def main():
     total_words = sum(len(p.split()) for p in styled_paragraphs)
     logger.info(f"  {total_words:,} total words across {len(styled_paragraphs)} paragraphs")
 
-    # =========================================================================
-    # Step 1: Word-based overlapping chunks (matches proven Lovecraft pipeline)
-    #
-    # Uses create_overlapping_chunks() from generate_flat_training.py — the SAME
-    # function that produced the working Lovecraft adapter. Key properties:
-    #   - Chunks of 150-400 words (200-530 tokens), capturing multi-sentence arcs
-    #   - 2-sentence overlap at chunk boundaries (moderate, ~1.2× exposure)
-    #   - Cross-paragraph spans: treats the corpus as a flat sentence stream
-    #
-    # Why cross-paragraph spans are OK for a blended corpus:
-    #   - Each blended paragraph is a self-contained Russell+Lovecraft unit
-    #   - Chunks spanning boundaries teach style invariance across topics
-    #     (same lesson snowflakes teach, extended to within-sequence variation)
-    #   - The Lovecraft adapter was trained this way and works in production
-    #   - The base model's attention handles topic boundaries; the LoRA only
-    #     modulates style
-    # =========================================================================
-    overlap_config = OverlapConfig(
-        min_words=args.min_chunk_words,
-        max_words=args.max_chunk_words,
-        overlap_sentences=args.overlap_sentences,
-    )
-
-    raw_entries = [(p, "original") for p in styled_paragraphs]
-    chunks = create_overlapping_chunks(raw_entries, overlap_config)
-    logger.info(f"Chunking: {len(styled_paragraphs)} blended paragraphs → {len(chunks)} chunks "
-                f"(min {args.min_chunk_words}w, max {args.max_chunk_words}w, "
-                f"{args.overlap_sentences}-sentence overlap)")
-
-    # =========================================================================
-    # Step 2: Generate snowflake topic variations
-    # Uses book-specific topics (60%) + mundane topics (40%)
-    # =========================================================================
-    if not args.skip_snowflakes:
-        # Extract just the text from original-type chunks for snowflake generation
-        original_texts = [text for text, vtype in chunks if vtype == "original"]
-        snowflakes = generate_snowflakes(
-            original_texts, args.author,
-            topics=BOOK_TOPICS,
-            workers=args.snowflake_workers,
-        )
-        chunks.extend(snowflakes)
-        logger.info(f"After snowflakes: {len(chunks)} total chunks")
+    # --resume matches rows to chunks by index, and snowflakes and the shuffle
+    # differ every run, so resumed runs reuse the saved chunk list.
+    args.output.mkdir(parents=True, exist_ok=True)
+    chunks_path = args.output / "chunks.json"
+    if args.resume and chunks_path.exists():
+        chunks = load_intermediate(chunks_path, stage="chunks")
     else:
-        logger.info(f"Snowflakes skipped. Total chunks: {len(chunks)}")
-
-    # =========================================================================
-    # Step 3: Add robustness entries (heavy perturbation variants)
-    # =========================================================================
-    original_texts = [text for text, vtype in chunks if vtype == "original"]
-    n_robustness = min(len(original_texts) // 3, len(original_texts))
-    robustness = [(p, "robustness") for p in random.sample(original_texts, n_robustness)]
-    chunks.extend(robustness)
-    logger.info(f"  + {len(robustness)} robustness entries = {len(chunks)} total")
-
-    # Shuffle
-    random.shuffle(chunks)
+        chunks = build_chunks(args, styled_paragraphs)
+        save_intermediate(chunks, chunks_path, stage="chunks")
 
     # =========================================================================
     # Step 4: Generate training data using the real pipeline
@@ -345,7 +365,7 @@ def main():
     output_path = args.output / "train.jsonl"
     logger.info(f"\nStarting training data generation → {output_path}")
 
-    n_originals = sum(1 for _, vtype in chunks if vtype == "original")
+    n_originals = sum(1 for _, vtype, _ in chunks if vtype == "original")
     n_other = len(chunks) - n_originals
     expected = int(n_originals * 3 * 0.9 + n_other * 0.9)
     logger.info(f"Expected output: ~{expected} training examples")
@@ -360,6 +380,11 @@ def main():
     )
 
     logger.info(f"\nDone! {n_written} training examples written to {output_path}")
+
+    if args.format == "llama_factory":
+        from scripts.filter_training_data import finalize
+        finalize(output_path, args.output / "LlamaFactory", dataset_name=args.output.name,
+                 nli=not args.no_nli, log=logger.info)
 
 
 if __name__ == "__main__":

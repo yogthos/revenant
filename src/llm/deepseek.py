@@ -139,7 +139,8 @@ class DeepSeekProvider(LLMProvider):
                 content=content,
                 input_tokens=usage.get("prompt_tokens", 0),
                 output_tokens=usage.get("completion_tokens", 0),
-                model=data.get("model", self.config.model)
+                model=data.get("model", self.config.model),
+                finish_reason=data["choices"][0].get("finish_reason") or "",
             )
 
         except requests.exceptions.Timeout:

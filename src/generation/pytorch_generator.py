@@ -10,7 +10,13 @@ from typing import Optional, List
 
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
-from .base_generator import BaseStyleGenerator, GenerationConfig, generate_style_tag
+from .base_generator import (
+    BaseStyleGenerator,
+    GenerationConfig,
+    chat_messages,
+    generate_style_tag,
+    split_legacy_prompt,
+)
 
 logger = get_logger(__name__)
 
@@ -275,6 +281,7 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
         structural_guidance: Optional[str] = None,
         raw_prompt: bool = False,
         temperature: Optional[float] = None,
+        instruction: Optional[str] = None,
     ) -> str:
         """Generate styled text using PyTorch/HuggingFace.
 
@@ -286,6 +293,8 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
             structural_guidance: Formatted structural guidance (rhythm, punctuation hints).
             raw_prompt: If True, use content directly as prompt without formatting.
             temperature: Override for sampling temperature (defaults to config).
+            instruction: Persona instruction. When given, ``content`` is only the
+                input text and the two share one user turn, as in training.
 
         Returns:
             Generated text in the author's style.
@@ -303,7 +312,9 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
         # Calculate tokens based on input length (same logic as MLX version)
         auto_max_tokens = max(100, int(input_words * 2.0 * 1.3))
 
-        if raw_prompt:
+        if instruction is not None:
+            prompt = f"{instruction}\n\n{content}\n###"
+        elif raw_prompt:
             prompt = content
         else:
             # Generate style tag from input
@@ -326,22 +337,12 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
 
         # Apply chat template if tokenizer supports it
         if hasattr(self._tokenizer, 'apply_chat_template'):
-            if '###' in prompt:
-                prompt_no_stop = prompt.rsplit('###', 1)[0].rstrip()
-                parts = prompt_no_stop.rsplit('\n\n', 1)
-                if len(parts) == 2:
-                    instruction, user_content = parts
-                else:
-                    instruction = ""
-                    user_content = parts[0]
+            # Same layout as the LlamaFactory training rows: one user turn,
+            # instruction and input joined by a newline, no system turn.
+            if instruction is not None:
+                messages = chat_messages(instruction, content)
             else:
-                instruction = ""
-                user_content = prompt
-
-            messages = [
-                {'role': 'system', 'content': instruction},
-                {'role': 'user', 'content': user_content}
-            ]
+                messages = chat_messages(*split_legacy_prompt(prompt))
             prompt = self._tokenizer.apply_chat_template(
                 messages,
                 tokenize=False,
