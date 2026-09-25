@@ -160,6 +160,7 @@ class TestContentLabelFromInput:
                 styled_text="STYLED OUTPUT TEXT here.",
                 author="Bertrand Russell",
                 word_count=4,
+                output_format="mlx",
             )
         assert classify.call_args.args[0] == "NEUTRAL INPUT TEXT here."
 
@@ -336,7 +337,8 @@ class TestFinalize:
         rows = [_row((i,), idx=i) for i in range(100)]
         raw.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
         lf_dir = tmp_path / "LlamaFactory"
-        stats = finalize(raw, lf_dir, dataset_name="russell", val_fraction=0.1, nli=False, seed=3, block_size=5)
+        stats = finalize(raw, lf_dir, dataset_name="russell", val_fraction=0.1, nli=False, seed=3, block_size=5,
+                         persona=lambda row: "PERSONA")
 
         info = json.loads((lf_dir / "dataset_info.json").read_text())
         assert info["russell_sft"]["file_name"] == "train.jsonl"
@@ -345,4 +347,4 @@ class TestFinalize:
         val = [json.loads(l) for l in (lf_dir / "val.jsonl").read_text().splitlines()]
         assert len(train) == stats["train"] and len(val) == stats["val"] and val
         # LlamaFactory rows keep only the columns dataset_info maps.
-        assert set(train[0]) == {"instruction", "input", "output"}
+        assert set(train[0]) == {"system", "input", "output"}

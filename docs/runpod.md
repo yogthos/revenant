@@ -58,7 +58,8 @@ git clone <your-repo-url> revenant
 
 `train.jsonl`, `val.jsonl` and `dataset_info.json` come from
 `generate_flat_training.py --format llama_factory` (or `filter_training_data.py`).
-LlamaFactory reads `dataset_info.json` from `./data` by default.
+Rows put the persona in the `system` column and the neutral text in the user
+turn. LlamaFactory reads `dataset_info.json` from `./data` by default.
 
 ```bash
 mkdir -p /workspace/russell_training/data
@@ -68,7 +69,8 @@ cp revenant/data/training/russell/LlamaFactory/{dataset_info.json,train.jsonl,va
     /workspace/russell_training/data/
 ```
 
-The yaml trains in Hemmingway-1's non-thinking chat format (`template: qwen3_8`,
+The yaml trains in Hemmingway-1's own chat format: persona as the system
+message, text as the user message, thinking off (`template: qwen3_8`,
 `enable_thinking: false`), without packing, and keeps the checkpoint with the
 lowest validation loss (`load_best_model_at_end`). The model is CC BY-NC 4.0.
 

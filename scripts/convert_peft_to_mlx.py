@@ -119,12 +119,28 @@ def _detect_model_prefix_from_model(model_path: Path, peft_weights: dict) -> str
 
 
 def read_train_config(path) -> dict:
-    """Template settings from a LlamaFactory training yaml."""
+    """Prompt layout settings from a LlamaFactory training yaml.
+
+    persona_turn comes from the dataset_info.json next to the yaml: rows with
+    a system column put the persona in the system turn, alpaca rows without
+    one put it in the user turn with the input.
+    """
     import yaml
+    path = Path(path)
     with open(path) as f:
         cfg = yaml.safe_load(f)
+    persona_turn = "user"
+    info_path = path.parent / "dataset_info.json"
+    if info_path.exists():
+        info = json.loads(info_path.read_text())
+        dataset = str(cfg["dataset"]).split(",")[0].strip()
+        if "system" in info.get(dataset, {}).get("columns", {}):
+            persona_turn = "system"
+    else:
+        print(f"  No {info_path}; assuming the persona was in the user turn")
     # LlamaFactory's enable_thinking defaults to true.
-    return {"template": cfg["template"], "enable_thinking": cfg.get("enable_thinking", True)}
+    return {"template": cfg["template"], "enable_thinking": cfg.get("enable_thinking", True),
+            "persona_turn": persona_turn}
 
 
 def _model_weight_names(model_path: Path) -> set:

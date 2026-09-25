@@ -91,6 +91,7 @@ Most generation-wide settings can be overridden per-adapter. Omit the field to i
 | `use_structural_rag` | bool | Pull rhythm patterns from corpus (non-persona prompt only) |
 | `chat_template` | string | LlamaFactory template the adapter was trained with (`qwen`, `qwen3_5_nothink`, `qwen3_5`, `qwen3_8`). Overrides `metadata.json`. |
 | `enable_thinking` | bool | LlamaFactory `enable_thinking` used in training (default true) |
+| `persona_turn` | string | `system` if training rows had a system column (persona as system message), `user` for alpaca instruction+input rows. Overrides `metadata.json`. |
 | `logit_bias` | object | Additive bias per character/string (see below) |
 
 ### `logit_bias` — per-character logit bias
@@ -162,7 +163,9 @@ system prompt). `render_chat_prompt` in `base_generator.py` rebuilds the exact
 text LlamaFactory trained on for the adapter's template: `metadata.json`
 (written by `convert_peft_to_mlx.py --train-config`) or `chat_template` in
 config.json. For `qwen3_8`/`qwen3_5` with `enable_thinking: false` the prompt
-ends in an empty `<think>\n\n</think>\n\n` block.
+ends in an empty `<think>\n\n</think>\n\n` block. `persona_turn` (also recorded
+by the converter, from the dataset_info.json next to the yaml) says whether the
+persona instruction goes in the system turn or ahead of the text in the user turn.
 
 ### Scale
 

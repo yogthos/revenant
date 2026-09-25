@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Filter generated training rows and split them for LlamaFactory.
+"""Filter generated training rows, add the persona and split them for LlamaFactory.
 
 Takes the raw train.jsonl written by generate_flat_training.py and writes
 train.jsonl, val.jsonl and dataset_info.json into a LlamaFactory directory.
+
+Each row gets the persona instruction inference builds
+(src/persona/prompt_builder.build_persona_instruction): persona frame, word
+count, the rhetorical skeleton of the most similar other corpus paragraph,
+structural RAG hints and the constraints. It goes in the system turn and the
+neutral text in the user turn, the way a chat model expects them.
 
 Rows are dropped when:
 - the input still has an entity placeholder or starts with stray punctuation
@@ -32,7 +38,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(Path(__file__).parent))
 
 # LlamaFactory only needs these; the rest is generation metadata.
-LLAMA_FACTORY_COLUMNS = ("instruction", "input", "output")
+LLAMA_FACTORY_COLUMNS = ("system", "input", "output")
+# Alpaca columns: persona in the system turn, neutral text as the user turn.
+DATASET_COLUMNS = {"prompt": "input", "response": "output", "system": "system"}
 
 # NLI label order for cross-encoder/nli-deberta-v3-*.
 CONTRADICTION, ENTAILMENT, NEUTRAL = 0, 1, 2
@@ -60,7 +68,7 @@ def estimate_tokens(text: str) -> int:
 # ---------------------------------------------------------------------------
 
 def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15,
-                max_tokens: int = DEFAULT_MAX_TOKENS) -> Optional[str]:
+                max_tokens: Optional[int] = DEFAULT_MAX_TOKENS) -> Optional[str]:
     """Why a row should be dropped, or None if it's fine."""
     from src.llm.mlx_provider import has_placeholder_residue
     from generate_flat_training import check_lexical_bleed
@@ -79,10 +87,81 @@ def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15,
     ok, overlap = check_lexical_bleed(inp, out)
     if not ok:
         return f"lexical bleed {overlap:.0%}"
-    tokens = estimate_tokens(f"{row.get('instruction', '')}\n{inp}{out}") + TEMPLATE_TOKENS
+    if max_tokens is not None:
+        return length_problem(row, max_tokens)
+    return None
+
+
+def length_problem(row: dict, max_tokens: int = DEFAULT_MAX_TOKENS) -> Optional[str]:
+    persona = row.get("system") or row.get("instruction", "")
+    tokens = estimate_tokens(f"{persona}\n{row['input']}{row['output']}") + TEMPLATE_TOKENS
     if tokens > max_tokens:
         return f"too long for cutoff_len (~{tokens} tokens)"
     return None
+
+
+# ---------------------------------------------------------------------------
+# Persona
+# ---------------------------------------------------------------------------
+
+def build_persona_instruction(*args, **kwargs):
+    from src.persona.prompt_builder import build_persona_instruction as build
+    return build(*args, **kwargs)
+
+
+class PersonaBuilder:
+    """Builds a row's persona the way inference builds it for a paragraph.
+
+    Inference looks up guidance from the user's paragraph; the row's
+    equivalent is its neutral input. The grafted skeleton never comes from the
+    row's own paragraph, since inference never sees the target.
+    """
+
+    def __init__(self, worldview: str, rag=None, grafter=None):
+        self.worldview = worldview
+        self.rag = rag
+        self.grafter = grafter
+
+    def __call__(self, row: dict) -> str:
+        inp, out = row["input"], row["output"]
+        guidance = self.rag.get_guidance(inp).format_for_prompt() if self.rag else None
+        graft = self.grafter.get_grafting_guidance(inp, exclude=out) if self.grafter else None
+        return build_persona_instruction(
+            inp,
+            structural_guidance=guidance,
+            grafting_guidance=graft,
+            target_words=word_count(out),
+            worldview=self.worldview,
+        )
+
+
+def load_persona_builder(author: str, worldview: str, rag: bool = True, grafting: bool = True) -> PersonaBuilder:
+    """PersonaBuilder with the corpus index inference uses for ``author``."""
+    from src.config import load_config
+    from src.persona.prompt_builder import _load_persona_file
+
+    frames = _load_persona_file(str(worldview))
+    if not (frames["narrative_frames"] or frames["conceptual_frames"]):
+        raise ValueError(f"No persona frames in {worldview}")
+
+    config = load_config()
+    structural_rag = grafter = None
+    if rag or grafting:
+        from src.rag.corpus_indexer import get_indexer
+        if get_indexer().get_chunk_count(author) == 0:
+            raise RuntimeError(
+                f"No corpus indexed for {author!r}. Run: python scripts/load_corpus.py "
+                f"--input <corpus> --author {author!r} --clear"
+            )
+    if rag:
+        from src.rag.structural_rag import get_structural_rag
+        structural_rag = get_structural_rag(author)
+        structural_rag.load_patterns(sample_size=config.generation.rag_sample_size)
+    if grafting:
+        from src.llm.provider import create_critic_provider
+        from src.rag.structural_grafter import get_structural_grafter
+        grafter = get_structural_grafter(author, create_critic_provider(config.llm))
+    return PersonaBuilder(str(worldview), rag=structural_rag, grafter=grafter)
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +292,15 @@ def _write_jsonl(path: Path, rows: List[dict]) -> None:
             f.write(json.dumps({k: row[k] for k in LLAMA_FACTORY_COLUMNS}, ensure_ascii=False) + "\n")
 
 
-def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str,
+def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, persona,
              val_fraction: float = 0.05, nli: bool = True, seed: int = 42,
              block_size: int = 20, max_ratio: float = 2.0, min_input_words: int = 15,
              nli_min_fraction: float = 0.75, nli_model=None, max_tokens: int = DEFAULT_MAX_TOKENS,
              log=print) -> dict:
-    """Filter raw rows, split by source paragraph, write LlamaFactory files."""
+    """Filter raw rows, add the persona, split by source paragraph, write LlamaFactory files.
+
+    ``persona`` maps a row to its system prompt (see PersonaBuilder).
+    """
     rows = list(_read_jsonl(raw_path))
     reasons: dict = {}
 
@@ -228,13 +310,17 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str,
         reasons[key] = reasons.get(key, 0) + 1
 
     kept = []
-    for row in rows:
-        problem = row_problem(row, max_ratio=max_ratio, min_input_words=min_input_words,
-                              max_tokens=max_tokens)
+    for i, row in enumerate(rows):
+        problem = row_problem(row, max_ratio=max_ratio, min_input_words=min_input_words, max_tokens=None)
+        if not problem:
+            row["system"] = persona(row)
+            problem = length_problem(row, max_tokens)
         if problem:
             reject(problem)
         else:
             kept.append(row)
+        if (i + 1) % 1000 == 0:
+            log(f"  Persona: {i + 1}/{len(rows)} rows, {len(kept)} kept")
 
     if nli:
         model = nli_model or load_nli_model()
@@ -255,10 +341,9 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str,
     _write_jsonl(llama_factory_dir / "train.jsonl", train)
     _write_jsonl(llama_factory_dir / "val.jsonl", val)
 
-    columns = {"prompt": "instruction", "query": "input", "response": "output"}
     info = {
-        f"{dataset_name}_sft": {"file_name": "train.jsonl", "columns": columns},
-        f"{dataset_name}_val": {"file_name": "val.jsonl", "columns": columns},
+        f"{dataset_name}_sft": {"file_name": "train.jsonl", "columns": dict(DATASET_COLUMNS)},
+        f"{dataset_name}_val": {"file_name": "val.jsonl", "columns": dict(DATASET_COLUMNS)},
     }
     (llama_factory_dir / "dataset_info.json").write_text(json.dumps(info, indent=2) + "\n")
 
@@ -277,6 +362,13 @@ def main():
     parser.add_argument("--llama-factory-dir", type=Path, default=None,
                         help="Output directory (default: <input dir>/LlamaFactory)")
     parser.add_argument("--name", default=None, help="Dataset name prefix (default: input directory name)")
+    parser.add_argument("--author", required=True, help="Author name the corpus is indexed under")
+    parser.add_argument("--worldview", required=True,
+                        help="Persona file in prompts/ (the adapter's worldview in config.json)")
+    parser.add_argument("--no-rag", action="store_true",
+                        help="Leave structural RAG hints out (only if inference runs without them)")
+    parser.add_argument("--no-grafting", action="store_true",
+                        help="Leave grafted skeletons out (only if inference runs without them)")
     parser.add_argument("--val-fraction", type=float, default=0.05)
     parser.add_argument("--block-size", type=int, default=20,
                         help="Source paragraphs held out together (default: 20)")
@@ -292,7 +384,9 @@ def main():
 
     out_dir = args.llama_factory_dir or args.input.parent / "LlamaFactory"
     name = args.name or args.input.parent.name
-    finalize(args.input, out_dir, name, val_fraction=args.val_fraction, nli=not args.no_nli,
+    persona = load_persona_builder(args.author, args.worldview, rag=not args.no_rag,
+                                   grafting=not args.no_grafting)
+    finalize(args.input, out_dir, name, persona=persona, val_fraction=args.val_fraction, nli=not args.no_nli,
              seed=args.seed, block_size=args.block_size, max_ratio=args.max_ratio,
              min_input_words=args.min_input_words, nli_min_fraction=args.nli_min_fraction,
              max_tokens=args.max_tokens)

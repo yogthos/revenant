@@ -59,6 +59,9 @@ class TestTrainingConfigs:
         assert cfg["enable_thinking"] is False
         assert cfg["dataset"] == "russell_sft" and cfg["eval_dataset"] == "russell_val"
         assert cfg["load_best_model_at_end"] is True
+        # Persona in the system turn, text in the user turn.
+        info = json.loads((HEMMINGWAY.parent / "dataset_info.json").read_text())
+        assert info["russell_sft"]["columns"].get("system") == "system"
 
 
 class TestRowLength:
@@ -108,7 +111,7 @@ class TestConverter:
         out = tmp_path / "out"
         convert_peft_to_mlx(peft_dir, out, mlx_model_path=str(mlx), train_config=HEMMINGWAY)
         meta = json.loads((out / "metadata.json").read_text())
-        assert (meta["template"], meta["enable_thinking"]) == ("qwen3_8", False)
+        assert (meta["template"], meta["enable_thinking"], meta["persona_turn"]) == ("qwen3_8", False, "system")
         adapter = json.loads((out / "adapter_config.json").read_text())
         assert adapter["lora_parameters"]["scale"] == pytest.approx(2.0)
         from safetensors.numpy import load_file

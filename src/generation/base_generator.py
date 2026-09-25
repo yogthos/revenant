@@ -88,6 +88,8 @@ class GenerationConfig:
     # adapter's metadata.json, falling back to DEFAULT_CHAT_TEMPLATE.
     chat_template: str = ""
     enable_thinking: Optional[bool] = None
+    # "user" or "system": where training put the persona instruction.
+    persona_turn: str = ""
     skip_cleaning: bool = False  # If True, return raw output without cleaning
     logit_bias: Dict[str, float] = field(default_factory=dict)
 
@@ -115,6 +117,7 @@ class GenerationConfig:
                 logit_bias=dict(adapter_config.logit_bias),
                 chat_template=adapter_config.chat_template,
                 enable_thinking=adapter_config.enable_thinking,
+                persona_turn=adapter_config.persona_turn,
             )
         except Exception as e:
             logger.warning(f"Could not load config, using defaults: {e}")
@@ -137,6 +140,7 @@ class GenerationConfig:
             logit_bias=dict(fused_config.logit_bias),
             chat_template=fused_config.chat_template,
             enable_thinking=fused_config.enable_thinking,
+            persona_turn=fused_config.persona_turn,
         )
 
 
@@ -194,6 +198,7 @@ class BaseStyleGenerator(ABC):
         """
         template, enable_thinking = self.config.chat_template, self.config.enable_thinking
         metadata = getattr(self, "metadata", None)
+        persona_turn = self.config.persona_turn or getattr(metadata, "persona_turn", "") or "user"
         if not template:
             template = getattr(metadata, "template", "") or ""
             if enable_thinking is None:
@@ -207,7 +212,8 @@ class BaseStyleGenerator(ABC):
                 self._warned_template = True
             template = DEFAULT_CHAT_TEMPLATE
         return render_chat_prompt(instruction, content, template,
-                                  enable_thinking=True if enable_thinking is None else enable_thinking)
+                                  enable_thinking=True if enable_thinking is None else enable_thinking,
+                                  persona_turn=persona_turn)
 
     @abstractmethod
     def unload(self) -> None:
@@ -471,26 +477,37 @@ DEFAULT_CHAT_TEMPLATE = "qwen3_5_nothink"
 
 
 def render_chat_prompt(instruction: str, content: str, template: str = DEFAULT_CHAT_TEMPLATE,
-                       enable_thinking: bool = True) -> str:
+                       enable_thinking: bool = True, persona_turn: str = "user") -> str:
     """Render the prompt the way LlamaFactory rendered it for ``template``.
+
+    ``persona_turn`` says where the training rows put the persona instruction:
+    "user" (alpaca instruction + input joined in one user turn) or "system"
+    (a system column, with the text alone in the user turn).
 
     ``enable_thinking`` mirrors the LlamaFactory setting of the same name
     (default true). With it off, reasoning templates put an empty thought in
     the prompt; with it on, the model was trained to write that thought itself.
     """
-    user = chat_messages(instruction, content)[0]["content"]
-    turn = f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if persona_turn == "system":
+        system, user = instruction.strip(), content
+    elif persona_turn == "user":
+        system, user = "", chat_messages(instruction, content)[0]["content"]
+    else:
+        raise ValueError(f"persona_turn must be 'user' or 'system', not {persona_turn!r}")
+
     if template == "qwen":
-        return f"<|im_start|>system\n{QWEN_DEFAULT_SYSTEM}<|im_end|>\n{turn}"
-    if template in PLAIN_TEMPLATES:
-        return turn
-    if template in REASONING_TEMPLATES:
-        if not enable_thinking:
-            return turn + EMPTY_THOUGHT
-        if template == "qwen3_8":
-            return f"<|im_start|>system\n{QWEN3_8_XHIGH_REASONING}<|im_end|>\n{turn}"
-        return turn
-    raise ValueError(
-        f"Unsupported chat template {template!r}; expected one of "
-        f"{sorted({'qwen'} | PLAIN_TEMPLATES | REASONING_TEMPLATES)}"
-    )
+        system = system or QWEN_DEFAULT_SYSTEM
+    elif template in REASONING_TEMPLATES:
+        if template == "qwen3_8" and enable_thinking:
+            system = "\n\n".join(p for p in (QWEN3_8_XHIGH_REASONING, system) if p)
+    elif template not in PLAIN_TEMPLATES:
+        raise ValueError(
+            f"Unsupported chat template {template!r}; expected one of "
+            f"{sorted({'qwen'} | PLAIN_TEMPLATES | REASONING_TEMPLATES)}"
+        )
+
+    prompt = f"<|im_start|>system\n{system}<|im_end|>\n" if system else ""
+    prompt += f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if template in REASONING_TEMPLATES and not enable_thinking:
+        prompt += EMPTY_THOUGHT
+    return prompt

@@ -53,6 +53,7 @@ class AdapterMetadata:
     # base_generator.render_chat_prompt). Written by convert_peft_to_mlx.py.
     template: str = ""
     enable_thinking: Optional[bool] = None
+    persona_turn: str = ""
 
     @classmethod
     def from_file(cls, path: Path) -> "AdapterMetadata":
@@ -68,6 +69,7 @@ class AdapterMetadata:
             training_examples=data.get("training_examples", 0),
             template=data.get("template", ""),
             enable_thinking=data.get("enable_thinking"),
+            persona_turn=data.get("persona_turn", ""),
         )
 
 

@@ -42,6 +42,7 @@ class PyTorchAdapterMetadata:
     lora_alpha: int = 32
     template: str = ""
     enable_thinking: Optional[bool] = None
+    persona_turn: str = ""
 
     @classmethod
     def from_adapter_config(cls, adapter_path: str) -> "PyTorchAdapterMetadata":
@@ -65,6 +66,7 @@ class PyTorchAdapterMetadata:
                 data = json.load(f)
             meta.template = data.get("template", "")
             meta.enable_thinking = data.get("enable_thinking")
+            meta.persona_turn = data.get("persona_turn", "")
         return meta
 
 

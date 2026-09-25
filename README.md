@@ -141,14 +141,17 @@ python scripts/generate_flat_training.py \
     --author "Author Name" \
     --output data/training/author \
     --snowflake-topics data/training/author/snowflake_topics.py \
+    --worldview author_worldview.txt \
     --format llama_factory --skip-curation --workers 4
 ```
 
-This ends by filtering rows and writing `LlamaFactory/train.jsonl`, `val.jsonl` (held out by
+The corpus must be indexed first (`scripts/load_corpus.py`), since each row's
+persona uses the same RAG hints and grafted skeleton inference does. This ends by filtering rows and writing `LlamaFactory/train.jsonl`, `val.jsonl` (held out by
 source paragraph) and `dataset_info.json`. To rerun that step on its own:
 
 ```bash
-python scripts/filter_training_data.py data/training/author/train.jsonl
+python scripts/filter_training_data.py data/training/author/train.jsonl \
+    --author "Author Name" --worldview author_worldview.txt
 ```
 
 ### 3. Train LoRA

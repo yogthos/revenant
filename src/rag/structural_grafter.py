@@ -7,6 +7,7 @@ Instead of just copying rhythm patterns, this retrieves:
 The model then "grafts" the skeleton's logic onto the new content.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,6 +16,23 @@ from .skeleton_extractor import ArgumentSkeleton, extract_skeleton
 from ..utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+# How many candidates to look at when the best match has to be skipped.
+_EXCLUDE_CANDIDATES = 5
+# Share of the shorter text's words both texts have in common above which a
+# corpus chunk counts as the excluded paragraph.
+_SAME_TEXT_OVERLAP = 0.5
+
+
+def _words(text: str) -> set:
+    return set(re.findall(r"[a-z']+", text.lower()))
+
+
+def _same_text(a: str, b: str) -> bool:
+    wa, wb = _words(a), _words(b)
+    if not wa or not wb:
+        return False
+    return len(wa & wb) / min(len(wa), len(wb)) > _SAME_TEXT_OVERLAP
 
 
 @dataclass
@@ -52,8 +70,9 @@ class StructuralGrafter:
         self.indexer = get_indexer()
         self.llm_provider = llm_provider
         self._loaded = False
+        self._skeleton_cache = {}
 
-    def get_grafting_guidance(self, input_text: str) -> Optional[GraftingGuidance]:
+    def get_grafting_guidance(self, input_text: str, exclude: Optional[str] = None) -> Optional[GraftingGuidance]:
         """Get grafting guidance for input text.
 
         Retrieves the most semantically similar sample from the author's
@@ -61,6 +80,9 @@ class StructuralGrafter:
 
         Args:
             input_text: The input text to find a matching sample for.
+            exclude: Text the sample must not be. Training passes the row's
+                target so a row never grafts its own paragraph, which the
+                model would never get at inference.
 
         Returns:
             GraftingGuidance or None if no suitable sample found.
@@ -70,8 +92,12 @@ class StructuralGrafter:
             similar = self.indexer.retrieve_similar(
                 author=self.author,
                 query_text=input_text,
-                n=1
+                n=_EXCLUDE_CANDIDATES if exclude else 1
             )
+            if exclude:
+                similar = [c for c in similar if not _same_text(c["text"], exclude)][:1]
+                if not similar:
+                    return None
         except Exception as e:
             logger.warning(f"Failed to retrieve similar chunks: {e}")
             return None
@@ -101,9 +127,11 @@ class StructuralGrafter:
             skeleton = ArgumentSkeleton.from_metadata(skeleton_str)
             logger.debug(f"Using pre-computed skeleton: {skeleton.format_for_prompt()}")
         elif self.llm_provider:
-            # Extract skeleton on-the-fly
-            logger.debug("Extracting skeleton on-the-fly")
-            skeleton = extract_skeleton(sample_text, self.llm_provider)
+            # Extract skeleton on-the-fly, once per sample
+            if sample_text not in self._skeleton_cache:
+                logger.debug("Extracting skeleton on-the-fly")
+                self._skeleton_cache[sample_text] = extract_skeleton(sample_text, self.llm_provider)
+            skeleton = self._skeleton_cache[sample_text]
         else:
             # No skeleton available
             logger.warning("No skeleton available and no LLM provider for extraction")

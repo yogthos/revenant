@@ -44,15 +44,26 @@ class TestPersonaInstruction:
         assert detect.call_args.args[0] == "Neutral text here."
 
 
-    def test_instruction_has_only_what_training_rows_had(self):
-        # Training never saw RAG rhythm hints or LLM-extracted skeletons of
-        # another paragraph, so the instruction builder takes neither.
-        import inspect
-        from src.persona.prompt_builder import build_persona_instruction, build_persona_prompt
-        for fn in (build_persona_instruction, build_persona_prompt):
-            params = inspect.signature(fn).parameters
-            assert "structural_guidance" not in params
-            assert "grafting_guidance" not in params
+    @patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME")
+    @patch("src.persona.prompt_builder._detect_content_type", return_value=False)
+    def test_instruction_carries_rag_and_grafting_guidance(self, _detect, _frame):
+        # Training rows are built with the same guidance (filter_training_data.PersonaBuilder).
+        from src.persona.prompt_builder import build_persona_instruction
+        from src.rag.skeleton_extractor import ArgumentSkeleton
+        from src.rag.structural_grafter import GraftingGuidance
+        graft = GraftingGuidance(sample_text="s", skeleton=ArgumentSkeleton(moves=["Claim", "Example"], raw=""))
+        instruction = build_persona_instruction("Neutral text here.", structural_guidance="Rhythm: LONG → SHORT",
+                                                grafting_guidance=graft, target_words=40)
+        assert "Follow this structure: [Claim] → [Example]" in instruction
+        assert "Rhythm: LONG → SHORT" in instruction
+
+    def test_worldview_can_be_named_directly(self):
+        # Training has no adapter entry in config.json to look the worldview up in.
+        from src.persona.prompt_builder import _load_persona_file, build_persona_instruction
+        frames = _load_persona_file("russell_worldview.txt")
+        instruction = build_persona_instruction("Neutral text here.", target_words=40,
+                                                worldview="russell_worldview.txt")
+        assert any(instruction.startswith(f) for f in frames["narrative_frames"] + frames["conceptual_frames"])
 
 
 class TestLengthHint:
@@ -102,7 +113,7 @@ class TestInferenceNeutralization:
         assert kwargs["content"] == "The first line of this paragraph has several words in it."
 
     @patch("src.generation.transfer.create_style_generator")
-    def test_persona_path_skips_rag_and_grafting_lookups(self, mock_gen_factory):
+    def test_persona_path_passes_rag_and_grafting_guidance(self, mock_gen_factory):
         from src.generation.transfer import StyleTransfer, TransferConfig
         generator = MagicMock()
         generator.generate.return_value = "Styled output text from the generator model here."
@@ -115,8 +126,11 @@ class TestInferenceNeutralization:
                                   min_paragraph_words=3),
         )
         transfer.structural_rag = MagicMock()
+        transfer.structural_rag.get_guidance.return_value.format_for_prompt.return_value = "RAG"
         transfer.structural_grafter = MagicMock()
-        with patch("src.generation.transfer.build_persona_instruction", return_value="INSTRUCTION"):
+        graft = MagicMock()
+        transfer.structural_grafter.get_grafting_guidance.return_value = graft
+        with patch("src.generation.transfer.build_persona_instruction", return_value="INSTRUCTION") as build:
             transfer.transfer_paragraph("The first line of this paragraph has several words in it.")
-        transfer.structural_rag.get_guidance.assert_not_called()
-        transfer.structural_grafter.get_grafting_guidance.assert_not_called()
+        assert build.call_args.kwargs["structural_guidance"] == "RAG"
+        assert build.call_args.kwargs["grafting_guidance"] is graft
