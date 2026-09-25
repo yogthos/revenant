@@ -95,6 +95,10 @@ class ModelConfig:
     # step. Positive values encourage the token; negative values suppress.
     # Typical range: -5.0 to +5.0.
     logit_bias: Dict[str, float] = field(default_factory=dict)
+    # LlamaFactory template and enable_thinking the model was trained with.
+    # Overrides the adapter's metadata.json; empty means use that.
+    chat_template: str = ""
+    enable_thinking: Optional[bool] = None
 
     # LoRA-only
     scale: float = 1.0
@@ -261,6 +265,8 @@ _KNOWN_MODEL_FIELDS = {
     "use_structural_rag",
     "logit_bias",
     "author",
+    "chat_template",
+    "enable_thinking",
 }
 
 
@@ -302,6 +308,8 @@ def _parse_model_config(data: Dict) -> ModelConfig:
         use_structural_rag=data.get("use_structural_rag"),
         logit_bias=data.get("logit_bias", {}),
         author=data.get("author", ""),
+        chat_template=data.get("chat_template", ""),
+        enable_thinking=data.get("enable_thinking"),
     )
 
 

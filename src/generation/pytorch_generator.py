@@ -6,14 +6,13 @@ enabling inference on Linux/CUDA systems as an alternative to MLX.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 from ..utils.logging import get_logger
 from ..utils.prompts import format_prompt
 from .base_generator import (
     BaseStyleGenerator,
     GenerationConfig,
-    chat_messages,
     generate_style_tag,
     split_legacy_prompt,
 )
@@ -41,22 +40,32 @@ class PyTorchAdapterMetadata:
     base_model: str
     lora_rank: int = 16
     lora_alpha: int = 32
+    template: str = ""
+    enable_thinking: Optional[bool] = None
 
     @classmethod
     def from_adapter_config(cls, adapter_path: str) -> "PyTorchAdapterMetadata":
-        """Load metadata from PEFT adapter_config.json."""
+        """Load metadata from PEFT adapter_config.json.
+
+        The training template comes from a metadata.json next to it, as
+        written by convert_peft_to_mlx.py, when there is one.
+        """
         import json
+        meta = cls(author="Unknown", base_model="")
         config_path = Path(adapter_path) / "adapter_config.json"
         if config_path.exists():
             with open(config_path) as f:
                 data = json.load(f)
-            return cls(
-                author="Unknown",
-                base_model=data.get("base_model_name_or_path", ""),
-                lora_rank=data.get("r", 16),
-                lora_alpha=data.get("lora_alpha", 32),
-            )
-        return cls(author="Unknown", base_model="")
+            meta.base_model = data.get("base_model_name_or_path", "")
+            meta.lora_rank = data.get("r", 16)
+            meta.lora_alpha = data.get("lora_alpha", 32)
+        metadata_path = Path(adapter_path) / "metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path) as f:
+                data = json.load(f)
+            meta.template = data.get("template", "")
+            meta.enable_thinking = data.get("enable_thinking")
+        return meta
 
 
 class PyTorchStyleGenerator(BaseStyleGenerator):
@@ -335,20 +344,11 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
                 structural_guidance=guidance_str,
             )
 
-        # Apply chat template if tokenizer supports it
-        if hasattr(self._tokenizer, 'apply_chat_template'):
-            # Same layout as the LlamaFactory training rows: one user turn,
-            # instruction and input joined by a newline, no system turn.
-            if instruction is not None:
-                messages = chat_messages(instruction, content)
-            else:
-                messages = chat_messages(*split_legacy_prompt(prompt))
-            prompt = self._tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            logger.debug("Applied chat template to prompt")
+        # Same layout and template as the LlamaFactory training rows.
+        if instruction is not None:
+            prompt = self.chat_prompt(instruction, content)
+        else:
+            prompt = self.chat_prompt(*split_legacy_prompt(prompt))
 
         # Tokenize input
         inputs = self._tokenizer(
@@ -375,6 +375,9 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
                 repetition_penalty=self.config.repetition_penalty,
                 do_sample=True,
                 pad_token_id=self._tokenizer.eos_token_id,
+                # Training rows end in <|im_end|>; base tokenizers stop at <|endoftext|>.
+                eos_token_id=[self._tokenizer.eos_token_id,
+                              self._tokenizer.convert_tokens_to_ids("<|im_end|>")],
             )
 
         # Decode response (skip input tokens)

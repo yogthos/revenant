@@ -21,7 +21,6 @@ from ..utils.prompts import format_prompt
 from .base_generator import (
     BaseStyleGenerator,
     GenerationConfig,
-    chat_messages,
     generate_style_tag,
     split_legacy_prompt,
 )
@@ -50,6 +49,10 @@ class AdapterMetadata:
     lora_alpha: int = 32
     epochs: int = 3
     training_examples: int = 0
+    # LlamaFactory template and enable_thinking used in training (see
+    # base_generator.render_chat_prompt). Written by convert_peft_to_mlx.py.
+    template: str = ""
+    enable_thinking: Optional[bool] = None
 
     @classmethod
     def from_file(cls, path: Path) -> "AdapterMetadata":
@@ -63,7 +66,49 @@ class AdapterMetadata:
             lora_alpha=data.get("lora_alpha", 32),
             epochs=data.get("epochs", 3),
             training_examples=data.get("training_examples", 0),
+            template=data.get("template", ""),
+            enable_thinking=data.get("enable_thinking"),
         )
+
+
+def stack_lora_adapters(adapters, xp=None):
+    """Combine LoRA adapters into one of higher rank.
+
+    ``adapters`` is a list of ``(weights, trained_scale, scale)``, where
+    weights maps ``<module>.lora_a`` (in, r) and ``<module>.lora_b`` (r, out).
+    Stacking A side by side and the scaled B blocks on top of each other gives
+    ``x @ A @ B == sum(trained_scale * scale * x @ A_i @ B_i)`` exactly, so the
+    result is loaded with a LoRA scale of 1.0. Summing the A and B matrices
+    separately would add cross terms between adapters.
+
+    Returns (weights, total_rank).
+    """
+    if xp is None:
+        import numpy as xp
+    modules = sorted({k.rsplit(".lora_", 1)[0] for w, _, _ in adapters for k in w})
+    ranks = []
+    for weights, _, _ in adapters:
+        a = next(v for k, v in weights.items() if k.endswith(".lora_a"))
+        if a.ndim != 2:
+            raise ValueError("Only 2-D LoRA weights can be blended")
+        ranks.append(a.shape[1])
+
+    stacked = {}
+    for module in modules:
+        dims = next((w[f"{module}.lora_a"].shape[0], w[f"{module}.lora_b"].shape[1], w[f"{module}.lora_a"].dtype)
+                    for w, _, _ in adapters if f"{module}.lora_a" in w)
+        in_dim, out_dim, dtype = dims
+        a_blocks, b_blocks = [], []
+        for (weights, trained_scale, scale), rank in zip(adapters, ranks):
+            if f"{module}.lora_a" in weights:
+                a_blocks.append(weights[f"{module}.lora_a"])
+                b_blocks.append(weights[f"{module}.lora_b"] * (trained_scale * scale))
+            else:
+                a_blocks.append(xp.zeros((in_dim, rank), dtype=dtype))
+                b_blocks.append(xp.zeros((rank, out_dim), dtype=dtype))
+        stacked[f"{module}.lora_a"] = xp.concatenate(a_blocks, axis=1)
+        stacked[f"{module}.lora_b"] = xp.concatenate(b_blocks, axis=0)
+    return stacked, sum(ranks)
 
 
 @dataclass
@@ -301,96 +346,47 @@ class LoRAStyleGenerator(BaseStyleGenerator):
             if adapter.scale != 1.0:
                 self._apply_lora_scale(adapter.scale)
         else:
-            # Multiple adapters - load base model, then combine adapter weights
+            # Multiple adapters: stack them into one higher-rank LoRA.
+            import re
+            from mlx.utils import tree_flatten
+            from mlx_lm.tuner.utils import linear_to_lora_layers
+
             logger.info(f"Loading {len(self.adapters)} adapters:")
+            self._model, self._tokenizer = load(self.base_model_name)
+
+            blend = []
             for adapter in self.adapters:
                 logger.info(f"  - {adapter.path} (scale={adapter.scale})")
+                path = self._get_effective_adapter_path(adapter)
+                with open(Path(path) / "adapter_config.json") as f:
+                    trained_scale = json.load(f)["lora_parameters"]["scale"]
+                blend.append((self._load_adapter_weights(path), trained_scale, adapter.scale))
 
-            # Load first adapter to set up LoRA structure
-            first_adapter = self.adapters[0]
-            first_path = self._get_effective_adapter_path(first_adapter)
-
-            self._model, self._tokenizer = load(
-                self.base_model_name,
-                adapter_path=first_path,
-            )
-
-            # Get first adapter's weights (already loaded, but we need them for combining)
-            first_weights = self._load_adapter_weights(first_path)
-
-            # Scale first adapter's weights
-            combined_weights = {
-                k: v * first_adapter.scale for k, v in first_weights.items()
-            }
-
-            # Load and add remaining adapters
-            for adapter in self.adapters[1:]:
-                adapter_path = self._get_effective_adapter_path(adapter)
-                weights = self._load_adapter_weights(adapter_path)
-
-                for k, v in weights.items():
-                    if k in combined_weights:
-                        # Check shape compatibility
-                        if combined_weights[k].shape != v.shape:
-                            raise ValueError(
-                                f"Cannot blend adapters with different LoRA ranks.\n"
-                                f"  Weight '{k}':\n"
-                                f"    - {first_adapter.path}: shape {combined_weights[k].shape}\n"
-                                f"    - {adapter.path}: shape {v.shape}\n"
-                                f"Adapters must have the same rank to be blended. "
-                                f"Use adapters trained with matching configurations."
-                            )
-                        combined_weights[k] = combined_weights[k] + v * adapter.scale
-                    else:
-                        combined_weights[k] = v * adapter.scale
-
-            # Apply combined weights to model
-            self._model.load_weights(list(combined_weights.items()), strict=False)
+            weights, rank = stack_lora_adapters(blend, xp=mx)
+            keys = sorted({re.sub(r"^.*?layers\.\d+\.", "", k.rsplit(".lora_", 1)[0]) for k in weights})
+            linear_to_lora_layers(self._model, -1, {"rank": rank, "scale": 1.0, "dropout": 0.0, "keys": keys})
+            missing = set(weights) - {k for k, _ in tree_flatten(self._model.parameters())}
+            if missing:
+                raise ValueError(f"Adapter weights match no model parameter: {sorted(missing)[:5]}")
+            self._model.load_weights(list(weights.items()), strict=False)
             mx.eval(self._model.parameters())
 
-            logger.info(f"Combined {len(self.adapters)} adapters")
+            logger.info(f"Combined {len(self.adapters)} adapters (rank {rank})")
 
     def _apply_lora_scale(self, scale: float) -> None:
-        """Apply scaling factor to LoRA adapter weights.
+        """Multiply every LoRA layer's trained scale by ``scale``.
 
-        This controls how much the LoRA adapter influences the base model:
-        - scale=0.0: Base model only (no LoRA influence)
-        - scale=0.5: Half LoRA influence (more base model)
-        - scale=1.0: Full LoRA influence (default)
-        - scale>1.0: Amplified LoRA influence (stronger style)
-
-        Args:
-            scale: Scaling factor for LoRA weights.
+        1.0 leaves the adapter as trained, 0.0 is the base model, above 1.0
+        strengthens the style.
         """
-
-        def scale_lora_layers(module, path=""):
-            """Recursively find and scale LoRA layers."""
-            # Check if this module has LoRA weights
-            if hasattr(module, "lora_a") and hasattr(module, "lora_b"):
-                # Scale the LoRA output by adjusting lora_b (more efficient than scaling both)
-                if hasattr(module, "scale"):
-                    # If module has a scale attribute, use it
-                    module.scale = scale
-                    logger.debug(f"Scaled {path}.scale = {scale}")
-                else:
-                    # Otherwise, scale lora_b directly
-                    module.lora_b = module.lora_b * scale
-                    logger.debug(f"Scaled {path}.lora_b by {scale}")
-
-            # Recurse into children
-            if hasattr(module, "children"):
-                for name, child in module.children().items():
-                    scale_lora_layers(child, f"{path}.{name}" if path else name)
-            elif hasattr(module, "__dict__"):
-                for name, child in module.__dict__.items():
-                    if hasattr(child, "lora_a") or hasattr(child, "children"):
-                        scale_lora_layers(child, f"{path}.{name}" if path else name)
-
-        try:
-            scale_lora_layers(self._model)
-            logger.info(f"Applied LoRA scale: {scale}")
-        except Exception as e:
-            logger.warning(f"Could not apply LoRA scale: {e}")
+        count = 0
+        for _, module in self._model.named_modules():
+            if hasattr(module, "lora_a") and hasattr(module, "scale"):
+                module.scale = module.scale * scale
+                count += 1
+        if not count:
+            raise RuntimeError("No LoRA layers found to scale")
+        logger.info(f"Applied LoRA scale x{scale} to {count} layers")
 
     def _build_logit_bias_processor(self):
         """Build a logits processor that adds per-token bias every step.
@@ -526,32 +522,11 @@ class LoRAStyleGenerator(BaseStyleGenerator):
                 structural_guidance=guidance_str,
             )
 
-        # Wrap prompt in chat format if tokenizer supports it
-        # LLaMA-Factory trained models expect Qwen chat format
-        if hasattr(self._tokenizer, "apply_chat_template"):
-            # Same layout as the LlamaFactory training rows: one user turn,
-            # instruction and input joined by a newline, no system turn.
-            if instruction is not None:
-                messages = chat_messages(instruction, content)
-            else:
-                messages = chat_messages(*split_legacy_prompt(prompt))
-
-            # Use a nothink template to avoid <think> tokens that Qwen 3.5
-            # injects by default. The LoRA was trained with qwen3_5_nothink
-            # which does not use thinking tokens.
-            nothink_template = (
-                "{% for message in messages %}"
-                "<|im_start|>{{ message['role'] }}\n{{ message['content'] }}<|im_end|>\n"
-                "{% endfor %}"
-                "{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"
-            )
-            prompt = self._tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                chat_template=nothink_template,
-            )
-            logger.debug("Applied chat template to prompt")
+        # Same layout and template as the LlamaFactory training rows.
+        if instruction is not None:
+            prompt = self.chat_prompt(instruction, content)
+        else:
+            prompt = self.chat_prompt(*split_legacy_prompt(prompt))
 
         # Create sampler with temperature, top_p, and min_p
         # min_p filters low-probability nonsense while allowing creative choices
@@ -588,8 +563,8 @@ class LoRAStyleGenerator(BaseStyleGenerator):
         else:
             tokens_limit = min(auto_max_tokens, self.config.max_tokens)
 
-        # Ensure <|im_end|> is a stop token (Qwen 3.5 uses it to end assistant turns,
-        # but the base model's tokenizer only has <|endoftext|> as EOS)
+        # Training rows end in <|im_end|>; base model tokenizers only stop at
+        # <|endoftext|>.
         im_end_id = self._tokenizer.convert_tokens_to_ids("<|im_end|>")
         if im_end_id is not None and im_end_id not in self._tokenizer.eos_token_ids:
             self._tokenizer.eos_token_ids.add(im_end_id)
