@@ -42,9 +42,10 @@ class TestMLXGeneratorUsesUserTurn:
 
     def test_instruction_goes_in_user_turn_without_system(self):
         gen = self._generator()
-        with patch("src.generation.lora_generator.generate", return_value="out"), \
-             patch("src.generation.lora_generator.make_sampler"), \
-             patch("src.generation.lora_generator.make_repetition_penalty"):
+        # create=True: without MLX installed (CI) the module never imports these.
+        with patch("src.generation.lora_generator.generate", return_value="out", create=True), \
+             patch("src.generation.lora_generator.make_sampler", create=True), \
+             patch("src.generation.lora_generator.make_repetition_penalty", create=True):
             gen.generate(content="Neutral text.", author="X", instruction="Frame.", raw_prompt=True)
         messages = gen._tokenizer.apply_chat_template.call_args.args[0]
         assert messages == [{"role": "user", "content": "Frame.\nNeutral text."}]
