@@ -162,11 +162,25 @@ def clean_text(text: str) -> str:
 
 
 def split_into_sentences(text: str, nlp=None) -> List[str]:
-    """Split text into sentences using spaCy."""
+    """Split text into sentences using spaCy.
+
+    A "sentence" starting with a lowercase letter is spaCy breaking after an
+    abbreviation or a quoted exclamation mid-sentence, so it rejoins the
+    previous one.
+    """
     if nlp is None:
         nlp = get_nlp()
     doc = nlp(text)
-    return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    sentences = []
+    for sent in doc.sents:
+        s = sent.text.strip()
+        if not s:
+            continue
+        if sentences and s[0].islower():
+            sentences[-1] = f"{sentences[-1]} {s}"
+        else:
+            sentences.append(s)
+    return sentences
 
 
 def count_special_chars(text: str) -> float:
@@ -1129,20 +1143,40 @@ def _bleed_words(text: str) -> List[str]:
     return re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
 
 
-def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) -> Tuple[bool, float]:
-    """Check if neutral input retains too much distinctive vocabulary from styled output.
+# Limits for how close a neutral input may stay to its styled target. They
+# were 50% vocabulary when DeepSeek paraphrased loosely; the current model
+# keeps content words (median ~62% shared), so vocabulary alone would reject
+# ~90% of faithful rows. Copying shows in repeated phrases instead.
+MAX_VOCAB_OVERLAP = 0.75
+MAX_PHRASE_OVERLAP = 0.40
 
-    If the neutral text already contains most of the distinctive words from the output,
-    the model learns copy-paste rather than style transfer.
+
+def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = MAX_VOCAB_OVERLAP,
+                        max_phrase_overlap: Optional[float] = None) -> Tuple[bool, float]:
+    """Check if neutral input retains too much of the styled output's wording.
+
+    If the neutral text already contains most of the distinctive words or
+    phrases from the output, the model learns copy-paste rather than style
+    transfer.
 
     Args:
         neutral: Neutralized input text
         styled: Original styled text
-        max_overlap: Maximum allowed overlap ratio (default 0.6)
+        max_overlap: Maximum share of the styled text's distinctive words
+        max_phrase_overlap: Maximum share of its 4-word sequences, or None
+            to skip (only meaningful on the final, perturbed input)
 
     Returns:
-        Tuple of (is_valid, overlap_ratio)
+        Tuple of (is_valid, overlap_ratio). The ratio is the phrase overlap
+        when that check is what failed.
     """
+    from src.llm.mlx_provider import ngram_overlap
+
+    if max_phrase_overlap is not None:
+        phrase = ngram_overlap(styled, neutral)
+        if phrase > max_phrase_overlap:
+            return False, phrase
+
     # Tokenize on letters so "cruelty," and "cruelty" count as the same word.
     neutral_words = set(_bleed_words(neutral))
     styled_words = set(_bleed_words(styled))
@@ -1686,7 +1720,8 @@ def generate_training_data(
     neutralizer, _ = get_rtt_neutralizer()
     batch_size = getattr(neutralizer, 'batch_size', 1)
     concurrent_batches = getattr(neutralizer, 'concurrent_batches', 1)
-    use_batching = isinstance(batch_size, int) and batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
+    # The batch pipeline also runs single-text requests in parallel.
+    use_batching = isinstance(batch_size, int) and batch_size >= 1 and hasattr(neutralizer, 'neutralize_batch')
 
     # Super-batch = batch_size * concurrent_batches (to fully utilize parallelism)
     # e.g., batch_size=10, concurrent_batches=4 → send 40 texts at once

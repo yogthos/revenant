@@ -71,7 +71,7 @@ def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15,
                 max_tokens: Optional[int] = DEFAULT_MAX_TOKENS) -> Optional[str]:
     """Why a row should be dropped, or None if it's fine."""
     from src.llm.mlx_provider import has_placeholder_residue
-    from generate_flat_training import check_lexical_bleed
+    from generate_flat_training import MAX_PHRASE_OVERLAP, check_lexical_bleed
 
     inp, out = row["input"], row["output"]
     if has_placeholder_residue(inp):
@@ -84,8 +84,11 @@ def row_problem(row: dict, max_ratio: float = 2.0, min_input_words: int = 15,
     ratio = word_count(out) / max(inp_words, 1)
     if ratio > max_ratio:
         return f"output/input ratio {ratio:.1f}"
-    ok, overlap = check_lexical_bleed(inp, out)
+    ok, overlap = check_lexical_bleed(inp, out, max_phrase_overlap=MAX_PHRASE_OVERLAP)
     if not ok:
+        from src.llm.mlx_provider import ngram_overlap
+        if ngram_overlap(out, inp) > MAX_PHRASE_OVERLAP:
+            return f"copied phrases {overlap:.0%}"
         return f"lexical bleed {overlap:.0%}"
     if max_tokens is not None:
         return length_problem(row, max_tokens)

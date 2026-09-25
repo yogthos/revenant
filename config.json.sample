@@ -31,8 +31,9 @@
         "model": "deepseek-chat",
         "max_tokens": 8192,
         "temperature": 0.1,
-        "batch_size": 10,
-        "concurrent_batches": 8,
+        "_comment_batch": "One text per request: with several, DeepSeek copies the later ones back verbatim",
+        "batch_size": 1,
+        "concurrent_batches": 16,
         "timeout": 180
       }
     },

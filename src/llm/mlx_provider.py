@@ -770,8 +770,10 @@ class DeepSeekRTTNeutralizer(BaseRTTNeutralizer):
         self.model = rtt_config.get("model", "deepseek-chat")
         self.max_tokens = rtt_config.get("max_tokens", 8192)
         self.temperature = rtt_config.get("temperature", 0.1)
-        self.batch_size = batch_size or rtt_config.get("batch_size", 5)
-        self.concurrent_batches = rtt_config.get("concurrent_batches", 4)
+        # One text per request by default: with several, DeepSeek tends to
+        # copy the later ones back verbatim.
+        self.batch_size = batch_size or rtt_config.get("batch_size", 1)
+        self.concurrent_batches = rtt_config.get("concurrent_batches", 16)
 
         # Route HTTP + retry + error handling through the standard DeepSeek provider
         # so this class owns RTT logic only (entity masking, Chinese detection, monotone
