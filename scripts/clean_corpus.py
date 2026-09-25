@@ -284,20 +284,28 @@ def fix_ocr(paragraphs: List[str], call: Callable[[str], str], cache_path: Path,
 
 
 def deepseek_caller() -> Callable[[str], str]:
-    from src.config import LLMProviderConfig
-    from src.llm.deepseek import DeepSeekProvider
-    import os
+    """DeepSeek OCR repair call. The client is built on first use, so a
+    rebuild served entirely from the cache needs no API key."""
+    provider = None
 
-    provider = DeepSeekProvider(LLMProviderConfig(
-        api_key=os.environ["DEEPSEEK_API_KEY"],
-        base_url="https://api.deepseek.com",
-        model="deepseek-chat",
-        max_tokens=4000,
-        temperature=0.0,
-        timeout=180,
-    ))
-    return lambda text: provider.call(system_prompt=OCR_SYSTEM_PROMPT, user_prompt=text,
-                                      temperature=0.0, max_tokens=max(512, len(text.split()) * 3))
+    def call(text: str) -> str:
+        nonlocal provider
+        if provider is None:
+            import os
+            from src.config import LLMProviderConfig
+            from src.llm.deepseek import DeepSeekProvider
+            provider = DeepSeekProvider(LLMProviderConfig(
+                api_key=os.environ["DEEPSEEK_API_KEY"],
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                max_tokens=4000,
+                temperature=0.0,
+                timeout=180,
+            ))
+        return provider.call(system_prompt=OCR_SYSTEM_PROMPT, user_prompt=text,
+                             temperature=0.0, max_tokens=max(512, len(text.split()) * 3))
+
+    return call
 
 
 # ---------------------------------------------------------------------------
