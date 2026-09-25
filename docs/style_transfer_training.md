@@ -43,7 +43,7 @@ The LoRA's quality depends on matching inference conditions to training conditio
 
 ### 3. Input Perturbation Is Critical
 
-Training data uses 8% input perturbation (typos, word drops, synonym swaps, adjective drops).
+Training data uses 8% input perturbation (typos, article drops, synonym swaps). Noise never drops words that carry meaning.
 Without perturbation at inference, the model receives clean text and produces mechanical output
 because it has "no room" to exercise creative reconstruction.
 
@@ -98,14 +98,24 @@ Config: min_words=150, max_words=400, overlap_sentences=2
 Only applied to `original` type entries (continuous narrative). Snowflakes and perspective
 variants are kept separate to avoid Frankenstein text.
 
-### Quality Filtering
+### Quality Filtering and Split
 
-Remove entries with input/output word ratio > 2.0. Truncated inputs that map to full
-paragraphs teach the model to hallucinate content from minimal input.
+`generate_flat_training.py` runs this at the end for LlamaFactory output. To rerun it:
 
 ```bash
-python scripts/filter_training_data.py train.jsonl --max-ratio 2.0 --min-input-words 15
+python scripts/filter_training_data.py data/training/author/train.jsonl
 ```
+
+It drops rows whose input kept an entity placeholder or stray leading punctuation,
+rows with too much lexical bleed, rows with an output/input word ratio over 2.0 or
+inputs under 15 words, and (unless `--no-nli`) rows that fail a two-way,
+sentence-level entailment check: the target must not state things the input lacks,
+and the input must not state things the target lacks.
+
+It then writes `LlamaFactory/train.jsonl`, `LlamaFactory/val.jsonl` and
+`dataset_info.json`. Validation holds out whole source paragraphs, so overlapping
+chunks and many-to-one variants of a held-out paragraph never appear in train.
+Point the yaml at it with `eval_dataset: <name>_val` rather than `val_size`.
 
 ### Persona Frames
 
@@ -437,7 +447,7 @@ and eval loss only.
        --snowflake-topics data/training/author/snowflake_topics.py \
        --format llama_factory --skip-curation --workers 4
    ```
-5. **Filter bad entries**: `python scripts/filter_training_data.py data/training/author/train.jsonl`
+5. **Filter and split** (runs automatically for llama_factory; rerun with `python scripts/filter_training_data.py data/training/author/train.jsonl`)
 6. **Create worldview file** in `prompts/` with EXACT same persona frames as training
 7. **Configure LlamaFactory** yaml and dataset_info.json
 8. **Train on RunPod** (see docs/runpod.md)

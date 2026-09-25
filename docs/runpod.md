@@ -69,7 +69,8 @@ cp revenant/data/training/russell/LlamaFactory/qwen35_35b_lora.yaml \
     /workspace/russell_training/
 cp revenant/data/training/russell/LlamaFactory/dataset_info.json \
     /workspace/russell_training/data/
-cp revenant/data/training/russell/train.jsonl \
+cp revenant/data/training/russell/LlamaFactory/train.jsonl \
+   revenant/data/training/russell/LlamaFactory/val.jsonl \
     /workspace/russell_training/data/
 ```
 

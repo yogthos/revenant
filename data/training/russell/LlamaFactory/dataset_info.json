@@ -6,5 +6,13 @@
       "query": "input",
       "response": "output"
     }
+  },
+  "russell_val": {
+    "file_name": "val.jsonl",
+    "columns": {
+      "prompt": "instruction",
+      "query": "input",
+      "response": "output"
+    }
   }
 }

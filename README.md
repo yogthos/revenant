@@ -128,7 +128,8 @@ python scripts/generate_flat_training.py \
     --format llama_factory --skip-curation --workers 4
 ```
 
-Then filter bad entries:
+This ends by filtering rows and writing `LlamaFactory/train.jsonl`, `val.jsonl` (held out by
+source paragraph) and `dataset_info.json`. To rerun that step on its own:
 
 ```bash
 python scripts/filter_training_data.py data/training/author/train.jsonl

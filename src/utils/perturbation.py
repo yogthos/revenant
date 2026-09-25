@@ -1,16 +1,18 @@
-"""Input perturbation for inference to match training distribution.
+"""Input perturbation shared by training data generation and inference.
 
-Training data used random perturbations (typos, word drops, synonym swaps) to
-force the model to creatively reconstruct text. At inference, we must apply
-similar perturbations or the model produces mechanical output.
+Training applies light noise to the neutral input so the model learns to
+rebuild prose rather than copy it, and inference applies the same noise so
+its inputs match. Both import from here; don't copy this logic elsewhere.
 
-This matches the training script's perturb_text() function exactly.
+Noise never removes meaning. Only articles are ever dropped. Other changes
+are typos and swaps from a small synonym map. Dropping adjectives,
+intensifiers or words like "only", "never" and "always" taught the model to
+fill gaps with invented detail, so none of that happens here.
 """
 
 import random
-from typing import Optional
+import re
 
-# Simple synonym map matching training exactly (generate_flat_training.py)
 SYNONYMS = {
     "big": ["large", "huge", "great"],
     "small": ["little", "tiny", "minor"],
@@ -26,83 +28,100 @@ SYNONYMS = {
     "really": ["truly", "actually", "indeed"],
 }
 
+# The only words noise may delete.
+DROPPABLE = frozenset({"the", "a", "an"})
 
-def perturb_text(
-    text: str,
-    perturbation_rate: float = 0.08,
-    drop_adjectives: bool = True,
-) -> str:
-    """Apply random perturbations to text (Poor Man's NEFTune).
+_WORD_RE = re.compile(r"^(\W*)([\w'’-]+)(\W*)$")
 
-    Matches the training script exactly to ensure distribution match.
 
-    Applies ~8% random changes:
-    - Synonym swap: Replace word with synonym (40%)
-    - Word drop: Remove non-essential words (30%)
-    - Typo: Swap adjacent characters (30%)
+def _split(word: str):
+    """Split a token into (leading punctuation, core, trailing punctuation)."""
+    match = _WORD_RE.match(word)
+    if not match:
+        return "", word, ""
+    return match.groups()
 
-    Args:
-        text: Input text to perturb
-        perturbation_rate: Probability of perturbing each word (default 8%)
-        drop_adjectives: If True, 30% chance to strip adjectives
 
-    Returns:
-        Perturbed text
+def _synonym(word: str) -> str:
+    lead, core, trail = _split(word)
+    options = SYNONYMS.get(core.lower())
+    if not options:
+        return word
+    synonym = random.choice(options)
+    if core[0].isupper():
+        synonym = synonym.capitalize()
+    return lead + synonym + trail
+
+
+def _swap_typo(word: str) -> str:
+    lead, core, trail = _split(word)
+    if len(core) <= 3:
+        return word
+    i = random.randint(1, len(core) - 2)
+    core = core[:i] + core[i + 1] + core[i] + core[i + 2:]
+    return lead + core + trail
+
+
+def _double_typo(word: str) -> str:
+    lead, core, trail = _split(word)
+    if len(core) <= 2:
+        return word
+    i = random.randint(0, len(core) - 1)
+    return lead + core[:i] + core[i] + core[i:] + trail
+
+
+def _is_droppable(word: str) -> bool:
+    lead, core, trail = _split(word)
+    # Keep articles that carry punctuation so sentence boundaries survive.
+    return not lead and not trail and core.lower() in DROPPABLE
+
+
+def perturb_text(text: str, perturbation_rate: float = 0.08) -> str:
+    """Apply light noise: each word has ``perturbation_rate`` chance of a
+    synonym swap (40%), an article drop (30%) or an adjacent-letter typo (30%).
     """
-    words = text.split()
     result = []
-    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite'}
-
-    # Common adjectives to drop - matches training exactly (generate_flat_training.py)
-    adjectives_to_drop = {
-        'great', 'small', 'large', 'old', 'new', 'good', 'bad', 'long', 'short',
-        'high', 'low', 'young', 'little', 'big', 'dark', 'light', 'strange',
-        'ancient', 'terrible', 'horrible', 'beautiful', 'ugly', 'quiet', 'loud',
-        'soft', 'hard', 'cold', 'hot', 'warm', 'cool', 'wet', 'dry', 'empty',
-        'full', 'deep', 'shallow', 'thick', 'thin', 'wide', 'narrow', 'vast',
-        'immense', 'enormous', 'tiny', 'massive', 'peculiar', 'odd', 'weird',
-    }
-
-    # Per-call decision: 30% chance to drop adjectives (matches training)
-    should_drop_adjs = drop_adjectives and random.random() < 0.30
-
-    for word in words:
-        word_lower = word.lower().rstrip('.,!?;:')
-
-        # Adjective dropping (per-call decision, not per-word)
-        if should_drop_adjs and word_lower in adjectives_to_drop:
-            continue  # Drop the adjective
-
+    for word in text.split():
         if random.random() > perturbation_rate:
             result.append(word)
             continue
 
-        # Choose perturbation type
         choice = random.random()
-
         if choice < 0.4:
-            # Synonym swap (40% of perturbations)
-            if word_lower in SYNONYMS:
-                synonym = random.choice(SYNONYMS[word_lower])
-                # Preserve case
-                if word[0].isupper():
-                    synonym = synonym.capitalize()
-                result.append(synonym)
-            else:
-                result.append(word)
-
+            result.append(_synonym(word))
         elif choice < 0.7:
-            # Word drop (30% of perturbations)
-            if word.lower() in droppable:
-                pass  # Drop the word
-            else:
+            if not _is_droppable(word):
                 result.append(word)
-
         else:
-            # Typo - swap two adjacent chars (30% of perturbations)
-            if len(word) > 3:
-                i = random.randint(1, len(word) - 2)
-                word = word[:i] + word[i+1] + word[i] + word[i+2:]
-            result.append(word)
+            result.append(_swap_typo(word))
 
-    return ' '.join(result)
+    return " ".join(result)
+
+
+def heavy_perturb_text(text: str, perturbation_rate: float = 0.15) -> str:
+    """Heavier noise for robustness rows: synonym swaps, article drops,
+    swap and double-letter typos, and case errors. Still never drops a
+    word that isn't an article.
+    """
+    result = []
+    for word in text.split():
+        if random.random() > perturbation_rate:
+            result.append(word)
+            continue
+
+        choice = random.random()
+        if choice < 0.30:
+            result.append(_synonym(word))
+        elif choice < 0.50:
+            if not _is_droppable(word):
+                result.append(word)
+        elif choice < 0.75:
+            result.append(_swap_typo(word))
+        elif choice < 0.90:
+            result.append(_double_typo(word))
+        elif random.random() < 0.5:
+            result.append(word.lower())
+        else:
+            result.append(word.upper() if len(word) <= 4 else word)
+
+    return " ".join(result)

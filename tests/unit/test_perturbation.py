@@ -1,146 +1,97 @@
-"""Tests for perturbation module.
+"""Tests for input perturbation (shared by training and inference)."""
 
-Tests cover:
-- Bug 5: Perturbation SYNONYMS/adjectives must match training
-"""
+import random
+import sys
+from pathlib import Path
 
 import pytest
-import random
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / "scripts"))
 
 
-class TestPerturbationMatchesTraining:
-    """Tests for perturbation matching training distribution (Bug 5)."""
+ARTICLES = {"the", "a", "an"}
 
-    def test_synonyms_match_training(self):
-        """SYNONYMS should match training script exactly."""
-        from src.utils.perturbation import SYNONYMS
 
-        expected_keys = {
-            "big", "small", "old", "new", "good", "bad",
-            "house", "said", "walked", "looked",
-            "very", "really",
-        }
+def _run_recording_drops(monkeypatch, fn, text, **kwargs):
+    """Run ``fn`` and return (output, words it chose to drop)."""
+    from src.utils import perturbation
+    dropped = []
+    original = perturbation._is_droppable
 
-        assert set(SYNONYMS.keys()) == expected_keys, (
-            f"Extra keys: {set(SYNONYMS.keys()) - expected_keys}, "
-            f"Missing keys: {expected_keys - set(SYNONYMS.keys())}"
-        )
+    def spy(word):
+        result = original(word)
+        if result:
+            dropped.append(word)
+        return result
 
-        # Check specific values that match training
-        assert SYNONYMS["looked"] == ["appeared", "seemed", "gazed"]
+    monkeypatch.setattr(perturbation, "_is_droppable", spy)
+    return fn(text, **kwargs), dropped
 
-    def test_adjectives_to_drop_match_training(self):
-        """adjectives_to_drop should match training script exactly."""
-        from src.utils import perturbation
-        import inspect
 
-        # Get the adjectives_to_drop from the function source
-        source = inspect.getsource(perturbation.perturb_text)
+class TestPerturbationKeepsMeaning:
+    SAMPLE = (
+        "It is always hard, especially when you are not young anymore. "
+        "Great men never doubt; only little minds are certain. The old house was very small."
+    )
 
-        # The expected training set
-        expected = {
-            'great', 'small', 'large', 'old', 'new', 'good', 'bad',
-            'long', 'short', 'high', 'low', 'young', 'little', 'big',
-            'dark', 'light', 'strange',
-        }
-
-        # Run perturb_text and verify by calling with drop_adjectives=True
-        # We verify the set by checking the source matches
-        assert "'great'" in source
-        assert "'young'" in source
-        assert "'strange'" in source
-        # These should NOT be in the set (extras from inference)
-        assert "'ancient'" not in source or 'ancient' not in str(expected)
-
-    def test_adjective_dropping_is_per_call_decision(self):
-        """Adjective dropping should be all-or-nothing per call, not per word."""
+    @pytest.mark.parametrize("seed", range(50))
+    def test_only_articles_are_dropped(self, seed, monkeypatch):
         from src.utils.perturbation import perturb_text
+        random.seed(seed)
+        out, dropped = _run_recording_drops(monkeypatch, perturb_text, self.SAMPLE, perturbation_rate=0.5)
+        assert len(out.split()) == len(self.SAMPLE.split()) - len(dropped)
+        assert {w.lower() for w in dropped} <= ARTICLES
 
-        text = "The great old big dark strange light new good bad small large high low young little long short house stood."
-
-        # Run many times and check: either ALL adjectives survive or MOST are dropped
-        # Per-call means ~70% of calls keep all, ~30% drop them
-        all_kept = 0
-        some_dropped = 0
-
-        for i in range(100):
-            random.seed(i + 1000)
-            result = perturb_text(text, perturbation_rate=0.0, drop_adjectives=True)
-            result_words = set(result.lower().split())
-
-            adj_words = {'great', 'old', 'big', 'dark', 'strange', 'light',
-                         'new', 'good', 'bad', 'small', 'large', 'high',
-                         'low', 'young', 'little', 'long', 'short'}
-            present = adj_words & result_words
-
-            if present == adj_words:
-                all_kept += 1
-            elif len(present) < len(adj_words):
-                # If some are dropped, ALL should be dropped (per-call decision)
-                some_dropped += 1
-
-        # With per-call decision at 30%, expect ~70% all_kept, ~30% some_dropped
-        # (vs per-word: would almost always have a mix)
-        assert all_kept > 50, (
-            f"Expected ~70% calls to keep all adjectives (per-call decision), "
-            f"got {all_kept}% all_kept"
-        )
-
-
-class TestRstripMatchesTraining:
-    """Tests for rstrip matching training distribution (Bug 1 Round 3)."""
-
-    def test_rstrip_matches_training(self):
-        """Word ending with quote or hyphen should NOT have them stripped for matching.
-
-        Training strips only '.,!?;:' but inference was stripping '.,!?;:"\\'- '
-        which changes synonym/adjective matching behavior.
-        """
+    def test_meaning_words_never_dropped(self):
         from src.utils.perturbation import perturb_text
+        for seed in range(200):
+            random.seed(seed)
+            out = perturb_text(self.SAMPLE, perturbation_rate=0.3).lower()
+            letters = [sorted(w.strip(".,;:!?")) for w in out.split()]
+            for word in ("never", "only", "always", "not"):
+                # Present, possibly with two letters swapped by a typo.
+                assert sorted(word) in letters, f"seed {seed} dropped {word!r}: {out}"
 
-        # Word ending with apostrophe — rstrip should NOT remove it
-        # "don't" should match as "don't", not "don"
-        text = "don't won't it's he's"
-        random.seed(42)
-        result = perturb_text(text, perturbation_rate=0.0)
-        # With rate=0, no perturbation — all words preserved
-        assert "don't" in result
+    def test_is_droppable_only_for_bare_articles(self):
+        from src.utils.perturbation import _is_droppable
+        assert _is_droppable("the") and _is_droppable("An")
+        for word in ("never", "only", "hard", "young", "great", "little", "very", "the."):
+            assert not _is_droppable(word)
 
-        # Word ending with hyphen — should NOT be stripped
-        text2 = 'well-known self-made'
-        random.seed(42)
-        result2 = perturb_text(text2, perturbation_rate=0.0)
-        assert "well-known" in result2
-
-    def test_rstrip_chars_are_exactly_six(self):
-        """The rstrip call should use exactly 6 chars: .,!?;: matching training."""
+    def test_no_adjective_drop_option(self):
         import inspect
+        from src.utils.perturbation import perturb_text
+        assert "drop_adjectives" not in inspect.signature(perturb_text).parameters
+
+    def test_synonym_swap_keeps_punctuation(self):
+        from src.utils.perturbation import perturb_text
+        random.seed(0)
+        for _ in range(200):
+            out = perturb_text("It was big.", perturbation_rate=1.0)
+            assert out.endswith(".")
+
+    def test_rate_zero_is_identity(self):
+        from src.utils.perturbation import perturb_text
+        assert perturb_text(self.SAMPLE, perturbation_rate=0.0) == self.SAMPLE
+
+
+class TestHeavyPerturbation:
+    @pytest.mark.parametrize("seed", range(30))
+    def test_heavy_only_drops_articles(self, seed, monkeypatch):
+        from src.utils.perturbation import heavy_perturb_text
+        random.seed(seed)
+        text = TestPerturbationKeepsMeaning.SAMPLE
+        out, dropped = _run_recording_drops(monkeypatch, heavy_perturb_text, text, perturbation_rate=0.6)
+        assert len(out.split()) == len(text.split()) - len(dropped)
+        assert {w.lower() for w in dropped} <= ARTICLES
+
+
+class TestTrainingUsesSharedPerturbation:
+    def test_training_script_imports_shared_functions(self):
+        import generate_flat_training as gft
         from src.utils import perturbation
-
-        source = inspect.getsource(perturbation.perturb_text)
-        # Should contain the training-matching rstrip
-        assert "rstrip('.,!?;:')" in source, (
-            "rstrip should use exactly '.,!?;:' to match training script"
-        )
-        # Should NOT contain the extended set
-        assert "rstrip('.,!?;:\"\\'\\-')" not in source.replace(" ", ""), (
-            "rstrip should NOT include quotes or hyphens"
-        )
-
-
-class TestSynonymSwapDeadCode:
-    """Bug: synonym swap appends word[len(word_lower):] which is always empty."""
-
-    def test_no_trailing_slice_in_synonym_swap(self):
-        """Synonym swap should not append dead word[len(word_lower):]."""
-        import inspect
-        from src.utils import perturbation
-
-        source = inspect.getsource(perturbation.perturb_text)
-        assert "word[len(word_lower):]" not in source, (
-            "word[len(word_lower):] is dead code — len(word.lower()) == len(word) always, "
-            "so this always appends empty string"
-        )
+        assert gft.perturb_text is perturbation.perturb_text
+        assert gft.create_heavy_perturbation is perturbation.heavy_perturb_text
 
 
 if __name__ == "__main__":

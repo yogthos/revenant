@@ -37,10 +37,9 @@ plot_loss: true
 overwrite_output_dir: true
 
 ### Training
-# Dataset: 10,263 entries
+# Dataset size: see the row counts printed by filter_training_data.py
 # Effective batch size: 1 * 16 = 16 (single GPU)
-# Steps per epoch: 10,263 / 16 = ~641
-# 3 epochs = ~1,924 steps
+# Steps per epoch: train rows / 16
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 16
 learning_rate: 1.0e-4
@@ -51,7 +50,9 @@ bf16: true
 max_grad_norm: 0.3
 
 ### Evaluation
-val_size: 0.05
+# val.jsonl holds out whole source paragraphs (filter_training_data.py).
+# A random split would share outputs with train and mean nothing.
+eval_dataset: russell_val
 per_device_eval_batch_size: 1
 eval_strategy: steps
 eval_steps: 200

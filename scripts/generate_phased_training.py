@@ -62,6 +62,9 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.utils.perturbation import heavy_perturb_text as shared_heavy_perturb_text  # noqa: E402
+from src.utils.perturbation import perturb_text as shared_perturb_text  # noqa: E402
+
 
 # =============================================================================
 # Progress Tracking
@@ -151,20 +154,6 @@ PROMPT_TEMPLATES = [
     "Style transfer to {author} (~{word_count} words):",
 ]
 
-SYNONYMS = {
-    "big": ["large", "huge", "great"],
-    "small": ["little", "tiny", "minor"],
-    "old": ["ancient", "aged", "elderly"],
-    "new": ["fresh", "recent", "modern"],
-    "good": ["fine", "nice", "great"],
-    "bad": ["poor", "awful", "terrible"],
-    "house": ["building", "home", "dwelling"],
-    "said": ["stated", "spoke", "remarked"],
-    "walked": ["went", "moved", "traveled"],
-    "looked": ["appeared", "seemed", "gazed"],
-    "very": ["quite", "rather", "extremely"],
-    "really": ["truly", "actually", "indeed"],
-}
 
 MUNDANE_TOPICS = [
     "making toast for breakfast", "doing the weekly laundry", "organizing a closet",
@@ -181,78 +170,12 @@ MUNDANE_TOPICS = [
 
 def perturb_text(text: str, rate: float = 0.08) -> str:
     """Apply light perturbations (8% rate)."""
-    words = text.split()
-    result = []
-    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite'}
-
-    for word in words:
-        if random.random() > rate:
-            result.append(word)
-            continue
-
-        choice = random.random()
-        if choice < 0.4:
-            word_lower = word.lower().rstrip('.,!?;:')
-            if word_lower in SYNONYMS:
-                synonym = random.choice(SYNONYMS[word_lower])
-                if word[0].isupper():
-                    synonym = synonym.capitalize()
-                result.append(synonym + word[len(word_lower):])
-            else:
-                result.append(word)
-        elif choice < 0.7:
-            if word.lower() not in droppable:
-                result.append(word)
-        else:
-            if len(word) > 3:
-                i = random.randint(1, len(word) - 2)
-                word = word[:i] + word[i+1] + word[i] + word[i+2:]
-            result.append(word)
-
-    return ' '.join(result)
+    return shared_perturb_text(text, perturbation_rate=rate)
 
 
 def heavy_perturb_text(text: str, rate: float = 0.15) -> str:
     """Apply heavy perturbations for Noise variants (15% rate)."""
-    words = text.split()
-    result = []
-    droppable = {'the', 'a', 'an', 'very', 'really', 'just', 'quite', 'some', 'this', 'that'}
-
-    for word in words:
-        if random.random() > rate:
-            result.append(word)
-            continue
-
-        choice = random.random()
-        if choice < 0.30:
-            word_lower = word.lower().rstrip('.,!?;:')
-            if word_lower in SYNONYMS:
-                synonym = random.choice(SYNONYMS[word_lower])
-                if word[0].isupper():
-                    synonym = synonym.capitalize()
-                result.append(synonym + word[len(word_lower):])
-            else:
-                result.append(word)
-        elif choice < 0.50:
-            if word.lower() not in droppable:
-                result.append(word)
-        elif choice < 0.75:
-            if len(word) > 3:
-                i = random.randint(1, len(word) - 2)
-                word = word[:i] + word[i+1] + word[i] + word[i+2:]
-            result.append(word)
-        elif choice < 0.90:
-            if len(word) > 2:
-                i = random.randint(0, len(word) - 1)
-                word = word[:i] + word[i] + word[i:]
-            result.append(word)
-        else:
-            if random.random() < 0.5:
-                result.append(word.lower())
-            else:
-                result.append(word.upper() if len(word) <= 4 else word)
-
-    return ' '.join(result)
+    return shared_heavy_perturb_text(text, perturbation_rate=rate)
 
 
 def generate_style_tag(text: str) -> str:
