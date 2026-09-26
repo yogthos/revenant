@@ -135,6 +135,7 @@ class PersonaBuilder:
             grafting_guidance=graft,
             target_words=word_count(out),
             worldview=self.worldview,
+            satisfied_by=out,
         )
 
 

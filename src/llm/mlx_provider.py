@@ -241,6 +241,62 @@ def parse_numbered_response(response: str, expected: int) -> dict:
     return {num: text for num, text in parsed.items() if text}
 
 
+
+_CLAUSE_CONJUNCTIONS = {"and", "but", "or", "yet", "so"}
+_SUBJECTS = {"nsubj", "nsubjpass", "expl", "csubj", "csubjpass"}
+_spacy_lock = None
+
+
+def _has_clause(tokens) -> bool:
+    """True if a verb in ``tokens`` has its subject inside ``tokens`` too."""
+    ids = {t.i for t in tokens}
+    return any(t.pos_ in ("VERB", "AUX") and any(c.dep_ in _SUBJECTS and c.i in ids for c in t.children) for t in tokens)
+
+
+def _split_clauses(part: str) -> list:
+    """Split ``part`` before each and/but/or/yet/so that joins two full clauses.
+
+    Conjunctions inside a clause ("two and a half", "what he sees and feels
+    tells him", "Even so, scientists...") are left alone: splitting there
+    produced fragments that changed the meaning.
+    """
+    import threading
+    global _spacy_lock
+    if _spacy_lock is None:
+        _spacy_lock = threading.Lock()
+    from ..utils.nlp import get_nlp
+    with _spacy_lock:
+        doc = get_nlp()(part)
+
+    cuts = []
+    start = 0
+    for tok in doc:
+        if tok.lower_ not in _CLAUSE_CONJUNCTIONS or tok.i <= start:
+            continue
+        right = doc[tok.i + 1:]
+        # The right clause must begin right after the conjunction (so "Even
+        # so, X" whose clause starts at "Even" doesn't count) and each side
+        # needs a verb with its own subject.
+        clause_starts_here = any(
+            t.pos_ in ("VERB", "AUX") and t.left_edge.i in (tok.i, tok.i + 1) and t.i > tok.i
+            and any(c.dep_ in _SUBJECTS and c.i > tok.i for c in t.children) for t in right)
+        if clause_starts_here and _has_clause(doc[start:tok.i]):
+            cuts.append(tok.i)
+            start = tok.i
+
+    if not cuts:
+        return [part]
+    bounds = [0] + cuts + [len(doc)]
+    pieces = []
+    for a, b in zip(bounds, bounds[1:]):
+        span = doc[a:b]
+        text = span.text.strip(' ,')
+        if b < len(doc):
+            text = text.rstrip(',')
+        pieces.append(text)
+    return [p for p in pieces if p]
+
+
 class BaseRTTNeutralizer:
     """Shared logic for RTT neutralizers (entity masking + monotone flattening).
 
@@ -357,16 +413,15 @@ class BaseRTTNeutralizer:
         text = re.sub(r'\s*,\s*([.!?;:])', r'\1', text)
         text = re.sub(r'^\s*,\s*', '', text)
 
-        conjunctions = {'and', 'but', 'or', 'yet', 'so', 'however', 'although', 'while', 'whereas'}
-        conj_pattern = r'\s*,?\s*\b(and|but|or|yet|so|however|although|while|whereas)\b\s*'
-
         def finish(segment: str) -> str:
             segment = segment.strip(' ,')
-            if not segment.endswith(('.', '!', '?')):
+            if not re.search(r'[.!?]["\'\u201d\u2019)\]]*$', segment):
                 segment += '.'
             return segment[0].upper() + segment[1:]
 
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+        # A sentence ends where the next one starts with a capital, so "e.g.
+        # his" stays in one sentence.
+        sentences = re.split(r'(?<=[.!?])\s+(?=["\'\u201c\u2018(]?[A-Z0-9])', text)
         result = []
 
         for sent in sentences:
@@ -383,27 +438,9 @@ class BaseRTTNeutralizer:
                     result.append(finish(part))
                     continue
 
-                # Split long parts at conjunctions. The conjunction stays at the
-                # head of the following clause, and clauses under 3 words are
-                # folded back into the previous one rather than thrown away.
-                segments = []
-                conj = None
-                for piece in re.split(conj_pattern, part, flags=re.IGNORECASE):
-                    piece = piece.strip(' ,')
-                    if not piece:
-                        continue
-                    if piece.lower() in conjunctions:
-                        conj = piece.lower()
-                        continue
-                    clause = f"{conj} {piece}" if conj else piece
-                    conj = None
-                    if segments and len(piece.split()) < 3:
-                        segments[-1] = f"{segments[-1].rstrip('.!?')}, {clause}"
-                    else:
-                        segments.append(clause)
-                if conj and segments:
-                    segments[-1] = f"{segments[-1]} {conj}"
-                result.extend(finish(seg) for seg in segments)
+                # Long parts split before a conjunction that joins two full
+                # clauses; the conjunction heads the following sentence.
+                result.extend(finish(seg) for seg in _split_clauses(part))
 
         return ' '.join(result) if result else text
 

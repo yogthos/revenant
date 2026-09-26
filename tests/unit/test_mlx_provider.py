@@ -444,3 +444,37 @@ class TestChunkedKeepsOuterPlaceholders:
         assert out is not None
         assert "Wittgenstein" in out
         assert "__ENT" not in out
+
+
+class TestMonotoneFlattenSplitsOnlyClauses:
+    """Long sentences split only where a conjunction joins two full clauses;
+    splitting "two and a half" or "sees and feels" garbled the meaning."""
+
+    @pytest.mark.parametrize("text, kept", [
+        ("The method that Copernicus introduced to astronomy about two and a half centuries ago is still "
+         "the basis of our picture of the heavens.", "two and a half centuries ago"),
+        ("A physicist thinks that what he sees and feels tells him about what is actually happening in "
+         "the physical world around him.", "what he sees and feels tells him"),
+        ("Even so, scientists did not hesitate to apply the logic and mathematics that had worked on the "
+         "surface of the earth to the whole of the universe.", "Even so, scientists"),
+    ])
+    def test_does_not_split_inside_a_clause(self, base_neutralizer, text, kept):
+        assert kept in base_neutralizer._monotone_flatten(text)
+
+    def test_splits_between_clauses(self, base_neutralizer):
+        text = ("He studied logic for many years at Cambridge in the years before the war, and he then "
+                "turned his whole attention toward politics.")
+        out = base_neutralizer._monotone_flatten(text)
+        assert "war. And he then turned" in out
+
+    @pytest.mark.parametrize("text", [
+        'A good speech is "solid," a bad speech is "gas," because a gas is not quite "real."',
+        "A good speech is “solid,” because a gas is not quite “real.”",
+    ])
+    def test_no_period_after_a_closing_quote(self, base_neutralizer, text):
+        out = base_neutralizer._monotone_flatten(text)
+        assert not out.endswith(('".', '”.'))
+
+    def test_abbreviations_do_not_end_a_sentence(self, base_neutralizer):
+        text = "Every particular is tied to two places, e.g. his sensation of the star."
+        assert "e.g. his sensation" in base_neutralizer._monotone_flatten(text)

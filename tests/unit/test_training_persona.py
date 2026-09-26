@@ -73,6 +73,7 @@ class TestPersonaBuilder:
         assert kwargs["grafting_guidance"] == "GRAFT"
         assert kwargs["target_words"] == 5
         assert kwargs["worldview"] == "russell_worldview.txt"
+        assert kwargs["satisfied_by"] == row["output"]
 
 
 class TestFinalizeLayout:

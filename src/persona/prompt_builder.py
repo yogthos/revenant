@@ -190,7 +190,42 @@ ROTATING_CONSTRAINTS = [
 ]
 
 
-def _build_constraints() -> str:
+_TRANSITIONS = r"\b(however|moreover|furthermore|therefore|thus|hence|consequently|nevertheless|nonetheless)\b"
+
+# How to tell whether a text obeys a constraint. Training keeps only the
+# constraints its target obeys; a row that says "never use Therefore" above a
+# target that does teaches the model to ignore constraints. Constraints with
+# no check here ("Do not explain. Imply.") are never put on training rows.
+_CONSTRAINT_CHECKS = {
+    ALWAYS_CONSTRAINTS[0]: lambda t: not re.search(
+        r"\b(moreover|furthermore|therefore|thus|hence|in conclusion|it is important to note|"
+        r"it is worth noting|this highlights|this underscores|in essence|ultimately)\b", t, re.I),
+    ALWAYS_CONSTRAINTS[1]: lambda t: not re.search(
+        r"\b(arguably|it could be said|one might argue|perhaps it is|it seems that)\b", t, re.I),
+    FREQUENT_CONSTRAINTS[1]: lambda t: not re.search(
+        r"\b(firstly|secondly|thirdly)\b|^\s*\d+[.)]\s", t, re.I | re.M),
+    "Use fragments. Interrupt yourself with dashes (—).": lambda t: bool(re.search(r"[—–]| -- ", t)),
+    "Let ideas collide without transition words.": lambda t: not re.search(_TRANSITIONS, t, re.I),
+    "Use at least one rhetorical question.": lambda t: "?" in t,
+    "Interrupt yourself with a parenthetical thought.": lambda t: bool(re.search(r"\([^)]+\)", t)),
+    "Start the paragraph with a conjunction (But, And, Yet, So).":
+        lambda t: bool(re.match(r"[\s\"'“‘]*(but|and|yet|so)\b", t, re.I)),
+}
+
+
+def constraint_holds(constraint: str, text: str) -> bool:
+    """True if ``text`` demonstrably obeys ``constraint``."""
+    check = _CONSTRAINT_CHECKS.get(constraint)
+    return bool(check and check(text))
+
+
+def _format_constraints(constraints: list, satisfied_by: Optional[str] = None) -> str:
+    if satisfied_by is not None:
+        constraints = [c for c in constraints if constraint_holds(c, satisfied_by)]
+    return "\n".join(f"[CONSTRAINT]: {c}" for c in constraints)
+
+
+def _build_constraints(satisfied_by: Optional[str] = None) -> str:
     """Build constraint block matching training format.
 
     Training used tiered constraints (3 tiers only):
@@ -214,7 +249,7 @@ def _build_constraints() -> str:
     if random.random() < 0.40:
         constraints.append(random.choice(ROTATING_CONSTRAINTS))
 
-    return "\n".join(f"[CONSTRAINT]: {c}" for c in constraints)
+    return _format_constraints(constraints, satisfied_by)
 
 
 def _detect_content_type(content: str) -> bool:
@@ -236,6 +271,7 @@ def build_persona_instruction(
     deterministic_constraints: bool = False,
     adapter_path: Optional[str] = None,
     worldview: Optional[str] = None,
+    satisfied_by: Optional[str] = None,
 ) -> str:
     """Build the persona instruction for one paragraph.
 
@@ -244,7 +280,8 @@ def build_persona_instruction(
 
     ``content`` picks the narrative or conceptual frame. ``worldview`` names
     the persona file directly; otherwise it comes from the adapter's entry in
-    config.json.
+    config.json. ``satisfied_by`` is a training row's target: constraints it
+    doesn't obey are left out.
     """
     is_narrative = _detect_content_type(content)
 
@@ -267,13 +304,15 @@ def build_persona_instruction(
         parts.append(structural_guidance)
 
     # Constraints (TIERED - matching training distribution)
-    parts.append("")
     if deterministic_constraints:
         # For testing: include all constraints
-        constraints = ALWAYS_CONSTRAINTS + FREQUENT_CONSTRAINTS + [ROTATING_CONSTRAINTS[0]]
-        parts.append("\n".join(f"[CONSTRAINT]: {c}" for c in constraints))
+        constraints = _format_constraints(
+            ALWAYS_CONSTRAINTS + FREQUENT_CONSTRAINTS + [ROTATING_CONSTRAINTS[0]], satisfied_by)
     else:
-        parts.append(_build_constraints())
+        constraints = _build_constraints(satisfied_by)
+    if constraints:
+        parts.append("")
+        parts.append(constraints)
 
     return "\n".join(parts)
 
