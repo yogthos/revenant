@@ -136,12 +136,27 @@ LlamaFactory rows and inference both read frames from `prompts/{author}_worldvie
 (`--worldview` in training, `worldview` in config.json). The `PERSONA_FRAMES` dict in
 `generate_flat_training.py` is only used for the legacy MLX format.
 
-### Anti-AI Constraints
+### Constraints and Style Directives
 
-Every training entry includes tiered constraints to prevent LLM-speak:
-- **Always** (100%): Ban "Moreover", "Furthermore", "Therefore", etc.
-- **Frequent** (70%): No topic sentences, no numbered lists
-- **Rotating** (40%): One random stylistic constraint (fragments, rhetorical questions, etc.)
+A constraint only goes on a training row if the target obeys it. A row that
+says "never use Therefore" above a Russell paragraph that uses it teaches the
+model to ignore constraints.
+
+Authors whose worldview file has a `[DIRECTIVES]` section (`check: text` lines,
+see `prompts/russell_worldview.txt`) get:
+- the anti-LLM constraints (banned transitions, no hedging) when the text obeys them
+- 2-4 random directives drawn from the author's own habits (a long opening
+  sentence, a semicolon, a hypothetical, a short sentence after a long one...),
+  each checked by `DIRECTIVE_CHECKS` in `src/persona/prompt_builder.py`
+
+In training the directives are checked against the row's target; at inference
+against the grafted corpus paragraph. Both are real paragraphs by the author, so
+the directive sets have the same distribution, and every paragraph gets a
+different structure to aim for. Write directives from measured frequencies:
+ones most paragraphs obey do little, and ones almost none obey never show up.
+
+Authors without `[DIRECTIVES]` keep the old tiers their adapters were trained
+on (always 100%, frequent 70%, one rotating 40%).
 
 ### Instruction Template Diversity
 
@@ -152,7 +167,7 @@ used 15 templates × 5 system prompts (75 combinations) to prevent this.
 
 Our pipeline achieves diversity through:
 - Multiple persona frames (3+ narrative, 3+ conceptual per author)
-- Random constraint selection (ALWAYS + 70% FREQUENT + 40% ROTATING)
+- Random style directives drawn from the target (or the old constraint tiers)
 - Grafted rhetorical skeleton and RAG rhythm pattern, which vary per row
 - Random word count targets
 

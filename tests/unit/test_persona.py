@@ -19,7 +19,7 @@ class TestLoadPersonaFile:
         # Clear lru_cache to ensure fresh call
         _load_persona_file.cache_clear()
         result = _load_persona_file("")
-        assert result == {"narrative_frames": [], "conceptual_frames": []}
+        assert result == {"narrative_frames": [], "conceptual_frames": [], "directives": []}
 
     def test_nonexistent_file_raises(self):
         """Bug M10: Non-empty filename that doesn't exist should raise, not silently
