@@ -63,6 +63,51 @@ class TestTrainingConfigs:
         info = json.loads((HEMMINGWAY.parent / "dataset_info.json").read_text())
         assert info["russell_sft"]["columns"].get("system") == "system"
 
+    def test_hemmingway_trains_in_bf16(self):
+        # Unsloth: QLoRA on Qwen3.5 models (dense or MoE) loses more to
+        # quantization than usual. bf16 LoRA fits one 80GB card.
+        cfg = _load(HEMMINGWAY)
+        assert "quantization_bit" not in cfg
+        assert cfg["bf16"] is True
+
+    def test_hemmingway_adapter_scale_is_one(self):
+        # The converter bakes this in and config.json's scale 1.0 means "as trained".
+        cfg = _load(HEMMINGWAY)
+        rank, alpha = cfg["lora_rank"], cfg["lora_alpha"]
+        scale = alpha / rank ** 0.5 if cfg.get("use_rslora") else alpha / rank
+        assert scale == 1.0
+
+    def test_hemmingway_run_resumes_after_a_crash(self):
+        # With overwrite_output_dir LlamaFactory ignores existing checkpoints,
+        # so relaunching a multi-hour headless run would start over.
+        cfg = _load(HEMMINGWAY)
+        assert cfg.get("overwrite_output_dir") is False
+        assert not cfg.get("save_only_model")
+        assert cfg["save_strategy" if "save_strategy" in cfg else "eval_strategy"] == "steps"
+
+
+class TestArchiveAdapters:
+    SCRIPT = ROOT / "scripts/runpod/archive_adapters.sh"
+
+    def _checkpoint(self, root, step, complete=True):
+        ckpt = root / f"checkpoint-{step}"
+        ckpt.mkdir(parents=True)
+        for name in ("adapter_model.safetensors", "adapter_config.json", "optimizer.pt"):
+            (ckpt / name).write_text(name)
+        if complete:
+            (ckpt / "trainer_state.json").write_text("{}")
+        return ckpt
+
+    def test_copies_adapters_of_finished_checkpoints(self, tmp_path):
+        saves, archive = tmp_path / "saves", tmp_path / "adapters"
+        self._checkpoint(saves, 100)
+        self._checkpoint(saves, 200, complete=False)
+        subprocess.run(["bash", str(self.SCRIPT), str(saves), str(archive), "--once"], check=True)
+        assert (archive / "checkpoint-100/adapter_model.safetensors").exists()
+        assert (archive / "checkpoint-100/trainer_state.json").exists()
+        assert not (archive / "checkpoint-100/optimizer.pt").exists()
+        assert not (archive / "checkpoint-200").exists()
+
 
 class TestRowLength:
     def test_rows_over_the_token_budget_are_dropped(self):

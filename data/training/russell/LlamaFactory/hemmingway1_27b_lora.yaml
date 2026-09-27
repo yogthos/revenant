@@ -1,24 +1,26 @@
 ### Model
 # Altworld/Hemmingway-1: dense 27B Qwen3.8 fine-tune (Qwen3_5ForCausalLM,
-# text only). 48 Gated DeltaNet linear-attention layers + 16 full-attention
-# layers. It is a chat model with a thinking chat template. CC BY-NC 4.0.
+# model_type qwen3_5_text, text only). 48 Gated DeltaNet linear-attention
+# layers + 16 full-attention layers. It is a chat model with a thinking chat
+# template. 27.3B bf16 parameters (54.6GB). CC BY-NC 4.0.
 model_name_or_path: Altworld/Hemmingway-1
 
 ### Method
 stage: sft
 do_train: true
 finetuning_type: lora
-# All linear layers: attention q/k/v/o, DeltaNet in_proj_*/out_proj and the
-# MLP. LlamaFactory leaves lm_head alone.
+# Every linear layer: attention q/k/v/o, DeltaNet in_proj_qkv/z/a/b and
+# out_proj, and the MLP. Two thirds of the layers are DeltaNet, so a q/k/v/o +
+# MLP list would miss most of the attention. lm_head is left alone.
 lora_target: all
-# Rank 256 per docs/style_transfer_training.md (rank is the biggest lever on
-# style capture). That is ~2B trainable parameters on this model.
-lora_rank: 256
-# rsLoRA scales by alpha/sqrt(rank): 16/16 = 1.0, the scale the MLX converter
-# bakes in. config.json's "scale" multiplies it at inference (1.0 = as trained).
-lora_alpha: 16
-use_rslora: true
-lora_dropout: 0.1
+# Rank 64 is ~470M trainable parameters, far more capacity than ~2M target
+# tokens need ("LoRA Without Regret": past that point rank changes little).
+# Rank 256 in bf16 doesn't fit one 80GB card; see MEMORY below.
+lora_rank: 64
+# Plain LoRA scaling alpha/rank = 1.0, the scale the MLX converter bakes in.
+# config.json's "scale" multiplies it at inference (1.0 = as trained).
+lora_alpha: 64
+lora_dropout: 0.05
 neftune_noise_alpha: 5.0
 
 ### Dataset
@@ -42,48 +44,60 @@ preprocessing_num_workers: 8
 ### Output
 output_dir: saves/Hemmingway-1/lora/russell
 logging_steps: 10
-save_steps: 200
-save_total_limit: 3
+# A checkpoint every 100 steps (~800 rows), 27 over the run.
+# scripts/runpod/archive_adapters.sh copies each one's adapter (~2GB) to
+# /workspace/adapters for evaluation; the full checkpoints (adapter +
+# optimizer state) are pruned to the last few plus the best.
+save_steps: 100
+save_total_limit: 4
 plot_loss: true
-overwrite_output_dir: true
+# false: relaunching the same command resumes from the last checkpoint.
+# LlamaFactory ignores existing checkpoints when this is true.
+overwrite_output_dir: false
+save_only_model: false
 report_to: none
 
 ### Training
-# Effective batch 8 (small batches keep style quirks). ~10k rows / 8 = ~1,300
-# steps per epoch on one GPU.
+# 7,195 rows / effective batch 8 = ~900 steps per epoch, ~2,700 in all.
+# Small batches: LoRA tolerates large ones worse than full fine-tuning.
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
-# Neutral rsLoRA scaling; the Qwen3.5 runs used 2e-5 at this setting.
-learning_rate: 2.0e-5
+# "LoRA Without Regret": the best LoRA learning rate is ~10x full
+# fine-tuning's, ~1e-4 at alpha 32. At alpha 64 (twice the update size)
+# that is ~5e-5; 4e-5 errs low for a small dataset seen three times.
+learning_rate: 4.0e-5
 num_train_epochs: 3.0
 lr_scheduler_type: cosine
-warmup_ratio: 0.1
+warmup_ratio: 0.05
 # The DeltaNet layers produce the occasional gradient spike early on.
 max_grad_norm: 0.3
 bf16: true
 
 ### Evaluation
 # val.jsonl holds out whole source paragraphs (filter_training_data.py), so
-# eval loss measures generalisation and picks the checkpoint to keep.
+# eval loss measures generalisation. The final adapter is the checkpoint with
+# the lowest eval loss; every checkpoint's adapter is still archived.
 eval_dataset: russell_val
-per_device_eval_batch_size: 4
+per_device_eval_batch_size: 2
 eval_strategy: steps
-eval_steps: 200
+eval_steps: 100
 load_best_model_at_end: true
 metric_for_best_model: eval_loss
 greater_is_better: false
 
-### Memory (1x A100/H100 80GB, ~45GB used)
-# QLoRA: 4-bit base ~15GB plus bf16 embeddings/lm_head ~5GB, LoRA params,
-# grads and 8-bit Adam ~20GB, activations a few GB. bf16 weights alone are
-# 54GB, which leaves no room for rank 256 on one card. For bf16 LoRA use two
-# 80GB GPUs with DeepSpeed ZeRO-3 (deepspeed: pointing at
-# data/training/howard_russell/LlamaFactory/ds_z3_config.json) and drop
-# quantization_bit.
-quantization_bit: 4
+### Memory (1x A100/H100 80GB, ~70GB used)
+# bf16 LoRA. Unsloth advises against QLoRA on Qwen3.5 models, dense or MoE,
+# because they lose more to 4-bit quantization than usual.
+#   base weights bf16            54.6GB
+#   LoRA params, grads (fp32)     3.8GB
+#   AdamW states (fp32)           3.8GB
+#   activations (checkpointed)   ~6GB
+# Liger's fused cross-entropy never materialises the 2048 x 248k logits.
+# Rank 128 adds ~7.5GB and rank 256 ~22GB: use an H200 (141GB) for those.
 flash_attn: sdpa
 gradient_checkpointing: true
-optim: paged_adamw_8bit
+enable_liger_kernel: true
+optim: adamw_torch
 
 # =============================================================================
 # POST-TRAINING: run locally with MLX (see docs/runpod.md)

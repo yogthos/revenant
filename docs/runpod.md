@@ -7,16 +7,48 @@ For training concepts and hyperparameter rationale, see `style_transfer_training
 
 | Config | GPU | Use Case |
 |--------|-----|----------|
-| 1x A100 80GB | Hemmingway-1 27B QLoRA 4-bit (rank 256, ~45GB) | ~$1.64/hr |
+| 1x H100 or A100 80GB | Hemmingway-1 27B bf16 LoRA (rank 64, ~70GB) | ~$1.64-2.69/hr |
 | 1x A100 80GB | Qwen 2.5-32B QLoRA 4-bit (rank 256, ~35GB) | ~$1.64/hr |
 | 2x A100 80GB | Qwen 2.5-32B bf16 + DeepSpeed ZeRO-3 (rank 256, ~40GB/GPU) | ~$3.28/hr |
 | 2x H100 80GB | Qwen 3.5-35B bf16 (rank 256, ~80GB per GPU) | ~$6.58/hr |
 
+- **On-demand, not spot/interruptible**, for multi-hour runs
 - **Container disk**: 20GB default is fine
 - **Volume disk**: 200GB+ (model weights + checkpoints — ZeRO-3 checkpoints are ~29GB each)
 - **Template**: RunPod PyTorch 2.x (CUDA 12.x)
 
-## Setup
+## Hemmingway-1 Quick Start
+
+`scripts/runpod/` does all of this. Everything goes on `/workspace`, including
+a venv, so stopping and restarting the pod loses nothing.
+
+```bash
+cd /workspace && git clone <your-repo-url> revenant
+bash revenant/scripts/runpod/setup.sh          # installs, copies data, downloads the model
+bash revenant/scripts/runpod/train.sh --smoke  # 5 steps with a save and an eval
+tmux attach -t train                           # check memory and loss, then exit the shell
+tmux kill-session -t train
+bash revenant/scripts/runpod/train.sh          # the real run, detached in tmux
+```
+
+- `tmux attach -t train` to watch, `Ctrl-b d` to detach, `Ctrl-b n` for the
+  archive window. You can close the SSH session; the run keeps going.
+- If the run dies (or the pod restarts), run `train.sh` again: the yaml keeps
+  `overwrite_output_dir: false`, so LlamaFactory resumes from the last checkpoint.
+- A checkpoint every 100 steps (~27 in all). The trainer keeps the last four
+  full checkpoints plus the best; the archive window copies every checkpoint's
+  adapter (~2GB) to `/workspace/adapters/checkpoint-N` for evaluation.
+- Progress: `tail -n 2 /workspace/russell_training/saves/Hemmingway-1/lora/russell/trainer_log.jsonl`
+  shows loss, eval loss and remaining time. Expect roughly 1-1.5h per epoch on
+  an H100 and 2.5-3.5h on an A100, so 4-10h for the three epochs.
+
+What the smoke test should show: loss starting around 1-3, no OOM
+(`nvidia-smi` in another window, ~70GB), `Found linear modules:` listing
+`in_proj_qkv`, `in_proj_z`, `in_proj_a`, `in_proj_b` and `out_proj` next to
+`q_proj`... `down_proj`, no "fast path is not available" warning, and a
+`saves/smoke/checkpoint-5` with an eval loss in its `trainer_state.json`.
+
+## Setup (manual)
 
 ```bash
 # tmux so you can disconnect
@@ -72,7 +104,9 @@ cp revenant/data/training/russell/LlamaFactory/{dataset_info.json,train.jsonl,va
 The yaml trains in Hemmingway-1's own chat format: persona as the system
 message, text as the user message, thinking off (`template: qwen3_8`,
 `enable_thinking: false`), without packing, and keeps the checkpoint with the
-lowest validation loss (`load_best_model_at_end`). The model is CC BY-NC 4.0.
+lowest validation loss (`load_best_model_at_end`). It is bf16 LoRA: Unsloth
+advises against QLoRA on Qwen3.5-architecture models. Rank 64 fits one 80GB
+card; for rank 128+ use an H200. The model is CC BY-NC 4.0.
 
 ### Qwen 2.5 — Howard Russell (blended)
 
@@ -108,7 +142,7 @@ llamafactory-cli train hemmingway1_27b_lora.yaml
 ```
 
 Model auto-downloads from HuggingFace on first run.
-- Hemmingway-1 27B: ~54GB (bf16, quantized to 4-bit on load)
+- Hemmingway-1 27B: ~55GB (bf16, trained in bf16)
 - Qwen 2.5-32B: ~18GB (4-bit quantized during training)
 - Qwen 3.5-35B-A3B: ~70GB (bf16)
 
@@ -123,6 +157,20 @@ First 10-20 steps: loss should be in the 1-3 range and declining. If loss spikes
 1000 or drops to 0.0, the config has a problem.
 
 ## Grabbing a Mid-Training Checkpoint
+
+For Hemmingway-1 the archive window has already copied every checkpoint's
+adapter to `/workspace/adapters/checkpoint-N`. Its `trainer_state.json` has
+the eval losses so far. Pull one and convert it as below:
+
+```bash
+scp -r -P <port> root@<pod-ip>:/workspace/adapters/checkpoint-900 .
+python scripts/convert_peft_to_mlx.py --input checkpoint-900 \
+    --output lora_adapters/russell_hemmingway_900 \
+    --mlx-model models/Hemmingway-1-6bit-MLX \
+    --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+```
+
+For the other configs:
 
 You can download and test any checkpoint while training continues. Useful for
 evaluating epoch 1 quality without stopping a 3-epoch run.
