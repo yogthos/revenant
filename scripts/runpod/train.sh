@@ -46,6 +46,6 @@ fi
 
 tmux new-session -d -s train -n train -c "$RUN_DIR" \
     "bash -c '$ENV && python $REPO/scripts/runpod/lf_train.py $YAML 2>&1 | tee -a train.log; exec bash'"
-tmux new-window -t train -n archive \
+tmux new-window -t train: -n archive \
     "bash $REPO/scripts/runpod/archive_adapters.sh $SAVES $ARCHIVE"
 echo "Training in tmux session 'train': tmux attach -t train"
