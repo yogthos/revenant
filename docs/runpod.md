@@ -61,7 +61,8 @@ tmux new -s train
 
 # CRITICAL: Point caches to workspace (root overlay is only 20GB)
 export HF_HOME=/workspace/huggingface_cache
-export HF_DATASETS_CACHE=/workspace/huggingface_cache/datasets
+# Not on /workspace for network volumes: datasets chmods its cache files.
+export HF_DATASETS_CACHE=/root/.cache/huggingface/datasets
 mkdir -p $HF_DATASETS_CACHE
 
 # Install LlamaFactory from git

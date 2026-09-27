@@ -16,7 +16,10 @@ RUN_DIR=/workspace/russell_training
 YAML=hemmingway1_27b_lora.yaml
 SAVES=$RUN_DIR/saves/Hemmingway-1/lora/russell
 ARCHIVE=/workspace/adapters
-ENV="source /root/venv/bin/activate && export HF_HOME=/workspace/huggingface_cache"
+# The datasets cache chmods its files, which the network volume refuses, so it
+# stays on the container disk (it's small and rebuilt in a minute).
+ENV="source /root/venv/bin/activate && export HF_HOME=/workspace/huggingface_cache \
+HF_DATASETS_CACHE=/root/.cache/huggingface/datasets"
 
 # Mouse-wheel scrolling and a long scrollback. history-limit only applies to
 # windows created after it's set, so load it before the session starts.
