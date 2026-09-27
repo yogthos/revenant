@@ -411,6 +411,9 @@ class BaseRTTNeutralizer:
         text = re.sub(r'\s*[—–]\s*', ', ', text)
         text = re.sub(r'\s*,(\s*,)+\s*', ', ', text)
         text = re.sub(r'\s*,\s*([.!?;:])', r'\1', text)
+        # "(see Chapter IV.)." leaves "IV.." and "(and so on...)." leaves "....".
+        text = re.sub(r'(?<=\.\.\.)\.+', '', text)
+        text = re.sub(r'(?<![.])\.\.(?![.])', '.', text)
         text = re.sub(r'^\s*,\s*', '', text)
 
         def finish(segment: str) -> str:

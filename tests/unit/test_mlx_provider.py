@@ -478,3 +478,10 @@ class TestMonotoneFlattenSplitsOnlyClauses:
     def test_abbreviations_do_not_end_a_sentence(self, base_neutralizer):
         text = "Every particular is tied to two places, e.g. his sensation of the star."
         assert "e.g. his sensation" in base_neutralizer._monotone_flatten(text)
+
+    @pytest.mark.parametrize("text, end", [
+        ("It explains the photo-electric effect (see Chapter IV.).", "see Chapter IV."),
+        ("It goes beyond cases examined by perception (and so on...).", "and so on..."),
+    ])
+    def test_aside_ending_in_a_period_keeps_one(self, base_neutralizer, text, end):
+        assert base_neutralizer._monotone_flatten(text).endswith(end)
