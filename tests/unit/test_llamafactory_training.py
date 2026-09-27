@@ -169,3 +169,13 @@ class TestConverter:
         mlx = self._mlx_model(tmp_path, ["language_model.model.layers.0.self_attn.k_proj.weight"])
         with pytest.raises(ValueError, match="q_proj"):
             convert_peft_to_mlx(peft_dir, tmp_path / "out", mlx_model_path=str(mlx), train_config=HEMMINGWAY)
+
+
+class TestTextOnlyTemplate:
+    def test_qwen3_8_encodes_without_an_image_processor(self):
+        pytest.importorskip("llamafactory")
+        sys.path.insert(0, str(ROOT / "scripts/runpod"))
+        from lf_train import use_text_plugin
+        from llamafactory.data.template import TEMPLATES
+        use_text_plugin()
+        TEMPLATES["qwen3_8"].mm_plugin._validate_input(None, [], [], [])

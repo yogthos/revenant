@@ -1,5 +1,6 @@
 #!/bin/bash
-# Start Hemmingway-1 training in a detached tmux session, or resume it: the
+# Start Hemmingway-1 training in a detached tmux session (through lf_train.py,
+# which lets LlamaFactory's qwen3_8 template run without an image processor), or resume it: the
 # yaml keeps overwrite_output_dir false, so relaunching picks up the last
 # checkpoint. Window "train" runs LlamaFactory (log in train.log), window
 # "archive" copies each checkpoint's adapter to /workspace/adapters.
@@ -37,14 +38,14 @@ fi
 if [ "${1:-}" = "--smoke" ]; then
     # Checks memory, a save and an eval before committing to the long run.
     tmux new-session -d -s train -n train -c "$RUN_DIR" \
-        "bash -c '$ENV && llamafactory-cli train $YAML max_steps=5 save_steps=5 eval_steps=5 \
+        "bash -c '$ENV && python $REPO/scripts/runpod/lf_train.py $YAML max_steps=5 save_steps=5 eval_steps=5 \
          logging_steps=1 output_dir=saves/smoke overwrite_output_dir=true 2>&1 | tee smoke.log; exec bash'"
     echo "Smoke test running: tmux attach -t train"
     exit 0
 fi
 
 tmux new-session -d -s train -n train -c "$RUN_DIR" \
-    "bash -c '$ENV && llamafactory-cli train $YAML 2>&1 | tee -a train.log; exec bash'"
+    "bash -c '$ENV && python $REPO/scripts/runpod/lf_train.py $YAML 2>&1 | tee -a train.log; exec bash'"
 tmux new-window -t train -n archive \
     "bash $REPO/scripts/runpod/archive_adapters.sh $SAVES $ARCHIVE"
 echo "Training in tmux session 'train': tmux attach -t train"

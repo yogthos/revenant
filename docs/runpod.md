@@ -44,6 +44,11 @@ bash revenant/scripts/runpod/train.sh          # the real run, detached in tmux
   shows loss, eval loss and remaining time. Expect roughly 1-1.5h per epoch on
   an H100 and 2.5-3.5h on an A100, so 4-10h for the three epochs.
 
+`train.sh` runs `scripts/runpod/lf_train.py` instead of `llamafactory-cli
+train`. LlamaFactory's `qwen3_8` template carries the Qwen3-VL image plugin,
+which fails every row with "Processor was not found" on a text-only model;
+the launcher swaps in the text plugin and otherwise runs the same thing.
+
 What the smoke test should show: loss starting around 1-3, no OOM
 (`nvidia-smi` in another window, ~70GB), `Found linear modules:` listing
 `in_proj_qkv`, `in_proj_z`, `in_proj_a`, `in_proj_b` and `out_proj` next to
