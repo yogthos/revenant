@@ -15,7 +15,7 @@ RUN_DIR=/workspace/russell_training
 YAML=hemmingway1_27b_lora.yaml
 SAVES=$RUN_DIR/saves/Hemmingway-1/lora/russell
 ARCHIVE=/workspace/adapters
-ENV="source /workspace/venv/bin/activate && export HF_HOME=/workspace/huggingface_cache"
+ENV="source /root/venv/bin/activate && export HF_HOME=/workspace/huggingface_cache"
 
 if tmux has-session -t train 2>/dev/null; then
     echo "tmux session 'train' already exists: tmux attach -t train"

@@ -23,7 +23,7 @@ For training concepts and hyperparameter rationale, see `style_transfer_training
 a venv, so stopping and restarting the pod loses nothing.
 
 ```bash
-cd /workspace && git clone <your-repo-url> revenant
+cd /workspace && git clone https://github.com/yogthos/revenant revenant
 bash revenant/scripts/runpod/setup.sh          # installs, copies data, downloads the model
 bash revenant/scripts/runpod/train.sh --smoke  # 5 steps with a save and an eval
 tmux attach -t train                           # check memory and loss, then exit the shell

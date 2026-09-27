@@ -1,9 +1,14 @@
 #!/bin/bash
-# One-time pod setup for Hemmingway-1 LoRA training. Everything lives on
-# /workspace (the volume), so a stopped and restarted pod keeps the venv,
-# model, data and checkpoints; only the container disk is wiped.
+# Pod setup for Hemmingway-1 LoRA training.
 #
-#   bash /workspace/revenant/scripts/runpod/setup.sh
+# RunPod network volumes only allow chmod when owner, group and other get the
+# same bits, which breaks git and pip there. So the repo and venv live on the
+# container disk (/root) and only plain data goes on /workspace: model cache,
+# training data, checkpoints, archived adapters. A restarted pod wipes /root;
+# clone again and rerun this (the model download is skipped when cached).
+#
+#   cd /root && git clone -b fix/llamafactory-training <repo> revenant
+#   bash /root/revenant/scripts/runpod/setup.sh
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -12,9 +17,9 @@ export HF_HOME=/workspace/huggingface_cache
 
 command -v tmux >/dev/null || { apt-get update && apt-get install -y tmux; }
 
-# venv on the volume, reusing the image's torch
-[ -d /workspace/venv ] || python -m venv --system-site-packages /workspace/venv
-source /workspace/venv/bin/activate
+# venv on the container disk, reusing the image's torch
+[ -d /root/venv ] || python -m venv --system-site-packages /root/venv
+source /root/venv/bin/activate
 
 pip install -U pip
 pip install "llamafactory @ git+https://github.com/hiyouga/LlamaFactory.git"
