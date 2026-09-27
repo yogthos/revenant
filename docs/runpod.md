@@ -32,7 +32,9 @@ bash revenant/scripts/runpod/train.sh          # the real run, detached in tmux
 ```
 
 - `tmux attach -t train` to watch, `Ctrl-b d` to detach, `Ctrl-b n` for the
-  archive window. You can close the SSH session; the run keeps going.
+  archive window. Scroll with the mouse wheel (`train.sh` turns on mouse mode
+  and a 100k-line scrollback), or `Ctrl-b [` then PgUp/PgDn, `q` to leave.
+  Hold Shift to select text for copying while mouse mode is on. You can close the SSH session; the run keeps going.
 - If the run dies (or the pod restarts), run `train.sh` again: the yaml keeps
   `overwrite_output_dir: false`, so LlamaFactory resumes from the last checkpoint.
 - A checkpoint every 100 steps (~27 in all). The trainer keeps the last four

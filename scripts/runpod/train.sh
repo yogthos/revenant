@@ -7,7 +7,8 @@
 #   train.sh           full run
 #   train.sh --smoke   5 steps with a save and an eval, into saves/smoke
 #
-# tmux attach -t train (detach: Ctrl-b d)
+# tmux attach -t train (detach: Ctrl-b d). Scroll with the mouse wheel, or
+# Ctrl-b [ then PgUp/PgDn (q to leave).
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
@@ -16,6 +17,14 @@ YAML=hemmingway1_27b_lora.yaml
 SAVES=$RUN_DIR/saves/Hemmingway-1/lora/russell
 ARCHIVE=/workspace/adapters
 ENV="source /root/venv/bin/activate && export HF_HOME=/workspace/huggingface_cache"
+
+# Mouse-wheel scrolling and a long scrollback. history-limit only applies to
+# windows created after it's set, so load it before the session starts.
+grep -q "history-limit" ~/.tmux.conf 2>/dev/null || cat >> ~/.tmux.conf <<'CONF'
+set -g mouse on
+set -g history-limit 100000
+CONF
+tmux source-file ~/.tmux.conf 2>/dev/null || true
 
 if tmux has-session -t train 2>/dev/null; then
     echo "tmux session 'train' already exists: tmux attach -t train"
