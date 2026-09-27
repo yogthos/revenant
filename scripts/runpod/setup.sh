@@ -38,7 +38,8 @@ hf download Altworld/Hemmingway-1
 python - <<'PY'
 import torch, fla, liger_kernel.transformers as lk, transformers
 assert torch.cuda.is_available(), "no GPU"
-assert hasattr(lk, "apply_liger_kernel_to_qwen3_5_text"), "liger-kernel too old for qwen3_5_text"
+# lf_train.py maps LlamaFactory's qwen3_5_text entry onto this one.
+assert hasattr(lk, "apply_liger_kernel_to_qwen3_5"), "liger-kernel too old for Qwen3.5"
 from transformers.models.qwen3_5 import modeling_qwen3_5 as m
 print("transformers", transformers.__version__, "| GPU", torch.cuda.get_device_name(0),
       f"{torch.cuda.get_device_properties(0).total_memory / 2**30:.0f}GB")

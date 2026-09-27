@@ -179,3 +179,38 @@ class TestTextOnlyTemplate:
         from llamafactory.data.template import TEMPLATES
         use_text_plugin()
         TEMPLATES["qwen3_8"].mm_plugin._validate_input(None, [], [], [])
+
+
+class TestLigerAlias:
+    """LlamaFactory imports apply_liger_kernel_to_qwen3_5_text, which no
+    liger-kernel release has; the qwen3_5 patch covers Qwen3_5ForCausalLM."""
+
+    @pytest.fixture
+    def fake_liger(self, monkeypatch):
+        import types
+        from unittest.mock import MagicMock
+        pkg, mod = types.ModuleType("liger_kernel"), types.ModuleType("liger_kernel.transformers")
+        mod.apply_liger_kernel_to_qwen3_5 = MagicMock()
+        pkg.transformers = mod
+        monkeypatch.setitem(sys.modules, "liger_kernel", pkg)
+        monkeypatch.setitem(sys.modules, "liger_kernel.transformers", mod)
+        sys.path.insert(0, str(ROOT / "scripts/runpod"))
+        return mod
+
+    def test_text_model_gets_only_the_fused_loss(self, fake_liger):
+        import inspect
+        from lf_train import alias_liger_qwen3_5_text
+        alias_liger_qwen3_5_text()
+        from liger_kernel.transformers import apply_liger_kernel_to_qwen3_5_text as apply
+        # LlamaFactory checks for this parameter before calling with no kwargs.
+        assert "fused_linear_cross_entropy" in inspect.signature(apply).parameters
+        apply()
+        kwargs = fake_liger.apply_liger_kernel_to_qwen3_5.call_args.kwargs
+        assert kwargs["fused_linear_cross_entropy"] is True
+        assert kwargs["rms_norm"] is False and kwargs["swiglu"] is False
+
+    def test_keeps_a_real_implementation(self, fake_liger):
+        from lf_train import alias_liger_qwen3_5_text
+        fake_liger.apply_liger_kernel_to_qwen3_5_text = real = object()
+        alias_liger_qwen3_5_text()
+        assert fake_liger.apply_liger_kernel_to_qwen3_5_text is real
