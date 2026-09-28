@@ -251,8 +251,9 @@ class TestConstraintsTheTargetKeeps:
     def _constraints(self, target):
         from src.persona.prompt_builder import build_persona_instruction
         with patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME"):
+            # A worldview without [DIRECTIVES]: these are the legacy tiers.
             text = build_persona_instruction("some neutral input", deterministic_constraints=True,
-                                             satisfied_by=target)
+                                             satisfied_by=target, worldview="lovecraft_worldview.txt")
         return [line for line in text.splitlines() if line.startswith("[CONSTRAINT]")]
 
     def test_drops_a_banned_word_the_target_uses(self):
@@ -289,5 +290,6 @@ class TestConstraintsTheTargetKeeps:
     def test_without_a_target_inference_keeps_everything(self):
         from src.persona.prompt_builder import build_persona_instruction
         with patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME"):
-            text = build_persona_instruction("input", deterministic_constraints=True)
+            text = build_persona_instruction("input", deterministic_constraints=True,
+                                             worldview="lovecraft_worldview.txt")
         assert text.count("[CONSTRAINT]") == 5

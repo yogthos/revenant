@@ -95,6 +95,7 @@ class TestFuseMLXScaleOverride:
 
         with patch("mlx_lm.utils.load", return_value=(fake_model, fake_tokenizer, fake_config)), \
              patch("mlx_lm.utils.save"), \
+             patch("src.generation.lora_generator.check_adapter_loaded"), \
              patch("mlx.utils.tree_unflatten"):
             from scripts.fuse_model import fuse_mlx
 
@@ -141,6 +142,7 @@ class TestFuseMLXScaleOverride:
 
         with patch("mlx_lm.utils.load", return_value=(fake_model, MagicMock(), {})), \
              patch("mlx_lm.utils.save"), \
+             patch("src.generation.lora_generator.check_adapter_loaded"), \
              patch("mlx.utils.tree_unflatten"):
             from scripts.fuse_model import fuse_mlx
 

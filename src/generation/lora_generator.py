@@ -140,6 +140,25 @@ class AdapterSpec:
         return cls(path=spec, scale=1.0)
 
 
+def check_adapter_loaded(model, adapter_path) -> None:
+    """Raise unless every weight in the adapter landed on a model parameter.
+
+    mlx_lm loads adapters with strict=False, so a weight whose name matches
+    no module is dropped silently and the model runs as if untrained.
+    """
+    import mlx.core as mx
+    from mlx.utils import tree_flatten
+
+    weights = mx.load(str(Path(adapter_path) / "adapters.safetensors"))
+    params = {k for k, _ in tree_flatten(model.parameters())}
+    dropped = sorted(set(weights) - params)
+    if dropped:
+        raise ValueError(
+            f"{len(dropped)} of {len(weights)} adapter weights were dropped on load (no module named "
+            f"{dropped[0]!r}); reconvert with scripts/convert_peft_to_mlx.py --mlx-model <this base model>"
+        )
+
+
 class LoRAStyleGenerator(BaseStyleGenerator):
     """Fast style transfer using LoRA-adapted model with MLX backend.
 
@@ -350,6 +369,7 @@ class LoRAStyleGenerator(BaseStyleGenerator):
                 self.base_model_name,
                 adapter_path=effective_path,
             )
+            check_adapter_loaded(self._model, effective_path)
 
             # Apply scale if not 1.0
             if adapter.scale != 1.0:

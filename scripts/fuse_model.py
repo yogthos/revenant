@@ -54,6 +54,9 @@ def fuse_mlx(
     model, tokenizer, config = load(
         model_path, adapter_path=str(adapter_path), return_config=True
     )
+    sys.path.insert(0, str(project_root))
+    from src.generation.lora_generator import check_adapter_loaded
+    check_adapter_loaded(model, adapter_path)
 
     if scale is not None:
         print(f"Overriding LoRA scale: {scale} (was set at training time)")

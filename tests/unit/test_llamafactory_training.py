@@ -126,6 +126,19 @@ class TestRowLength:
         assert estimate_tokens(text) >= len(text) / 4.6
 
 
+TINY_QWEN3_5 = {
+    "architectures": ["Qwen3_5ForCausalLM"], "model_type": "qwen3_5", "attn_output_gate": True,
+    "full_attention_interval": 4, "head_dim": 16, "hidden_act": "silu", "hidden_size": 32,
+    "intermediate_size": 64, "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+    "linear_conv_kernel_dim": 4, "linear_key_head_dim": 8, "linear_num_key_heads": 2,
+    "linear_num_value_heads": 2, "linear_value_head_dim": 8, "max_position_embeddings": 512,
+    "num_attention_heads": 2, "num_hidden_layers": 4, "num_key_value_heads": 1,
+    "partial_rotary_factor": 0.25, "rms_norm_eps": 1e-6,
+    "rope_parameters": {"partial_rotary_factor": 0.25, "rope_theta": 10000000, "rope_type": "default"},
+    "tie_word_embeddings": False, "vocab_size": 128,
+}
+
+
 class TestConverter:
     @pytest.fixture
     def peft_dir(self, tmp_path):
@@ -134,25 +147,25 @@ class TestConverter:
         peft = tmp_path / "peft"
         peft.mkdir()
         save_file({
-            "base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.zeros(4, 8),
-            "base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight": torch.zeros(8, 4),
+            "base_model.model.model.layers.3.self_attn.q_proj.lora_A.weight": torch.zeros(4, 8),
+            "base_model.model.model.layers.3.self_attn.q_proj.lora_B.weight": torch.zeros(8, 4),
         }, str(peft / "adapter_model.safetensors"))
         (peft / "adapter_config.json").write_text(json.dumps(
             {"r": 4, "lora_alpha": 8, "use_rslora": False, "base_model_name_or_path": "Altworld/Hemmingway-1"}))
         return peft
 
-    def _mlx_model(self, tmp_path, keys):
-        pytest.importorskip("torch")
-        import numpy as np
-        from safetensors.numpy import save_file
+    def _mlx_model(self, tmp_path):
+        # Names come from the model mlx_lm builds from config.json. Layers
+        # 0-2 of the tiny Qwen3.5 are DeltaNet, layer 3 full attention.
+        pytest.importorskip("mlx_lm")
         model = tmp_path / "mlx"
         model.mkdir()
-        save_file({k: np.zeros((1,), dtype=np.float32) for k in keys}, str(model / "model.safetensors"))
+        (model / "config.json").write_text(json.dumps(TINY_QWEN3_5))
         return model
 
     def test_records_training_template_and_scale(self, tmp_path, peft_dir):
         from convert_peft_to_mlx import convert_peft_to_mlx
-        mlx = self._mlx_model(tmp_path, ["language_model.model.layers.0.self_attn.q_proj.weight"])
+        mlx = self._mlx_model(tmp_path)
         out = tmp_path / "out"
         convert_peft_to_mlx(peft_dir, out, mlx_model_path=str(mlx), train_config=HEMMINGWAY)
         meta = json.loads((out / "metadata.json").read_text())
@@ -160,15 +173,21 @@ class TestConverter:
         adapter = json.loads((out / "adapter_config.json").read_text())
         assert adapter["lora_parameters"]["scale"] == pytest.approx(2.0)
         from safetensors.numpy import load_file
-        assert "language_model.model.layers.0.self_attn.q_proj.lora_a" in load_file(str(out / "adapters.safetensors"))
+        assert "language_model.model.layers.3.self_attn.q_proj.lora_a" in load_file(str(out / "adapters.safetensors"))
 
     def test_weights_the_model_lacks_are_an_error(self, tmp_path, peft_dir):
         # mlx_lm loads adapters with strict=False, so a key that matches no
         # module would be dropped without a word.
         from convert_peft_to_mlx import convert_peft_to_mlx
-        mlx = self._mlx_model(tmp_path, ["language_model.model.layers.0.self_attn.k_proj.weight"])
+        import torch
+        from safetensors.torch import save_file
+        # Layer 0 is DeltaNet: it has no self_attn.q_proj.
+        save_file({"base_model.model.model.layers.0.self_attn.q_proj.lora_A.weight": torch.zeros(4, 8),
+                   "base_model.model.model.layers.0.self_attn.q_proj.lora_B.weight": torch.zeros(8, 4)},
+                  str(peft_dir / "adapter_model.safetensors"))
         with pytest.raises(ValueError, match="q_proj"):
-            convert_peft_to_mlx(peft_dir, tmp_path / "out", mlx_model_path=str(mlx), train_config=HEMMINGWAY)
+            convert_peft_to_mlx(peft_dir, tmp_path / "out", mlx_model_path=str(self._mlx_model(tmp_path)),
+                                train_config=HEMMINGWAY)
 
 
 class TestTextOnlyTemplate:
@@ -214,3 +233,83 @@ class TestLigerAlias:
         fake_liger.apply_liger_kernel_to_qwen3_5_text = real = object()
         alias_liger_qwen3_5_text()
         assert fake_liger.apply_liger_kernel_to_qwen3_5_text is real
+
+
+class TestAdapterNamesComeFromTheMLXModel:
+    """mlx_lm builds Qwen3.5 as language_model.model.layers.N...; the PEFT
+    names are model.layers.N.... The old check read names out of the model's
+    files (which say model.layers in a Hugging Face folder) and was skipped
+    entirely when --mlx-model didn't exist, so every LoRA weight was dropped
+    at load and the "fused" Hemmingway model was the plain base."""
+
+    @pytest.fixture
+    def hf_model(self, tmp_path):
+        pytest.importorskip("mlx_lm")
+        import numpy as np
+        from safetensors.numpy import save_file
+        d = tmp_path / "hf"
+        d.mkdir()
+        (d / "config.json").write_text(json.dumps(TINY_QWEN3_5))
+        # Hugging Face names on disk.
+        save_file({"model.layers.0.mlp.down_proj.weight": np.zeros((32, 64), np.float32)}, str(d / "model.safetensors"))
+        return d
+
+    @pytest.fixture
+    def peft(self, tmp_path):
+        torch = pytest.importorskip("torch")
+        from safetensors.torch import save_file
+        d = tmp_path / "peft"
+        d.mkdir()
+        save_file({
+            "base_model.model.model.layers.0.mlp.down_proj.lora_A.weight": torch.ones(4, 64),
+            "base_model.model.model.layers.0.mlp.down_proj.lora_B.weight": torch.ones(32, 4),
+            "base_model.model.model.layers.1.linear_attn.in_proj_qkv.lora_A.weight": torch.ones(4, 32),
+            "base_model.model.model.layers.1.linear_attn.in_proj_qkv.lora_B.weight": torch.ones(48, 4),
+        }, str(d / "adapter_model.safetensors"))
+        (d / "adapter_config.json").write_text(json.dumps({"r": 4, "lora_alpha": 4, "use_rslora": False}))
+        return d
+
+    def test_keys_match_the_model_mlx_builds(self, tmp_path, hf_model, peft):
+        from convert_peft_to_mlx import convert_peft_to_mlx
+        from safetensors.numpy import load_file
+        out = tmp_path / "out"
+        convert_peft_to_mlx(peft, out, mlx_model_path=str(hf_model), train_config=HEMMINGWAY)
+        keys = set(load_file(str(out / "adapters.safetensors")))
+        assert "language_model.model.layers.0.mlp.down_proj.lora_a" in keys
+        assert "language_model.model.layers.1.linear_attn.in_proj_qkv.lora_b" in keys
+
+    def test_a_missing_mlx_model_is_an_error(self, tmp_path, peft):
+        from convert_peft_to_mlx import convert_peft_to_mlx
+        with pytest.raises(FileNotFoundError):
+            convert_peft_to_mlx(peft, tmp_path / "out", mlx_model_path=str(tmp_path / "nope"),
+                                train_config=HEMMINGWAY)
+
+    def test_the_converted_adapter_really_loads(self, tmp_path, hf_model, peft):
+        import mlx.core as mx
+        from mlx.utils import tree_flatten
+        from convert_peft_to_mlx import convert_peft_to_mlx, build_mlx_model
+        from src.generation.lora_generator import check_adapter_loaded
+        from mlx_lm.tuner.utils import load_adapters
+        out = tmp_path / "out"
+        convert_peft_to_mlx(peft, out, mlx_model_path=str(hf_model), train_config=HEMMINGWAY)
+        model = load_adapters(build_mlx_model(hf_model), str(out))
+        check_adapter_loaded(model, out)
+        params = dict(tree_flatten(model.parameters()))
+        assert mx.all(params["language_model.model.layers.0.mlp.down_proj.lora_b"] == 1).item()
+
+    def test_check_catches_dropped_weights(self, tmp_path, hf_model):
+        import numpy as np
+        from safetensors.numpy import save_file
+        from convert_peft_to_mlx import build_mlx_model
+        from src.generation.lora_generator import check_adapter_loaded
+        from mlx_lm.tuner.utils import load_adapters
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        save_file({"model.layers.0.mlp.down_proj.lora_a": np.ones((64, 4), np.float32),
+                   "model.layers.0.mlp.down_proj.lora_b": np.ones((4, 32), np.float32)},
+                  str(bad / "adapters.safetensors"))
+        (bad / "adapter_config.json").write_text(json.dumps({"fine_tune_type": "lora", "num_layers": -1,
+            "lora_parameters": {"rank": 4, "scale": 1.0, "dropout": 0.0, "keys": ["mlp.down_proj"]}}))
+        model = load_adapters(build_mlx_model(hf_model), str(bad))
+        with pytest.raises(ValueError, match="dropped"):
+            check_adapter_loaded(model, bad)

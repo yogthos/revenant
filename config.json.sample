@@ -67,23 +67,12 @@
         "worldview": "howard_russell_worldview.txt",
         "perspective": "preserve",
         "verify_entailment": false
-      },
-      "models/Hemmingway-1-russell-q8": {
-        "_comment": "Hemmingway-1 fused with lora_adapters/russell_hemmingway_mlx (scripts/fuse_model.py --mlx --qbits 8). The training template comes from the metadata.json fuse_model.py copies in.",
-        "enabled": false,
-        "author": "Bertrand Russell",
-        "temperature": 0.7,
-        "top_p": 0.95,
-        "min_p": 0.03,
-        "repetition_penalty": 1.05,
-        "max_tokens": 1024,
-        "worldview": "russell_worldview.txt"
       }
     },
     "_comment4a": "LoRA adapters with per-adapter generation settings (enabled: true/false to toggle)",
     "lora_adapters": {
       "lora_adapters/russell_hemmingway_mlx": {
-        "_comment": "Hemmingway-1 27B, data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml. Template comes from metadata.json.",
+        "_comment": "Hemmingway-1 27B, data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml. Base model and template come from metadata.json. Run it unfused on an 8-bit base: the LoRA delta is smaller than q8 rounding, so fusing then quantizing blurs it.",
         "enabled": false,
         "_comment_scale": "scale multiplies the strength the adapter was trained at: 1.0 = as trained",
         "scale": 1.0,

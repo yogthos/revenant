@@ -85,39 +85,6 @@ def _detect_model_prefix(input_dir: Path, peft_weights: dict) -> str:
     return ""
 
 
-def _detect_model_prefix_from_model(model_path: Path, peft_weights: dict) -> str:
-    """Detect prefix by reading actual MLX model safetensors."""
-    import re
-    from safetensors import safe_open
-
-    # Get PEFT prefix
-    sample_key = next(iter(peft_weights))
-    stripped = sample_key
-    if stripped.startswith("base_model.model."):
-        stripped = stripped[len("base_model.model."):]
-    m = re.match(r'(.+?layers\.)\d+\.', stripped)
-    peft_prefix = m.group(1) if m else ""
-
-    # Read MLX model to get its prefix
-    st_files = sorted(model_path.glob("*.safetensors"))
-    if not st_files:
-        print(f"  No safetensors in {model_path}")
-        return ""
-
-    with safe_open(str(st_files[0]), framework="numpy") as f:
-        for mk in f.keys():
-            m2 = re.match(r'(.+?layers\.)\d+\.', mk)
-            if m2:
-                mlx_prefix = m2.group(1)
-                if mlx_prefix != peft_prefix:
-                    print(f"  Prefix mismatch: PEFT='{peft_prefix}' MLX='{mlx_prefix}'")
-                    return mlx_prefix
-                else:
-                    print(f"  Prefix matches: '{peft_prefix}'")
-                    return ""
-    return ""
-
-
 def read_train_config(path) -> dict:
     """Prompt layout settings from a LlamaFactory training yaml.
 
@@ -143,30 +110,54 @@ def read_train_config(path) -> dict:
             "persona_turn": persona_turn}
 
 
-def _model_weight_names(model_path: Path) -> set:
-    from safetensors import safe_open
-    names = set()
-    for st in sorted(Path(model_path).glob("*.safetensors")):
-        with safe_open(str(st), framework="numpy") as f:
-            names.update(f.keys())
-    return names
+def build_mlx_model(model_path: Path):
+    """The model mlx_lm builds from ``model_path``'s config, without weights.
 
-
-def check_keys_match_model(mlx_weights: dict, model_path: Path) -> None:
-    """Every LoRA weight must sit on a module the MLX model has.
-
-    mlx_lm loads adapters with strict=False, so a mismatched name is silently
-    dropped and that part of the adapter never runs.
+    Its parameter names are the ones adapters must use. They can differ from
+    the names in the model's files: a Hugging Face Qwen3.5 folder says
+    model.layers.N..., mlx_lm's module is language_model.model.layers.N....
     """
-    names = _model_weight_names(model_path)
-    missing = sorted({
-        key.rsplit(".lora_", 1)[0] for key in mlx_weights
-        if f"{key.rsplit('.lora_', 1)[0]}.weight" not in names
-    })
+    from mlx_lm.utils import _get_classes, load_config
+
+    config = load_config(Path(model_path))
+    model_class, args_class = _get_classes(config=config)
+    return model_class(args_class.from_dict(config))
+
+
+def mlx_module_names(model_path: Path) -> set:
+    from mlx.utils import tree_flatten
+
+    return {k[: -len(".weight")] for k, _ in tree_flatten(build_mlx_model(model_path).parameters())
+            if k.endswith(".weight")}
+
+
+def rename_to_model(mlx_weights: dict, model_path: Path) -> dict:
+    """Give every LoRA weight the name of the module mlx_lm builds for it.
+
+    Matching is on the "layers.N.module" tail, so any wrapper prefix works.
+    mlx_lm loads adapters with strict=False: a name that matches no module is
+    dropped silently and that part of the adapter never runs, so a tail with
+    no module is an error.
+    """
+    import re
+
+    by_tail = {}
+    for name in mlx_module_names(model_path):
+        m = re.search(r"layers\.\d+\..+$", name)
+        if m:
+            by_tail[m.group(0)] = name
+    renamed, missing = {}, set()
+    for key, value in mlx_weights.items():
+        module, _, part = key.rpartition(".lora_")
+        m = re.search(r"layers\.\d+\..+$", module)
+        target = by_tail.get(m.group(0)) if m else None
+        if target is None:
+            missing.add(module)
+            continue
+        renamed[f"{target}.lora_{part}"] = value
     if missing:
-        raise ValueError(
-            f"{len(missing)} adapted modules are not in {model_path}, e.g. {missing[:3]}"
-        )
+        raise ValueError(f"{len(missing)} adapted modules are not in {model_path}, e.g. {sorted(missing)[:3]}")
+    return renamed
 
 
 def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str = None, author: str = None,
@@ -202,9 +193,10 @@ def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str =
     #
     # We detect the prefix by looking at the actual model weight names.
     model_prefix = ""
-    if mlx_model_path and Path(mlx_model_path).exists():
-        # Detect prefix from the actual MLX model weights
-        model_prefix = _detect_model_prefix_from_model(Path(mlx_model_path), peft_weights)
+    if mlx_model_path:
+        if not (Path(mlx_model_path) / "config.json").exists():
+            raise FileNotFoundError(f"--mlx-model {mlx_model_path} has no config.json; the adapter's "
+                                    "weight names can't be checked against it")
     else:
         model_prefix = _detect_model_prefix(input_dir, peft_weights)
 
@@ -251,8 +243,9 @@ def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str =
 
     print(f"Converted {len(mlx_weights)} weight tensors")
 
-    if mlx_model_path and Path(mlx_model_path).exists():
-        check_keys_match_model(mlx_weights, Path(mlx_model_path))
+    if mlx_model_path:
+        mlx_weights = rename_to_model(mlx_weights, Path(mlx_model_path))
+        print(f"Weight names match the modules mlx_lm builds from {mlx_model_path}")
 
     # Save MLX weights
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -110,14 +110,15 @@ optim: adamw_torch
 #    python -c "import json; p='models/Hemmingway-1/config.json'; c=json.load(open(p)); \
 #        c['model_type']='qwen3_5'; json.dump(c, open(p, 'w'), indent=2)"
 #    python -m mlx_lm convert --hf-path models/Hemmingway-1 \
-#        --mlx-path models/Hemmingway-1-6bit-MLX -q --q-bits 6
+#        --mlx-path models/Hemmingway-1-8bit-MLX -q --q-bits 8
 #
-# 2. Convert the adapter (--train-config records the chat template):
+# 2. Convert the adapter (--train-config records the chat template; run it
+#    unfused, the LoRA delta is smaller than q8 rounding):
 #
 #    python scripts/convert_peft_to_mlx.py \
 #        --input saves/Hemmingway-1/lora/russell \
 #        --output lora_adapters/russell_hemmingway_mlx \
-#        --mlx-model models/Hemmingway-1-6bit-MLX \
+#        --mlx-model models/Hemmingway-1-8bit-MLX --author "Bertrand Russell" \
 #        --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
 #
 # 3. python restyle.py input.md -o output.md \

@@ -174,7 +174,7 @@ the eval losses so far. Pull one and convert it as below:
 scp -r -P <port> root@<pod-ip>:/workspace/adapters/checkpoint-900 .
 python scripts/convert_peft_to_mlx.py --input checkpoint-900 \
     --output lora_adapters/russell_hemmingway_900 \
-    --mlx-model models/Hemmingway-1-6bit-MLX \
+    --mlx-model models/Hemmingway-1-8bit-MLX \
     --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
 ```
 
@@ -246,17 +246,27 @@ hf download Altworld/Hemmingway-1 --local-dir models/Hemmingway-1
 python -c "import json; p='models/Hemmingway-1/config.json'; c=json.load(open(p)); \
     c['model_type']='qwen3_5'; json.dump(c, open(p, 'w'), indent=2)"
 python -m mlx_lm convert --hf-path models/Hemmingway-1 \
-    --mlx-path models/Hemmingway-1-6bit-MLX -q --q-bits 6
+    --mlx-path models/Hemmingway-1-8bit-MLX -q --q-bits 8
 
 python scripts/convert_peft_to_mlx.py \
     --input /path/to/saves/Hemmingway-1/lora/russell \
     --output lora_adapters/russell_hemmingway_mlx \
-    --mlx-model models/Hemmingway-1-6bit-MLX \
+    --mlx-model models/Hemmingway-1-8bit-MLX \
+    --author "Bertrand Russell" \
     --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
 ```
 
-The converter fails if any adapter weight doesn't match a module in the MLX
-model (mlx_lm would otherwise drop it silently). `scale` in config.json
+`--mlx-model` is required in practice: the converter names each weight after
+the module mlx_lm builds from that model's config (`language_model.model.layers.N...`
+for Qwen3.5, not the Hugging Face `model.layers.N...`) and fails if one has no
+module. mlx_lm loads adapters with `strict=False`, so a wrong name would be
+dropped silently and the model would run untrained; the generator and
+`fuse_model.py` also refuse to run when that happens.
+
+Run the adapter unfused on the 8-bit base (`lora_adapters` in config.json,
+`use_adapter: true`). The Russell LoRA's weight changes are smaller than 8-bit
+rounding error, so fusing and then quantizing blurs them; applied at runtime
+they stay exact, for a ~2% compute cost. `scale` in config.json
 multiplies the strength the adapter was trained at, so start at 1.0.
 
 ## Upload Adapter
