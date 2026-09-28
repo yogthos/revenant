@@ -53,9 +53,15 @@ def _synonym(word: str) -> str:
     return lead + synonym + trail
 
 
+def _protected(core: str) -> bool:
+    """Names, acronyms and numbers: a typo there is a content error the
+    model copies instead of fixing."""
+    return any(c.isupper() or c.isdigit() for c in core)
+
+
 def _swap_typo(word: str) -> str:
     lead, core, trail = _split(word)
-    if len(core) <= 3:
+    if len(core) <= 3 or _protected(core):
         return word
     i = random.randint(1, len(core) - 2)
     core = core[:i] + core[i + 1] + core[i] + core[i + 2:]
@@ -64,7 +70,7 @@ def _swap_typo(word: str) -> str:
 
 def _double_typo(word: str) -> str:
     lead, core, trail = _split(word)
-    if len(core) <= 2:
+    if len(core) <= 2 or _protected(core):
         return word
     i = random.randint(0, len(core) - 1)
     return lead + core[:i] + core[i] + core[i:] + trail
@@ -119,6 +125,8 @@ def heavy_perturb_text(text: str, perturbation_rate: float = 0.15) -> str:
             result.append(_swap_typo(word))
         elif choice < 0.90:
             result.append(_double_typo(word))
+        elif _protected(_split(word)[1]):
+            result.append(word)
         elif random.random() < 0.5:
             result.append(word.lower())
         else:
