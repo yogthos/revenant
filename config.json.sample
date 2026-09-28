@@ -67,6 +67,17 @@
         "worldview": "howard_russell_worldview.txt",
         "perspective": "preserve",
         "verify_entailment": false
+      },
+      "models/Hemmingway-1-russell-q8": {
+        "_comment": "Hemmingway-1 fused with lora_adapters/russell_hemmingway_mlx (scripts/fuse_model.py --mlx --qbits 8). The training template comes from the metadata.json fuse_model.py copies in.",
+        "enabled": false,
+        "author": "Bertrand Russell",
+        "temperature": 0.7,
+        "top_p": 0.95,
+        "min_p": 0.03,
+        "repetition_penalty": 1.05,
+        "max_tokens": 1024,
+        "worldview": "russell_worldview.txt"
       }
     },
     "_comment4a": "LoRA adapters with per-adapter generation settings (enabled: true/false to toggle)",

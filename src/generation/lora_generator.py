@@ -226,6 +226,13 @@ class LoRAStyleGenerator(BaseStyleGenerator):
                 self.metadata = AdapterMetadata.from_file(metadata_path)
                 self.base_model_name = self.metadata.base_model
                 logger.info(f"Loaded adapter metadata: {self.metadata.author}")
+        else:
+            # A fused model carries its adapter's metadata.json (training
+            # template); it is the model itself, so base_model stays put.
+            metadata_path = Path(base_model) / "metadata.json"
+            if metadata_path.exists():
+                self.metadata = AdapterMetadata.from_file(metadata_path)
+                logger.info(f"Loaded fused model metadata: template {self.metadata.template}")
 
     def _is_model_cached(self, model_name: str) -> bool:
         """Check if model is already downloaded in HuggingFace cache."""

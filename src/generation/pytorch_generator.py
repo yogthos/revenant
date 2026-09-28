@@ -129,6 +129,9 @@ class PyTorchStyleGenerator(BaseStyleGenerator):
         self._model = None
         self._tokenizer = None
         self.metadata: Optional[PyTorchAdapterMetadata] = None
+        # A fused model carries its adapter's metadata.json (training template).
+        if not adapter_path and (Path(base_model) / "metadata.json").exists():
+            self.metadata = PyTorchAdapterMetadata.from_adapter_config(base_model)
 
     def _resolve_device(self, device: str) -> str:
         """Resolve device string to actual device."""

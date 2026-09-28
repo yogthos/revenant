@@ -31,6 +31,7 @@ Supports three fusion paths:
 import argparse
 import gc
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -88,6 +89,17 @@ def fuse_mlx(
     output_path.mkdir(parents=True, exist_ok=True)
     save(str(output_path), model_path, model, tokenizer, config)
 
+    write_fuse_metadata(output_path, adapter_path, model_path, scale=scale, qbits=qbits, group_size=group_size)
+
+
+def write_fuse_metadata(output_path: Path, adapter_path: Path, model_path: str, scale: float | None = None,
+                        qbits: int | None = None, group_size: int = 64) -> None:
+    """Write fuse_metadata.json, and carry the adapter's metadata.json over.
+
+    The generator reads the training template (template, enable_thinking,
+    persona_turn) from metadata.json. A fused model has no adapter, so
+    without the copy its prompts fall back to the default template.
+    """
     adapter_cfg = {}
     adapter_config_path = adapter_path / "adapter_config.json"
     if adapter_config_path.exists():
@@ -112,6 +124,17 @@ def fuse_mlx(
 
     with open(output_path / "fuse_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
+
+    adapter_meta_path = adapter_path / "metadata.json"
+    if adapter_meta_path.exists():
+        with open(adapter_meta_path) as f:
+            adapter_meta = json.load(f)
+        adapter_meta["base_model"] = model_path
+        with open(output_path / "metadata.json", "w") as f:
+            json.dump(adapter_meta, f, indent=2)
+    else:
+        print("Warning: adapter has no metadata.json; set chat_template for this model in config.json",
+              file=sys.stderr)
 
 
 def fuse_peft(
@@ -176,6 +199,9 @@ def convert_to_mlx(model_path: Path, output_path: Path) -> None:
         metadata["mlx_converted"] = True
         with open(output_path / "fuse_metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
+    # The training template the generator reads.
+    if (model_path / "metadata.json").exists():
+        shutil.copy(model_path / "metadata.json", output_path / "metadata.json")
 
     print(f"MLX model saved to {output_path}")
 
