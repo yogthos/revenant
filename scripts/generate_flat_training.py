@@ -148,24 +148,46 @@ _META_RE = re.compile(
 _llm_registers_cache = {}
 
 
-def load_llm_style_registers(path: Path = LLM_STYLE_PROMPT) -> Dict[str, str]:
-    """{register name: prompt} from the [REGISTER:name] sections."""
+@dataclass
+class LLMRegister:
+    """One LLM style: prompts run in turn, each on the previous output."""
+    name: str
+    steps: List[str]
+    weight: float = 1.0
+
+
+def load_llm_style_registers(path: Path = LLM_STYLE_PROMPT) -> Dict[str, "LLMRegister"]:
+    """Registers from [REGISTER:name weight=w] and [POLISH:name] sections.
+
+    [POLISH:name] adds name_polished: name's prompt, then the polish prompt.
+    """
     path = Path(path)
-    if path not in _llm_registers_cache:
-        registers, name, lines = {}, None, []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^\[REGISTER:(\w+)\]\s*$", line)
-            if m:
-                if name:
-                    registers[name] = "\n".join(lines).strip()
-                name, lines = m.group(1), []
-            elif name:
-                lines.append(line)
-            # lines before the first register are comments
-        if name:
-            registers[name] = "\n".join(lines).strip()
-        _llm_registers_cache[path] = registers
-    return _llm_registers_cache[path]
+    if path in _llm_registers_cache:
+        return _llm_registers_cache[path]
+    sections, header, lines = [], None, []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\[(REGISTER|POLISH):(\w+)((?:\s+\w+=[\d.]+)*)\]\s*$", line)
+        if m:
+            if header:
+                sections.append((*header, "\n".join(lines).strip()))
+            opts = dict(o.split("=") for o in m.group(3).split())
+            header, lines = (m.group(1), m.group(2), float(opts.get("weight", 1.0))), []
+        elif header:
+            lines.append(line)
+        # lines before the first section are comments
+    if header:
+        sections.append((*header, "\n".join(lines).strip()))
+
+    registers = {}
+    for kind, name, weight, body in sections:
+        if kind == "REGISTER":
+            registers[name] = LLMRegister(name, [body], weight)
+    for kind, name, weight, body in sections:
+        if kind == "POLISH":
+            base = registers[name]
+            registers[f"{name}_polished"] = LLMRegister(f"{name}_polished", base.steps + [body], base.weight)
+    _llm_registers_cache[path] = registers
+    return registers
 
 
 def llm_rewrite_problem(source: str, rewrite: str) -> Optional[str]:
@@ -185,19 +207,33 @@ def llm_rewrite_problem(source: str, rewrite: str) -> Optional[str]:
 
 def llm_style_rewrite(text: str, register: str) -> Optional[str]:
     """The text rewritten in one LLM register, or None if unusable."""
-    prompt = load_llm_style_registers()[register].format(text=text, words=len(text.split()))
+    steps = load_llm_style_registers()[register].steps
     for _ in range(2):
+        rewrite = text
         try:
-            rewrite = call_deepseek(prompt, temperature=0.8)
+            for n, step in enumerate(steps):
+                prompt = step.format(text=rewrite, words=len(text.split()))
+                rewrite = " ".join(call_deepseek(prompt, temperature=0.8 if n == 0 else 0.5).split())
         except Exception as e:
             logger.debug(f"LLM-style rewrite ({register}) failed: {e}")
             continue
-        rewrite = " ".join(rewrite.split())
         problem = llm_rewrite_problem(text, rewrite)
         if problem is None:
             return rewrite
         logger.debug(f"LLM-style rewrite ({register}) rejected: {problem}")
     return None
+
+
+def _pick_registers(registers: Dict[str, "LLMRegister"], k: int) -> List[str]:
+    """k distinct register names, drawn by weight."""
+    pool = dict(registers)
+    picked = []
+    while pool and len(picked) < k:
+        names = list(pool)
+        name = random.choices(names, weights=[pool[n].weight for n in names])[0]
+        picked.append(name)
+        del pool[name]
+    return picked
 
 
 @dataclass
@@ -212,25 +248,31 @@ class RTTJob:
 
 
 def rtt_jobs(batch, rewrite=None, per_original: int = LLM_STYLE_PER_ORIGINAL,
-             registers: Optional[List[str]] = None) -> List[RTTJob]:
+             registers=None, include_standard: bool = True) -> List[RTTJob]:
     """RTT jobs for a batch of (idx, styled, vtype, src) chunks.
 
     An original chunk gives a "standard" job (its own text retold) and up to
     ``per_original`` llm_style jobs, each from a rewrite in a different
-    register. Other variation types give one job.
+    register, drawn by weight. Other variation types give one job. With
+    ``include_standard`` false only the llm_style jobs are made.
+    ``registers`` is a {name: LLMRegister} dict, a list of equally weighted
+    names, or None for the prompt file's.
     """
     from concurrent.futures import ThreadPoolExecutor
 
     rewrite = rewrite or llm_style_rewrite
     if registers is None:
-        registers = list(load_llm_style_registers())
+        registers = load_llm_style_registers()
+    elif not isinstance(registers, dict):
+        registers = {name: LLMRegister(name, [], 1.0) for name in registers}
     jobs, wanted = [], []
     for idx, styled, vtype, src in batch:
         if vtype == "original":
-            jobs.append(RTTJob(idx, styled, "standard", src, styled))
-            for register in random.sample(registers, min(per_original, len(registers))):
+            if include_standard:
+                jobs.append(RTTJob(idx, styled, "standard", src, styled))
+            for register in _pick_registers(registers, per_original):
                 wanted.append((idx, styled, src, register))
-        else:
+        elif include_standard:
             jobs.append(RTTJob(idx, styled, vtype, src, styled))
     if wanted:
         with ThreadPoolExecutor(max_workers=16) as pool:
@@ -1793,6 +1835,7 @@ def generate_training_data(
     resume: bool = False,
     output_format: str = "llama_factory",
     llm_style_per_original: int = LLM_STYLE_PER_ORIGINAL,
+    llm_style_only: bool = False,
 ) -> int:
     """Generate training data using RTT neutralization, writing progressively.
 
@@ -1826,7 +1869,18 @@ def generate_training_data(
     mode = "monotone" if monotone else "standard"
 
     processed_indices = set()
-    if resume and output_path.exists():
+    if llm_style_only:
+        # Regenerate the llm_style rows only: keep every other row, drop the
+        # old llm_style ones, then append the new ones below.
+        kept = []
+        if output_path.exists():
+            kept = [line for line in output_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and json.loads(line).get("variation_type") != "llm_style"]
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+        logger.info(f"llm_style only: kept {len(kept)} other rows in {output_path}")
+        processed_indices = {i for i, c in enumerate(chunks) if c[1] != "original"}
+    elif resume and output_path.exists():
         processed_indices = _read_processed_indices(output_path)
         logger.info(f"Resuming: found {len(processed_indices)} already processed items")
 
@@ -1902,7 +1956,7 @@ def generate_training_data(
             type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
 
     # Append if resuming, otherwise overwrite
-    file_mode = 'a' if resume and processed_indices else 'w'
+    file_mode = 'a' if (resume and processed_indices) or llm_style_only else 'w'
     with open(output_path, file_mode, encoding='utf-8') as f:
         for batch_start in range(0, len(pending_chunks), super_batch_size):
             batch = pending_chunks[batch_start:batch_start + super_batch_size]
@@ -1918,7 +1972,7 @@ def generate_training_data(
                     f"{rate:.2f}/s | ETA: {eta/60:.1f}m"
                 )
 
-            jobs = rtt_jobs(batch, per_original=llm_style_per_original)
+            jobs = rtt_jobs(batch, per_original=llm_style_per_original, include_standard=not llm_style_only)
             if use_batching:
                 # Retries are handled inside the queue-based pipeline
                 try:
@@ -1987,6 +2041,9 @@ def main():
     parser.add_argument("--max-chunk-words", type=int, default=OverlapConfig.max_words,
                         help=f"Max words per chunk (default: {OverlapConfig.max_words})")
     parser.add_argument("--overlap-sentences", type=int, default=2, help="Sentence overlap between chunks")
+    parser.add_argument("--llm-style-only", action="store_true",
+                        help="Regenerate only the llm_style rows of an existing train.jsonl (with "
+                             "--resume-from-chunks): other rows are kept, old llm_style rows replaced")
     parser.add_argument("--llm-style-per-original", type=int, default=LLM_STYLE_PER_ORIGINAL,
                         help="LLM-style rewrites per original chunk, each in a different register "
                              "(prompts/llm_style_rewrite.txt); 0 disables")
@@ -2216,6 +2273,7 @@ def main():
         workers=args.workers, monotone=not args.no_monotone,
         resume=args.resume, output_format=args.format,
         llm_style_per_original=args.llm_style_per_original,
+        llm_style_only=args.llm_style_only,
     )
 
     # Step 5: filter and split by source paragraph for LlamaFactory

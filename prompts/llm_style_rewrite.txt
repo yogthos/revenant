@@ -1,8 +1,16 @@
 # Rewrites of an author's paragraph in typical LLM prose, for llm_style
 # training rows (scripts/generate_flat_training.py). The author's paragraph
 # is the target, so the model learns to turn LLM structure into the
-# author's. Each [REGISTER:name] is one style; {text} is the paragraph and
-# {words} its word count. Keep every register author-neutral.
+# author's. Each [REGISTER:name] is one style ([REGISTER:name weight=0.5]
+# makes it rarer); {text} is the paragraph and {words} its word count.
+# [POLISH:name] adds a register name_polished: that register's rewrite, then
+# this prompt with {text} as the draft. Keep every register author-neutral.
+#
+# Asked for a device the content lacks (a list of three, a contrast), the
+# model invents one, so device registers say to use them only where the
+# passage supports them. Weights follow how often each register kept the
+# meaning in a 12-chunk trial: explainer 9/12, explainer_polished 11/12,
+# conversational 6/12, memo 4/11, punchy 4/12.
 
 [REGISTER:explainer]
 Rewrite the passage below the way a modern AI assistant would explain it to a curious reader.
@@ -19,7 +27,13 @@ Say everything in your own words: do not reuse the passage's phrasing or sentenc
 Passage:
 {text}
 
-[REGISTER:punchy]
+[POLISH:explainer]
+Edit this paragraph so it reads the way you would naturally write it: drop any stiff or mechanical signposting, smooth the flow, and keep the order of the ideas and every claim, example, name and number. Add nothing. Output only the paragraph, with no preface.
+
+Paragraph:
+{text}
+
+[REGISTER:punchy weight=0.3]
 Rewrite the passage below as a punchy modern newsletter or blog writer would.
 
 Structure it that way, not the way the original is built:
@@ -29,12 +43,14 @@ Structure it that way, not the way the original is built:
 - Break long reasoning into separate short claims.
 - End on a crisp one-line takeaway.
 
+Use these moves only where the passage's own content supports them; never invent a point, example, question, contrast or list item to fit the pattern.
+
 Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
 
 Passage:
 {text}
 
-[REGISTER:memo]
+[REGISTER:memo weight=0.3]
 Rewrite the passage below as a polished analytical summary, the way an AI model writes a report or briefing.
 
 Structure it that way, not the way the original is built:
@@ -44,12 +60,14 @@ Structure it that way, not the way the original is built:
 - Even, uniform sentence lengths.
 - Finish with an implication or "overall" sentence.
 
+Use these moves only where the passage's own content supports them; never invent a point, example, question, contrast or list item to fit the pattern.
+
 Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
 
 Passage:
 {text}
 
-[REGISTER:conversational]
+[REGISTER:conversational weight=0.5]
 Rewrite the passage below as a friendly AI chat answer.
 
 Structure it that way, not the way the original is built:
@@ -58,6 +76,8 @@ Structure it that way, not the way the original is built:
 - Use a couple of em-dash asides and a "Think of it like this" or "Put simply" moment.
 - Move from the conclusion back to the reasons.
 - End by answering the opening question in one sentence.
+
+Use these moves only where the passage's own content supports them; never invent a point, example, question, contrast or list item to fit the pattern.
 
 Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
 
