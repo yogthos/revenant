@@ -213,7 +213,7 @@ class TestResume:
         neutralizer = MagicMock(spec=["neutralize"])
         neutralizer.neutralize.side_effect = lambda text, **kw: "plain words only " + str(len(text))
         with patch.object(gft, "get_rtt_neutralizer", return_value=(neutralizer, MagicMock())), \
-             patch.object(gft, "create_input_variants", side_effect=lambda styled, neutral: [(neutral, "standard")]), \
+             patch.object(gft, "llm_style_rewrite", return_value=None), \
              patch.object(gft, "check_lexical_bleed", return_value=(True, 0.0)):
             yield neutralizer
 

@@ -1,0 +1,65 @@
+# Rewrites of an author's paragraph in typical LLM prose, for llm_style
+# training rows (scripts/generate_flat_training.py). The author's paragraph
+# is the target, so the model learns to turn LLM structure into the
+# author's. Each [REGISTER:name] is one style; {text} is the paragraph and
+# {words} its word count. Keep every register author-neutral.
+
+[REGISTER:explainer]
+Rewrite the passage below the way a modern AI assistant would explain it to a curious reader.
+
+Structure it the assistant way, not the way the original is built:
+- Open with a one-sentence thesis that states the conclusion up front.
+- Walk through the points in a tidy order with signposts ("First,", "Second,", "Importantly,", "In other words,").
+- Keep sentences medium length and evenly paced; no long winding sentences.
+- Close with a short summary sentence that restates the main point ("In short, ...", "Ultimately, ...").
+- Plain contemporary vocabulary.
+
+Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
+
+Passage:
+{text}
+
+[REGISTER:punchy]
+Rewrite the passage below as a punchy modern newsletter or blog writer would.
+
+Structure it that way, not the way the original is built:
+- Short declarative sentences, with a few one-line sentence fragments for emphasis.
+- At least one reversal of the form "It's not X. It's Y." or "This isn't about X. It's about Y."
+- A colon reveal ("Here's the problem: ...") and a list of three.
+- Break long reasoning into separate short claims.
+- End on a crisp one-line takeaway.
+
+Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
+
+Passage:
+{text}
+
+[REGISTER:memo]
+Rewrite the passage below as a polished analytical summary, the way an AI model writes a report or briefing.
+
+Structure it that way, not the way the original is built:
+- Lead with the key takeaway, then the supporting reasons.
+- Use analyst phrasing: "This highlights", "This underscores", "It is worth noting", "a crucial factor", "the broader landscape", "plays a key role".
+- Parallel structure and balanced "on the one hand / on the other" framing.
+- Even, uniform sentence lengths.
+- Finish with an implication or "overall" sentence.
+
+Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
+
+Passage:
+{text}
+
+[REGISTER:conversational]
+Rewrite the passage below as a friendly AI chat answer.
+
+Structure it that way, not the way the original is built:
+- Open with a rhetorical question or "Here's the thing:".
+- Address the reader as "you" where it fits, and use contractions.
+- Use a couple of em-dash asides and a "Think of it like this" or "Put simply" moment.
+- Move from the conclusion back to the reasons.
+- End by answering the opening question in one sentence.
+
+Say everything in your own words: do not reuse the passage's phrasing or sentence structure, and never copy a run of four or more words from it (names, numbers and technical terms excepted). Keep every claim, example, name, number and qualification in the passage. Add no facts, examples or opinions it doesn't contain. Write one paragraph of about {words} words. Output only the rewritten paragraph, with no preface.
+
+Passage:
+{text}

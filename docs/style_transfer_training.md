@@ -136,6 +136,32 @@ LlamaFactory rows and inference both read frames from `prompts/{author}_worldvie
 (`--worldview` in training, `worldview` in config.json). The `PERSONA_FRAMES` dict in
 `generate_flat_training.py` is only used for the legacy MLX format.
 
+### LLM-Style Inputs (Structure, Not Just Vocabulary)
+
+A retold input keeps the author's sentence order and argument, so a model
+trained only on retellings learns to swap vocabulary and keeps whatever
+structure it is given. Fed LLM-written text, the first Hemmingway run
+produced Russell's words over the source's LLM skeleton: thesis-first
+paragraphs, "X isn't Y. It's Z." reversals, tricolons, summary closers.
+
+`generate_flat_training.py` now gives each original chunk:
+- a **standard** row: its own text through RTT
+- **llm_style** rows (`--llm-style-per-original`, default 2): DeepSeek first
+  rewrites the chunk in a typical LLM register (explainer, punchy, memo,
+  conversational; `prompts/llm_style_rewrite.txt`), in its own words with
+  every claim kept, and that rewrite goes through the same RTT and noise as
+  inference input. The target is still the author's paragraph, so the model
+  has to rebuild the author's paragraph and sentence structure.
+
+Rewrites that keep over 30% of the author's 4-grams, drift in length or open
+with a preface are dropped. The old `info_dropout` (no adjectives) and
+`abstract` (`[THING]` placeholders) inputs are gone from this pipeline: they
+taught the model to invent detail.
+
+Chunks overlap by two sentences (style lives in the transitions) and each
+aims for a random length between 100 and 300 words, so the model sees
+paragraphs the size of the ones it restyles.
+
 ### Constraints and Style Directives
 
 A constraint only goes on a training row if the target obeys it. A row that

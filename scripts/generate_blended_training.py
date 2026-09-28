@@ -365,8 +365,8 @@ def main():
 
     # =========================================================================
     # Step 4: Generate training data using the real pipeline
-    # Handles: RTT neutralization, many-to-one variants (standard + info_dropout
-    # + abstract), persona frames, perturbation, lexical bleed filtering
+    # Handles: RTT neutralization, many-to-one variants (standard + llm_style
+    # rewrites), persona frames, perturbation, lexical bleed filtering
     # =========================================================================
     output_path = args.output / "train.jsonl"
     logger.info(f"\nStarting training data generation → {output_path}")

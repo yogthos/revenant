@@ -77,6 +77,16 @@ class TestTrainingConfigs:
         scale = alpha / rank ** 0.5 if cfg.get("use_rslora") else alpha / rank
         assert scale == 1.0
 
+    def test_hemmingway_capacity_and_schedule(self):
+        # Rank 256 for the structure the llm_style rows ask for. The first
+        # run's best eval came at 0.4 epochs, so: a lower rate, fewer epochs
+        # and a checkpoint every ~0.07 epoch to pick from.
+        cfg = _load(HEMMINGWAY)
+        assert cfg["lora_rank"] == 256
+        assert cfg["lora_alpha"] * cfg["learning_rate"] < 64 * 4.0e-5
+        assert cfg["num_train_epochs"] <= 2
+        assert cfg["save_steps"] == cfg["eval_steps"] <= 100
+
     def test_hemmingway_run_resumes_after_a_crash(self):
         # With overwrite_output_dir LlamaFactory ignores existing checkpoints,
         # so relaunching a multi-hour headless run would start over.

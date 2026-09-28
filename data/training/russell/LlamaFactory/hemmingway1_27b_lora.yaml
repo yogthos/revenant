@@ -13,13 +13,14 @@ finetuning_type: lora
 # out_proj, and the MLP. Two thirds of the layers are DeltaNet, so a q/k/v/o +
 # MLP list would miss most of the attention. lm_head is left alone.
 lora_target: all
-# Rank 64 is ~470M trainable parameters, far more capacity than ~2M target
-# tokens need ("LoRA Without Regret": past that point rank changes little).
-# Rank 256 in bf16 doesn't fit one 80GB card; see MEMORY below.
-lora_rank: 64
+# Rank 256 (~1.9B trainable parameters). The first run, rank 64 on retold
+# inputs, learned Russell's vocabulary but kept whatever structure the input
+# had; the llm_style rows ask the model to rebuild paragraph and sentence
+# structure, and rank 256 gives that room. Needs an H200; see MEMORY below.
+lora_rank: 256
 # Plain LoRA scaling alpha/rank = 1.0, the scale the MLX converter bakes in.
 # config.json's "scale" multiplies it at inference (1.0 = as trained).
-lora_alpha: 64
+lora_alpha: 256
 lora_dropout: 0.05
 neftune_noise_alpha: 5.0
 
@@ -44,12 +45,13 @@ preprocessing_num_workers: 8
 ### Output
 output_dir: saves/Hemmingway-1/lora/russell
 logging_steps: 10
-# A checkpoint every 100 steps (~800 rows), 27 over the run.
-# scripts/runpod/archive_adapters.sh copies each one's adapter (~2GB) to
-# /workspace/adapters for evaluation; the full checkpoints (adapter +
-# optimizer state) are pruned to the last few plus the best.
+# A checkpoint every 100 steps (~800 rows, ~0.07 epoch), ~30 over the run.
+# scripts/runpod/archive_adapters.sh copies each one's adapter (~7.5GB at
+# rank 256, fp32) to /workspace/adapters for evaluation: size the volume at
+# 300GB+. The full checkpoints (adapter + optimizer state, ~23GB) are pruned
+# to the last two plus the best.
 save_steps: 100
-save_total_limit: 4
+save_total_limit: 2
 plot_loss: true
 # false: relaunching the same command resumes from the last checkpoint.
 # LlamaFactory ignores existing checkpoints when this is true.
@@ -58,15 +60,16 @@ save_only_model: false
 report_to: none
 
 ### Training
-# 7,195 rows / effective batch 8 = ~900 steps per epoch, ~2,700 in all.
+# ~12k rows / effective batch 8 = ~1,500 steps per epoch, ~3,000 in all.
 # Small batches: LoRA tolerates large ones worse than full fine-tuning.
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
-# "LoRA Without Regret": the best LoRA learning rate is ~10x full
-# fine-tuning's, ~1e-4 at alpha 32. At alpha 64 (twice the update size)
-# that is ~5e-5; 4e-5 errs low for a small dataset seen three times.
-learning_rate: 4.0e-5
-num_train_epochs: 3.0
+# With alpha/rank scaling the update size goes with alpha x learning rate.
+# The first run (alpha 64, 4e-5 = 2.6e-3) had its best eval loss at 0.4
+# epochs and memorised after; alpha 256 x 6e-6 = 1.5e-3 is ~40% gentler,
+# and two epochs are plenty with checkpoints to choose from.
+learning_rate: 6.0e-6
+num_train_epochs: 2.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.05
 # The DeltaNet layers produce the occasional gradient spike early on.
@@ -85,15 +88,16 @@ load_best_model_at_end: true
 metric_for_best_model: eval_loss
 greater_is_better: false
 
-### Memory (1x A100/H100 80GB, ~70GB used)
+### Memory (1x H200 141GB, ~92GB used)
 # bf16 LoRA. Unsloth advises against QLoRA on Qwen3.5 models, dense or MoE,
 # because they lose more to 4-bit quantization than usual.
 #   base weights bf16            54.6GB
-#   LoRA params, grads (fp32)     3.8GB
-#   AdamW states (fp32)           3.8GB
+#   LoRA params, grads (fp32)    15GB    (1.9B params x 2 x 4 bytes)
+#   AdamW states (fp32)          15GB
 #   activations (checkpointed)   ~6GB
 # Liger's fused cross-entropy never materialises the 2048 x 248k logits.
-# Rank 128 adds ~7.5GB and rank 256 ~22GB: use an H200 (141GB) for those.
+# That doesn't fit an 80GB A100/H100; there, lora_rank/lora_alpha 64 and
+# learning_rate 2.4e-5 keep the same update size (~70GB).
 flash_attn: sdpa
 gradient_checkpointing: true
 enable_liger_kernel: true

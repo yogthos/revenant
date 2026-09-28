@@ -7,14 +7,16 @@ For training concepts and hyperparameter rationale, see `style_transfer_training
 
 | Config | GPU | Use Case |
 |--------|-----|----------|
-| 1x H100 or A100 80GB | Hemmingway-1 27B bf16 LoRA (rank 64, ~70GB) | ~$1.64-2.69/hr |
+| 1x H200 141GB | Hemmingway-1 27B bf16 LoRA (rank 256, ~92GB) | ~$3.60/hr |
+| 1x H100 or A100 80GB | Hemmingway-1 27B bf16 LoRA at rank 64 (~70GB; see the yaml's MEMORY note) | ~$1.64-2.69/hr |
 | 1x A100 80GB | Qwen 2.5-32B QLoRA 4-bit (rank 256, ~35GB) | ~$1.64/hr |
 | 2x A100 80GB | Qwen 2.5-32B bf16 + DeepSpeed ZeRO-3 (rank 256, ~40GB/GPU) | ~$3.28/hr |
 | 2x H100 80GB | Qwen 3.5-35B bf16 (rank 256, ~80GB per GPU) | ~$6.58/hr |
 
 - **On-demand, not spot/interruptible**, for multi-hour runs
 - **Container disk**: 20GB default is fine
-- **Volume disk**: 200GB+ (model weights + checkpoints — ZeRO-3 checkpoints are ~29GB each)
+- **Volume disk**: 200GB+ (model weights + checkpoints — ZeRO-3 checkpoints are ~29GB each).
+  Hemmingway-1 at rank 256: 350GB, since every checkpoint's adapter (~7.5GB) is archived
 - **Template**: RunPod PyTorch 2.x (CUDA 12.x)
 
 ## Hemmingway-1 Quick Start
