@@ -27,6 +27,10 @@ pip install "llamafactory @ git+https://github.com/hiyouga/LlamaFactory.git"
 pip install "transformers==5.8.0" liger-kernel flash-linear-attention
 # Fast DeltaNet convolution; without it transformers falls back to torch.
 pip install causal-conv1d --no-build-isolation
+# On Hopper (H100/H200), Triton 3.4-3.7.0 miscomputes fla's DeltaNet backward
+# and fla refuses to run; tilelang gives it a correct kernel. Upgrading Triton
+# instead would fight the image's torch pin.
+pip install tilelang
 
 mkdir -p "$RUN_DIR/data"
 cp "$REPO/data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml" "$RUN_DIR/"
