@@ -1836,6 +1836,8 @@ def generate_training_data(
     output_format: str = "llama_factory",
     llm_style_per_original: int = LLM_STYLE_PER_ORIGINAL,
     llm_style_only: bool = False,
+    llm_style_add: bool = False,
+    llm_style_registers: Optional[List[str]] = None,
 ) -> int:
     """Generate training data using RTT neutralization, writing progressively.
 
@@ -1869,16 +1871,28 @@ def generate_training_data(
     mode = "monotone" if monotone else "standard"
 
     processed_indices = set()
+    registers = None
+    if llm_style_registers:
+        available = load_llm_style_registers()
+        unknown = set(llm_style_registers) - set(available)
+        if unknown:
+            raise ValueError(f"Unknown llm_style registers {sorted(unknown)}; have {sorted(available)}")
+        registers = {name: available[name] for name in llm_style_registers}
+
     if llm_style_only:
-        # Regenerate the llm_style rows only: keep every other row, drop the
-        # old llm_style ones, then append the new ones below.
-        kept = []
-        if output_path.exists():
-            kept = [line for line in output_path.read_text(encoding="utf-8").splitlines()
-                    if line.strip() and json.loads(line).get("variation_type") != "llm_style"]
+        # Regenerate the llm_style rows only: keep every other row, then
+        # append new ones below. Without llm_style_add the old llm_style
+        # rows are dropped first.
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
-        logger.info(f"llm_style only: kept {len(kept)} other rows in {output_path}")
+        if not llm_style_add:
+            kept = []
+            if output_path.exists():
+                kept = [line for line in output_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip() and json.loads(line).get("variation_type") != "llm_style"]
+            output_path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+            logger.info(f"llm_style only: kept {len(kept)} other rows in {output_path}")
+        else:
+            logger.info(f"llm_style add: appending to {output_path}")
         processed_indices = {i for i, c in enumerate(chunks) if c[1] != "original"}
     elif resume and output_path.exists():
         processed_indices = _read_processed_indices(output_path)
@@ -1972,7 +1986,8 @@ def generate_training_data(
                     f"{rate:.2f}/s | ETA: {eta/60:.1f}m"
                 )
 
-            jobs = rtt_jobs(batch, per_original=llm_style_per_original, include_standard=not llm_style_only)
+            jobs = rtt_jobs(batch, per_original=llm_style_per_original, registers=registers,
+                            include_standard=not llm_style_only)
             if use_batching:
                 # Retries are handled inside the queue-based pipeline
                 try:
@@ -2044,6 +2059,10 @@ def main():
     parser.add_argument("--llm-style-only", action="store_true",
                         help="Regenerate only the llm_style rows of an existing train.jsonl (with "
                              "--resume-from-chunks): other rows are kept, old llm_style rows replaced")
+    parser.add_argument("--llm-style-add", action="store_true",
+                        help="With --llm-style-only: add llm_style rows instead of replacing the existing ones")
+    parser.add_argument("--llm-style-registers", default=None,
+                        help="Comma-separated registers to draw from (default: all, by weight)")
     parser.add_argument("--llm-style-per-original", type=int, default=LLM_STYLE_PER_ORIGINAL,
                         help="LLM-style rewrites per original chunk, each in a different register "
                              "(prompts/llm_style_rewrite.txt); 0 disables")
@@ -2274,6 +2293,8 @@ def main():
         resume=args.resume, output_format=args.format,
         llm_style_per_original=args.llm_style_per_original,
         llm_style_only=args.llm_style_only,
+        llm_style_add=args.llm_style_add,
+        llm_style_registers=args.llm_style_registers.split(",") if args.llm_style_registers else None,
     )
 
     # Step 5: filter and split by source paragraph for LlamaFactory
@@ -2281,7 +2302,7 @@ def main():
         logger.info("=" * 60)
         logger.info("STEP 5: Filtering rows and writing train/val splits")
         logger.info("=" * 60)
-        from filter_training_data import finalize
+        from filter_training_data import NLI_CACHE_NAME, finalize
         finalize(
             train_output_path,
             output_dir / "LlamaFactory",
@@ -2289,6 +2310,7 @@ def main():
             persona=persona,
             val_fraction=args.val_fraction,
             nli=not args.no_nli,
+            nli_cache=output_dir / NLI_CACHE_NAME,
             log=logger.info,
         )
 

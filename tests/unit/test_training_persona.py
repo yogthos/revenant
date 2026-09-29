@@ -132,3 +132,47 @@ class TestConverterPersonaTurn:
             {"d_sft": {"file_name": "t.jsonl", "columns": {"prompt": "instruction", "query": "input",
                                                            "response": "output"}}}))
         assert read_train_config(tmp_path / "t.yaml")["persona_turn"] == "user"
+
+
+class TestNLICache:
+    """Adding rows shouldn't re-run the entailment check on the old ones."""
+
+    def _rows(self, n=6):
+        out = "He went into town, as he did most days, and came back with bread for all. "
+        inp = "The man walked to the town and bought some bread for his whole family. "
+        return [{"input": inp * 2 + str(i), "output": out * 2 + str(i), "source_idx": i,
+                 "source_paragraphs": [i]} for i in range(n)]
+
+    def test_cached_rows_are_not_checked_again(self, tmp_path, monkeypatch):
+        import filter_training_data as ftd
+        calls = []
+
+        def fake(inp, out, nli, min_fraction=0.75):
+            calls.append(inp)
+            return "target adds content (x)" if inp.endswith("3") else None
+
+        monkeypatch.setattr(ftd, "entailment_problem", fake)
+        raw = tmp_path / "train.jsonl"
+        raw.write_text("".join(json.dumps(r) + "\n" for r in self._rows()))
+        cache = tmp_path / "nli_cache.json"
+        kw = dict(persona=lambda r: "P", nli_model=object(), nli_cache=cache, val_fraction=0.2, block_size=1)
+        first = ftd.finalize(raw, tmp_path / "lf", "d", **kw)
+        assert len(calls) == 6 and cache.exists()
+
+        rows = self._rows(8)
+        raw.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        second = ftd.finalize(raw, tmp_path / "lf", "d", **kw)
+        assert len(calls) == 8  # only the two new rows
+        assert second["rejected"] == {"target adds content": 1}
+        assert second["train"] + second["val"] == first["train"] + first["val"] + 2
+
+    def test_cache_depends_on_the_threshold(self, tmp_path, monkeypatch):
+        import filter_training_data as ftd
+        calls = []
+        monkeypatch.setattr(ftd, "entailment_problem", lambda i, o, n, min_fraction=0.75: calls.append(1))
+        raw = tmp_path / "train.jsonl"
+        raw.write_text("".join(json.dumps(r) + "\n" for r in self._rows(2)))
+        kw = dict(persona=lambda r: "P", nli_model=object(), nli_cache=tmp_path / "c.json")
+        ftd.finalize(raw, tmp_path / "lf", "d", **kw)
+        ftd.finalize(raw, tmp_path / "lf", "d", nli_min_fraction=0.6, **kw)
+        assert len(calls) == 4

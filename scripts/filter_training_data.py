@@ -308,14 +308,35 @@ def _write_jsonl(path: Path, rows: List[dict]) -> None:
             f.write(json.dumps({k: row[k] for k in LLAMA_FACTORY_COLUMNS}, ensure_ascii=False) + "\n")
 
 
+NLI_CACHE_NAME = "nli_cache.json"
+
+
+def _nli_key(row: dict, min_fraction: float) -> str:
+    import hashlib
+    return hashlib.sha1(f"{min_fraction}\0{row['input']}\0{row['output']}".encode()).hexdigest()
+
+
+def _load_nli_cache(path: Optional[Path]) -> dict:
+    if path and Path(path).exists():
+        return json.loads(Path(path).read_text())
+    return {}
+
+
+def _save_nli_cache(path: Optional[Path], cache: dict) -> None:
+    if path:
+        Path(path).write_text(json.dumps(cache))
+
+
 def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, persona,
              val_fraction: float = 0.05, nli: bool = True, seed: int = 42,
              block_size: int = 20, max_ratio: float = 2.0, min_input_words: int = 15,
              nli_min_fraction: float = 0.75, nli_model=None, max_tokens: int = DEFAULT_MAX_TOKENS,
-             log=print) -> dict:
+             nli_cache: Optional[Path] = None, log=print) -> dict:
     """Filter raw rows, add the persona, split by source paragraph, write LlamaFactory files.
 
     ``persona`` maps a row to its system prompt (see PersonaBuilder).
+    ``nli_cache`` is a JSON file of earlier entailment results, so rows
+    already checked aren't checked again (it's the slow step).
     """
     rows = list(_read_jsonl(raw_path))
     reasons: dict = {}
@@ -339,16 +360,24 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
             log(f"  Persona: {i + 1}/{len(rows)} rows, {len(kept)} kept")
 
     if nli:
-        model = nli_model or load_nli_model()
-        checked = []
-        for i, row in enumerate(kept):
+        cache = _load_nli_cache(nli_cache)
+        todo = [row for row in kept if _nli_key(row, nli_min_fraction) not in cache]
+        log(f"  NLI: {len(kept) - len(todo)} rows cached, {len(todo)} to check")
+        model = (nli_model or load_nli_model()) if todo else None
+        for i, row in enumerate(todo):
             problem = entailment_problem(row["input"], row["output"], model, min_fraction=nli_min_fraction)
+            cache[_nli_key(row, nli_min_fraction)] = problem or ""
+            if (i + 1) % 500 == 0:
+                log(f"  NLI: {i + 1}/{len(todo)} checked")
+                _save_nli_cache(nli_cache, cache)
+        _save_nli_cache(nli_cache, cache)
+        checked = []
+        for row in kept:
+            problem = cache[_nli_key(row, nli_min_fraction)]
             if problem:
                 reject(problem)
             else:
                 checked.append(row)
-            if (i + 1) % 500 == 0:
-                log(f"  NLI: {i + 1}/{len(kept)} checked, {len(checked)} kept")
         kept = checked
 
     train, val, straddling = split_by_source(kept, val_fraction=val_fraction, seed=seed, block_size=block_size)
@@ -390,6 +419,8 @@ def main():
                         help="Source paragraphs held out together (default: 20)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--no-nli", action="store_true", help="Skip the two-way entailment filter")
+    parser.add_argument("--no-nli-cache", action="store_true",
+                        help=f"Re-check every row instead of reusing {NLI_CACHE_NAME} next to the input")
     parser.add_argument("--nli-min-fraction", type=float, default=0.75,
                         help="Share of sentences that must be entailed in each direction")
     parser.add_argument("--max-ratio", type=float, default=2.0, help="Max output/input word ratio")
@@ -405,7 +436,8 @@ def main():
     finalize(args.input, out_dir, name, persona=persona, val_fraction=args.val_fraction, nli=not args.no_nli,
              seed=args.seed, block_size=args.block_size, max_ratio=args.max_ratio,
              min_input_words=args.min_input_words, nli_min_fraction=args.nli_min_fraction,
-             max_tokens=args.max_tokens)
+             max_tokens=args.max_tokens,
+             nli_cache=None if args.no_nli_cache else args.input.parent / NLI_CACHE_NAME)
 
 
 if __name__ == "__main__":

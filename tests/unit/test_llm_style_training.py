@@ -237,3 +237,23 @@ class TestLLMStyleOnlyRun:
                                    output_format="llama_factory", llm_style_only=True)
         kinds = [json.loads(line)["variation_type"] for line in out.read_text().splitlines()]
         assert kinds == ["standard", "llm_style", "llm_style"]
+
+    def test_add_mode_keeps_existing_llm_style_rows(self, tmp_path, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+        import generate_flat_training as gft
+        out = tmp_path / "train.jsonl"
+        old = {"input": "b", "output": "A", "source_idx": 0, "source_paragraphs": [0],
+               "variation_type": "llm_style", "register": "memo"}
+        out.write_text(json.dumps(old) + "\n")
+        neutralizer = MagicMock(spec=["neutralize"])
+        neutralizer.neutralize.side_effect = lambda text, **kw: "plain words only here " + text
+        monkeypatch.setattr(gft, "get_rtt_neutralizer", lambda: (neutralizer, MagicMock()))
+        monkeypatch.setattr(gft, "check_lexical_bleed", lambda *a, **k: (True, 0.0))
+        monkeypatch.setattr(gft, "llm_style_rewrite", lambda text, register: f"{register} rewrite")
+        gft.generate_training_data([("Styled chunk zero with enough words.", "original", (0,))], "X", out,
+                                   output_format="llama_factory", llm_style_only=True, llm_style_add=True,
+                                   llm_style_registers=["explainer", "explainer_polished"])
+        rows = [json.loads(line) for line in out.read_text().splitlines()]
+        assert rows[0] == old
+        assert sorted(r["register"] for r in rows[1:]) == ["explainer", "explainer_polished"]
