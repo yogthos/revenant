@@ -2075,6 +2075,11 @@ def main():
                         help="With --llm-style-only: add llm_style rows instead of replacing the existing ones")
     parser.add_argument("--llm-style-registers", default=None,
                         help="Comma-separated registers to draw from (default: all, by weight)")
+    parser.add_argument("--llm-style-share", type=float, default=None,
+                        help="Passed to filter_training_data: sample other rows so llm_style is this fraction")
+    parser.add_argument("--shuffle-share", type=float, default=None,
+                        help="Passed to filter_training_data: shuffle input sentences in this share of "
+                             "the non-llm_style rows")
     parser.add_argument("--llm-style-per-original", type=int, default=LLM_STYLE_PER_ORIGINAL,
                         help="LLM-style rewrites per original chunk, each in a different register "
                              "(prompts/llm_style_rewrite.txt); 0 disables")
@@ -2323,6 +2328,8 @@ def main():
             val_fraction=args.val_fraction,
             nli=not args.no_nli,
             nli_cache=output_dir / NLI_CACHE_NAME,
+            llm_style_share=args.llm_style_share,
+            shuffle_share=args.shuffle_share,
             log=logger.info,
         )
 
