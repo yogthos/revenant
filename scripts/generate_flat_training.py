@@ -140,6 +140,10 @@ LLM_STYLE_PER_ORIGINAL = 2
 # Share of the author's 4-word sequences a rewrite may keep; above this it
 # is a paraphrase in the author's structure, not an LLM rewrite.
 MAX_LLM_REWRITE_OVERLAP = 0.3
+# Kendall tau of the source sentences in the rewrite's order. Inputs that keep
+# the target's order teach the model to keep whatever order it is given;
+# STRAP (Krishna et al. 2020) dropped paraphrase pairs above 0.5.
+MAX_LLM_REWRITE_ORDER = 0.5
 # Prefaces about the rewrite itself. "Here's the thing:" is a register's
 # opener, not a preface.
 _META_RE = re.compile(
@@ -202,14 +206,22 @@ def llm_rewrite_problem(source: str, rewrite: str) -> Optional[str]:
     overlap = ngram_overlap(source, rewrite)
     if overlap > MAX_LLM_REWRITE_OVERLAP:
         return f"echo ({overlap:.0%} of 4-grams kept)"
+    from src.utils.structure import paragraph_score
+    order = paragraph_score(rewrite, source)["order"]
+    if order is not None and order > MAX_LLM_REWRITE_ORDER:
+        return f"source order kept (tau {order:.2f})"
     return None
 
 
 def llm_style_rewrite(text: str, register: str) -> Optional[str]:
     """The text rewritten in one LLM register, or None if unusable."""
+    from src.utils.structure import shuffle_sentences
+
     steps = load_llm_style_registers()[register].steps
     for _ in range(2):
-        rewrite = text
+        # Asked to reorder, DeepSeek still follows the passage; from shuffled
+        # sentences it builds its own order, which llm_rewrite_problem requires.
+        rewrite = shuffle_sentences(text, random)
         try:
             for n, step in enumerate(steps):
                 prompt = step.format(text=rewrite, words=len(text.split()))

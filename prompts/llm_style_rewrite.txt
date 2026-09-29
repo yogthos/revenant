@@ -11,11 +11,15 @@
 # passage supports them. Weights follow how often each register kept the
 # meaning in a 12-chunk trial: explainer 9/12, explainer_polished 11/12,
 # conversational 6/12, memo 4/11, punchy 4/12.
+#
+# Rewrites that keep the passage's order of points are rejected
+# (MAX_LLM_REWRITE_ORDER), so every register asks for a different order.
 
 [REGISTER:explainer]
 Rewrite the passage below the way a modern AI assistant would explain it to a curious reader.
 
 Structure it the assistant way, not the way the original is built:
+- Don't follow the passage's order of points: regroup them and present them in the order this style calls for.
 - Open with a one-sentence thesis that states the conclusion up front.
 - Walk through the points in a tidy order with signposts ("First,", "Second,", "Importantly,", "In other words,").
 - Keep sentences medium length and evenly paced; no long winding sentences.
@@ -37,6 +41,7 @@ Paragraph:
 Rewrite the passage below as a punchy modern newsletter or blog writer would.
 
 Structure it that way, not the way the original is built:
+- Don't follow the passage's order of points: regroup them and present them in the order this style calls for.
 - Short declarative sentences, with a few one-line sentence fragments for emphasis.
 - At least one reversal of the form "It's not X. It's Y." or "This isn't about X. It's about Y."
 - A colon reveal ("Here's the problem: ...") and a list of three.
@@ -54,6 +59,7 @@ Passage:
 Rewrite the passage below as a polished analytical summary, the way an AI model writes a report or briefing.
 
 Structure it that way, not the way the original is built:
+- Don't follow the passage's order of points: regroup them and present them in the order this style calls for.
 - Lead with the key takeaway, then the supporting reasons.
 - Use analyst phrasing: "This highlights", "This underscores", "It is worth noting", "a crucial factor", "the broader landscape", "plays a key role".
 - Parallel structure and balanced "on the one hand / on the other" framing.
@@ -71,6 +77,7 @@ Passage:
 Rewrite the passage below as a friendly AI chat answer.
 
 Structure it that way, not the way the original is built:
+- Don't follow the passage's order of points: regroup them and present them in the order this style calls for.
 - Open with a rhetorical question or "Here's the thing:".
 - Address the reader as "you" where it fits, and use contractions.
 - Use a couple of em-dash asides and a "Think of it like this" or "Put simply" moment.
