@@ -58,7 +58,8 @@ class TestTrainingConfigs:
         assert cfg["template"] == "qwen3_8"
         assert cfg["enable_thinking"] is False
         assert cfg["dataset"] == "russell_sft" and cfg["eval_dataset"] == "russell_val"
-        assert cfg["load_best_model_at_end"] is True
+        # Eval loss rewards copying the input, so it doesn't pick the adapter.
+        assert cfg["load_best_model_at_end"] is False
         # Persona in the system turn, text in the user turn.
         info = json.loads((HEMMINGWAY.parent / "dataset_info.json").read_text())
         assert info["russell_sft"]["columns"].get("system") == "system"
@@ -70,22 +71,24 @@ class TestTrainingConfigs:
         assert "quantization_bit" not in cfg
         assert cfg["bf16"] is True
 
-    def test_hemmingway_adapter_scale_is_one(self):
-        # The converter bakes this in and config.json's scale 1.0 means "as trained".
+    def test_hemmingway_adapter_scale_matches_the_qwen25_run(self):
+        # alpha/rank 2, as in the Qwen2.5-32B run that passed GPTZero. The
+        # converter bakes it in; config.json's scale 1.0 means "as trained".
         cfg = _load(HEMMINGWAY)
         rank, alpha = cfg["lora_rank"], cfg["lora_alpha"]
         scale = alpha / rank ** 0.5 if cfg.get("use_rslora") else alpha / rank
-        assert scale == 1.0
+        assert scale == 2.0
 
     def test_hemmingway_capacity_and_schedule(self):
-        # Rank 256 for the structure the llm_style rows ask for. The first
-        # run's best eval came at 0.4 epochs, so: a lower rate, fewer epochs
-        # and a checkpoint every ~0.07 epoch to pick from.
+        # Run 2 (alpha x lr = 1.5e-3, stopped at its best eval loss) only
+        # reworded. Match the Qwen2.5 run's update size, train well past the
+        # eval minimum, and keep checkpoints to pick from by structure score.
         cfg = _load(HEMMINGWAY)
         assert cfg["lora_rank"] == 256
-        assert cfg["lora_alpha"] * cfg["learning_rate"] < 64 * 4.0e-5
-        assert cfg["num_train_epochs"] <= 2
-        assert cfg["save_steps"] == cfg["eval_steps"] <= 100
+        assert cfg["lora_alpha"] * cfg["learning_rate"] >= 512 * 1.0e-5
+        assert cfg["num_train_epochs"] >= 3
+        assert cfg["train_on_prompt"] is True
+        assert cfg["save_steps"] == cfg["eval_steps"] <= 200
 
     def test_hemmingway_run_resumes_after_a_crash(self):
         # With overwrite_output_dir LlamaFactory ignores existing checkpoints,
