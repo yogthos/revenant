@@ -291,6 +291,24 @@ def split_by_source(rows: List[dict], val_fraction: float = 0.05, seed: int = 42
     return train, val, dropped
 
 
+def mix_llm_style(rows: List[dict], share: float, seed: int = 42) -> List[dict]:
+    """Keep every llm_style row and sample the others so llm_style is ``share`` of the result.
+
+    The other rows' inputs keep the author's own structure, so a mix heavy in
+    them teaches the model to keep whatever structure it is given. The order
+    of the kept rows is unchanged.
+    """
+    if not 0 < share < 1:
+        raise ValueError(f"share must be between 0 and 1, not {share}")
+    llm = [i for i, r in enumerate(rows) if r.get("variation_type") == "llm_style"]
+    other = [i for i, r in enumerate(rows) if r.get("variation_type") != "llm_style"]
+    n_other = round(len(llm) * (1 - share) / share)
+    if n_other >= len(other):
+        return list(rows)
+    keep = set(llm) | set(random.Random(seed).sample(other, n_other))
+    return [r for i, r in enumerate(rows) if i in keep]
+
+
 # ---------------------------------------------------------------------------
 # Finalize
 # ---------------------------------------------------------------------------
@@ -331,12 +349,15 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
              val_fraction: float = 0.05, nli: bool = True, seed: int = 42,
              block_size: int = 20, max_ratio: float = 2.0, min_input_words: int = 15,
              nli_min_fraction: float = 0.75, nli_model=None, max_tokens: int = DEFAULT_MAX_TOKENS,
-             nli_cache: Optional[Path] = None, log=print) -> dict:
+             nli_cache: Optional[Path] = None, llm_style_share: Optional[float] = None,
+             log=print) -> dict:
     """Filter raw rows, add the persona, split by source paragraph, write LlamaFactory files.
 
     ``persona`` maps a row to its system prompt (see PersonaBuilder).
     ``nli_cache`` is a JSON file of earlier entailment results, so rows
     already checked aren't checked again (it's the slow step).
+    ``llm_style_share`` samples the kept rows down so llm_style rows make up
+    that fraction (see mix_llm_style).
     """
     rows = list(_read_jsonl(raw_path))
     reasons: dict = {}
@@ -380,6 +401,13 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
                 checked.append(row)
         kept = checked
 
+    mixed_out = 0
+    if llm_style_share is not None:
+        mixed = mix_llm_style(kept, llm_style_share, seed=seed)
+        mixed_out = len(kept) - len(mixed)
+        kept = mixed
+        log(f"  Mix: llm_style {llm_style_share:.0%}, {mixed_out} other rows sampled out")
+
     train, val, straddling = split_by_source(kept, val_fraction=val_fraction, seed=seed, block_size=block_size)
 
     llama_factory_dir.mkdir(parents=True, exist_ok=True)
@@ -393,7 +421,7 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
     (llama_factory_dir / "dataset_info.json").write_text(json.dumps(info, indent=2) + "\n")
 
     stats = {"raw": len(rows), "rejected": reasons, "straddling": straddling,
-             "train": len(train), "val": len(val)}
+             "train": len(train), "val": len(val), "mixed_out": mixed_out}
     log(f"Rows: {len(rows)} raw -> {len(train)} train + {len(val)} val "
         f"({sum(reasons.values())} rejected, {straddling} straddled the split)")
     for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
@@ -427,6 +455,9 @@ def main():
     parser.add_argument("--min-input-words", type=int, default=15)
     parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
                         help="Drop rows longer than this (the yaml's cutoff_len)")
+    parser.add_argument("--llm-style-share", type=float, default=None,
+                        help="Keep every llm_style row and sample the rest so llm_style is this "
+                             "fraction of the data (e.g. 0.7)")
     args = parser.parse_args()
 
     out_dir = args.llama_factory_dir or args.input.parent / "LlamaFactory"
@@ -436,7 +467,7 @@ def main():
     finalize(args.input, out_dir, name, persona=persona, val_fraction=args.val_fraction, nli=not args.no_nli,
              seed=args.seed, block_size=args.block_size, max_ratio=args.max_ratio,
              min_input_words=args.min_input_words, nli_min_fraction=args.nli_min_fraction,
-             max_tokens=args.max_tokens,
+             max_tokens=args.max_tokens, llm_style_share=args.llm_style_share,
              nli_cache=None if args.no_nli_cache else args.input.parent / NLI_CACHE_NAME)
 
 

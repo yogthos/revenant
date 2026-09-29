@@ -176,3 +176,56 @@ class TestNLICache:
         ftd.finalize(raw, tmp_path / "lf", "d", **kw)
         ftd.finalize(raw, tmp_path / "lf", "d", nli_min_fraction=0.6, **kw)
         assert len(calls) == 4
+
+
+class TestLLMStyleMix:
+    """--llm-style-share keeps every llm_style row and samples the rest down."""
+
+    def _rows(self, n_llm, n_other):
+        out = "He went into town, as he did most days, and came back with bread for all. "
+        inp = "The man walked to the town and bought some bread for his whole family. "
+        rows = []
+        for i in range(n_llm + n_other):
+            vtype = "llm_style" if i < n_llm else ("standard" if i % 2 else "snowflake")
+            rows.append({"input": inp * 2 + str(i), "output": out * 2 + str(i), "source_idx": i,
+                         "source_paragraphs": [i], "variation_type": vtype})
+        return rows
+
+    def test_keeps_all_llm_style_rows_and_samples_the_rest(self):
+        from filter_training_data import mix_llm_style
+        rows = self._rows(70, 200)
+        mixed = mix_llm_style(rows, share=0.7, seed=1)
+        llm = [r for r in mixed if r["variation_type"] == "llm_style"]
+        assert len(llm) == 70
+        assert len(mixed) - len(llm) == 30
+
+    def test_keeps_the_original_row_order(self):
+        from filter_training_data import mix_llm_style
+        rows = self._rows(10, 50)
+        mixed = mix_llm_style(rows, share=0.5, seed=1)
+        idx = [r["source_idx"] for r in mixed]
+        assert idx == sorted(idx)
+
+    def test_same_seed_same_sample(self):
+        from filter_training_data import mix_llm_style
+        rows = self._rows(10, 50)
+        assert mix_llm_style(rows, 0.5, seed=3) == mix_llm_style(rows, 0.5, seed=3)
+
+    def test_too_few_other_rows_keeps_them_all(self):
+        from filter_training_data import mix_llm_style
+        rows = self._rows(10, 2)
+        assert mix_llm_style(rows, share=0.5, seed=1) == rows
+
+    def test_share_must_be_a_fraction(self):
+        from filter_training_data import mix_llm_style
+        with pytest.raises(ValueError):
+            mix_llm_style(self._rows(1, 1), share=1.0)
+
+    def test_finalize_mixes_before_the_split(self, tmp_path):
+        from filter_training_data import finalize
+        raw = tmp_path / "train.jsonl"
+        raw.write_text("".join(json.dumps(r) + "\n" for r in self._rows(20, 80)))
+        stats = finalize(raw, tmp_path / "lf", "d", persona=lambda r: "P", nli=False,
+                         block_size=1, val_fraction=0.1, llm_style_share=0.5)
+        assert stats["train"] + stats["val"] + stats["straddling"] == 40
+        assert stats["mixed_out"] == 60
