@@ -83,7 +83,13 @@ class GenerationConfig:
     top_p: float = 0.92
     min_p: float = 0.05
     repetition_penalty: float = 1.15
-    scale: float = 1.0  # LoRA adapter scale
+    scale: float = 1.0  # Multiplier on the scale the adapter was trained at
+    # LlamaFactory template the adapter was trained with. Empty means use the
+    # adapter's metadata.json, falling back to DEFAULT_CHAT_TEMPLATE.
+    chat_template: str = ""
+    enable_thinking: Optional[bool] = None
+    # "user" or "system": where training put the persona instruction.
+    persona_turn: str = ""
     skip_cleaning: bool = False  # If True, return raw output without cleaning
     logit_bias: Dict[str, float] = field(default_factory=dict)
 
@@ -109,6 +115,9 @@ class GenerationConfig:
                 repetition_penalty=adapter_config.repetition_penalty,
                 scale=adapter_config.scale,
                 logit_bias=dict(adapter_config.logit_bias),
+                chat_template=adapter_config.chat_template,
+                enable_thinking=adapter_config.enable_thinking,
+                persona_turn=adapter_config.persona_turn,
             )
         except Exception as e:
             logger.warning(f"Could not load config, using defaults: {e}")
@@ -129,6 +138,9 @@ class GenerationConfig:
             repetition_penalty=fused_config.repetition_penalty,
             scale=1.0,
             logit_bias=dict(fused_config.logit_bias),
+            chat_template=fused_config.chat_template,
+            enable_thinking=fused_config.enable_thinking,
+            persona_turn=fused_config.persona_turn,
         )
 
 
@@ -177,6 +189,31 @@ class BaseStyleGenerator(ABC):
             Generated text in the author's style.
         """
         pass
+
+    def chat_prompt(self, instruction: str, content: str) -> str:
+        """Prompt text in the adapter's training template.
+
+        The template comes from config.json (``chat_template``), then the
+        adapter's metadata.json, then DEFAULT_CHAT_TEMPLATE.
+        """
+        template, enable_thinking = self.config.chat_template, self.config.enable_thinking
+        metadata = getattr(self, "metadata", None)
+        persona_turn = self.config.persona_turn or getattr(metadata, "persona_turn", "") or "user"
+        if not template:
+            template = getattr(metadata, "template", "") or ""
+            if enable_thinking is None:
+                enable_thinking = getattr(metadata, "enable_thinking", None)
+        if not template:
+            if not getattr(self, "_warned_template", False):
+                logger.warning(
+                    f"Adapter records no training template; assuming {DEFAULT_CHAT_TEMPLATE}. "
+                    "Set chat_template in config.json or reconvert with --train-config."
+                )
+                self._warned_template = True
+            template = DEFAULT_CHAT_TEMPLATE
+        return render_chat_prompt(instruction, content, template,
+                                  enable_thinking=True if enable_thinking is None else enable_thinking,
+                                  persona_turn=persona_turn)
 
     @abstractmethod
     def unload(self) -> None:
@@ -425,3 +462,52 @@ def split_legacy_prompt(prompt: str, content: Optional[str] = None) -> Tuple[str
         return "", prompt
     parts = body.rsplit("\n\n", 1)
     return (parts[0], parts[1]) if len(parts) == 2 else ("", parts[0])
+
+
+# LlamaFactory's `qwen` template adds this when a row has no system prompt.
+QWEN_DEFAULT_SYSTEM = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
+QWEN3_8_XHIGH_REASONING = (
+    "Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, "
+    "consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer."
+)
+EMPTY_THOUGHT = "<think>\n\n</think>\n\n"
+PLAIN_TEMPLATES = {"qwen3_5_nothink"}
+REASONING_TEMPLATES = {"qwen3_5", "qwen3_6", "qwen3_8"}
+DEFAULT_CHAT_TEMPLATE = "qwen3_5_nothink"
+
+
+def render_chat_prompt(instruction: str, content: str, template: str = DEFAULT_CHAT_TEMPLATE,
+                       enable_thinking: bool = True, persona_turn: str = "user") -> str:
+    """Render the prompt the way LlamaFactory rendered it for ``template``.
+
+    ``persona_turn`` says where the training rows put the persona instruction:
+    "user" (alpaca instruction + input joined in one user turn) or "system"
+    (a system column, with the text alone in the user turn).
+
+    ``enable_thinking`` mirrors the LlamaFactory setting of the same name
+    (default true). With it off, reasoning templates put an empty thought in
+    the prompt; with it on, the model was trained to write that thought itself.
+    """
+    if persona_turn == "system":
+        system, user = instruction.strip(), content
+    elif persona_turn == "user":
+        system, user = "", chat_messages(instruction, content)[0]["content"]
+    else:
+        raise ValueError(f"persona_turn must be 'user' or 'system', not {persona_turn!r}")
+
+    if template == "qwen":
+        system = system or QWEN_DEFAULT_SYSTEM
+    elif template in REASONING_TEMPLATES:
+        if template == "qwen3_8" and enable_thinking:
+            system = "\n\n".join(p for p in (QWEN3_8_XHIGH_REASONING, system) if p)
+    elif template not in PLAIN_TEMPLATES:
+        raise ValueError(
+            f"Unsupported chat template {template!r}; expected one of "
+            f"{sorted({'qwen'} | PLAIN_TEMPLATES | REASONING_TEMPLATES)}"
+        )
+
+    prompt = f"<|im_start|>system\n{system}<|im_end|>\n" if system else ""
+    prompt += f"<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n"
+    if template in REASONING_TEMPLATES and not enable_thinking:
+        prompt += EMPTY_THOUGHT
+    return prompt

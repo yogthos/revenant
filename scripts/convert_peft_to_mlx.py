@@ -6,8 +6,13 @@ This script converts them to MLX-compatible format.
 
 Usage:
     python scripts/convert_peft_to_mlx.py \
-        --input lora_adapters/lovecraft_qwen_2.5_32b/checkpoint-600 \
-        --output lora_adapters/lovecraft_32b_mlx
+        --input saves/Hemmingway-1/lora/russell \
+        --output lora_adapters/russell_hemmingway_mlx \
+        --mlx-model models/Hemmingway-1-6bit-MLX \
+        --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+
+--train-config records the LlamaFactory template in metadata.json so inference
+renders prompts exactly as training did.
 """
 
 import argparse
@@ -80,47 +85,89 @@ def _detect_model_prefix(input_dir: Path, peft_weights: dict) -> str:
     return ""
 
 
-def _detect_model_prefix_from_model(model_path: Path, peft_weights: dict) -> str:
-    """Detect prefix by reading actual MLX model safetensors."""
+def read_train_config(path) -> dict:
+    """Prompt layout settings from a LlamaFactory training yaml.
+
+    persona_turn comes from the dataset_info.json next to the yaml: rows with
+    a system column put the persona in the system turn, alpaca rows without
+    one put it in the user turn with the input.
+    """
+    import yaml
+    path = Path(path)
+    with open(path) as f:
+        cfg = yaml.safe_load(f)
+    persona_turn = "user"
+    info_path = path.parent / "dataset_info.json"
+    if info_path.exists():
+        info = json.loads(info_path.read_text())
+        dataset = str(cfg["dataset"]).split(",")[0].strip()
+        if "system" in info.get(dataset, {}).get("columns", {}):
+            persona_turn = "system"
+    else:
+        print(f"  No {info_path}; assuming the persona was in the user turn")
+    # LlamaFactory's enable_thinking defaults to true.
+    return {"template": cfg["template"], "enable_thinking": cfg.get("enable_thinking", True),
+            "persona_turn": persona_turn}
+
+
+def build_mlx_model(model_path: Path):
+    """The model mlx_lm builds from ``model_path``'s config, without weights.
+
+    Its parameter names are the ones adapters must use. They can differ from
+    the names in the model's files: a Hugging Face Qwen3.5 folder says
+    model.layers.N..., mlx_lm's module is language_model.model.layers.N....
+    """
+    from mlx_lm.utils import _get_classes, load_config
+
+    config = load_config(Path(model_path))
+    model_class, args_class = _get_classes(config=config)
+    return model_class(args_class.from_dict(config))
+
+
+def mlx_module_names(model_path: Path) -> set:
+    from mlx.utils import tree_flatten
+
+    return {k[: -len(".weight")] for k, _ in tree_flatten(build_mlx_model(model_path).parameters())
+            if k.endswith(".weight")}
+
+
+def rename_to_model(mlx_weights: dict, model_path: Path) -> dict:
+    """Give every LoRA weight the name of the module mlx_lm builds for it.
+
+    Matching is on the "layers.N.module" tail, so any wrapper prefix works.
+    mlx_lm loads adapters with strict=False: a name that matches no module is
+    dropped silently and that part of the adapter never runs, so a tail with
+    no module is an error.
+    """
     import re
-    from safetensors import safe_open
 
-    # Get PEFT prefix
-    sample_key = next(iter(peft_weights))
-    stripped = sample_key
-    if stripped.startswith("base_model.model."):
-        stripped = stripped[len("base_model.model."):]
-    m = re.match(r'(.+?layers\.)\d+\.', stripped)
-    peft_prefix = m.group(1) if m else ""
-
-    # Read MLX model to get its prefix
-    st_files = sorted(model_path.glob("*.safetensors"))
-    if not st_files:
-        print(f"  No safetensors in {model_path}")
-        return ""
-
-    with safe_open(str(st_files[0]), framework="numpy") as f:
-        for mk in f.keys():
-            m2 = re.match(r'(.+?layers\.)\d+\.', mk)
-            if m2:
-                mlx_prefix = m2.group(1)
-                if mlx_prefix != peft_prefix:
-                    print(f"  Prefix mismatch: PEFT='{peft_prefix}' MLX='{mlx_prefix}'")
-                    return mlx_prefix
-                else:
-                    print(f"  Prefix matches: '{peft_prefix}'")
-                    return ""
-    return ""
+    by_tail = {}
+    for name in mlx_module_names(model_path):
+        m = re.search(r"layers\.\d+\..+$", name)
+        if m:
+            by_tail[m.group(0)] = name
+    renamed, missing = {}, set()
+    for key, value in mlx_weights.items():
+        module, _, part = key.rpartition(".lora_")
+        m = re.search(r"layers\.\d+\..+$", module)
+        target = by_tail.get(m.group(0)) if m else None
+        if target is None:
+            missing.add(module)
+            continue
+        renamed[f"{target}.lora_{part}"] = value
+    if missing:
+        raise ValueError(f"{len(missing)} adapted modules are not in {model_path}, e.g. {sorted(missing)[:3]}")
+    return renamed
 
 
-def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str = None, author: str = None):
+def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str = None, author: str = None,
+                        train_config=None):
     """Convert PEFT adapter to MLX format."""
     import safetensors.torch as st_torch
     from safetensors.numpy import save_file as save_numpy
 
     input_dir = Path(input_dir)
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Load PEFT weights
     peft_weights_path = input_dir / "adapter_model.safetensors"
@@ -146,9 +193,10 @@ def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str =
     #
     # We detect the prefix by looking at the actual model weight names.
     model_prefix = ""
-    if mlx_model_path and Path(mlx_model_path).exists():
-        # Detect prefix from the actual MLX model weights
-        model_prefix = _detect_model_prefix_from_model(Path(mlx_model_path), peft_weights)
+    if mlx_model_path:
+        if not (Path(mlx_model_path) / "config.json").exists():
+            raise FileNotFoundError(f"--mlx-model {mlx_model_path} has no config.json; the adapter's "
+                                    "weight names can't be checked against it")
     else:
         model_prefix = _detect_model_prefix(input_dir, peft_weights)
 
@@ -195,7 +243,12 @@ def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str =
 
     print(f"Converted {len(mlx_weights)} weight tensors")
 
+    if mlx_model_path:
+        mlx_weights = rename_to_model(mlx_weights, Path(mlx_model_path))
+        print(f"Weight names match the modules mlx_lm builds from {mlx_model_path}")
+
     # Save MLX weights
+    output_dir.mkdir(parents=True, exist_ok=True)
     mlx_weights_path = output_dir / "adapters.safetensors"
     save_numpy(mlx_weights, str(mlx_weights_path))
     print(f"Saved MLX weights to {mlx_weights_path}")
@@ -256,6 +309,10 @@ def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str =
         "lora_alpha": peft_config.get("lora_alpha", 256),
         "converted_from": str(input_dir),
     }
+    if train_config:
+        metadata.update(read_train_config(train_config))
+    else:
+        print("  No --train-config: inference will assume the qwen3_5_nothink template")
 
     metadata_path = output_dir / "metadata.json"
     with open(metadata_path, "w") as f:
@@ -263,7 +320,7 @@ def convert_peft_to_mlx(input_dir: Path, output_dir: Path, mlx_model_path: str =
     print(f"Saved metadata to {metadata_path}")
 
     print(f"\nConversion complete! MLX adapter saved to {output_dir}")
-    print(f"\nTo use:")
+    print("\nTo use:")
     print(f'  python restyle.py input.txt -o output.txt --adapter {output_dir}')
 
 
@@ -288,13 +345,19 @@ def main():
              "E.g., models/Qwen3.5-35B-A3B-Base-6bit-MLX"
     )
     parser.add_argument(
+        "--train-config",
+        required=False,
+        help="LlamaFactory yaml the adapter was trained with (records its chat template)",
+    )
+    parser.add_argument(
         "--author",
         required=False,
         help="Author name for adapter metadata (e.g., 'Howard Russell')"
     )
 
     args = parser.parse_args()
-    convert_peft_to_mlx(args.input, args.output, mlx_model_path=args.mlx_model, author=args.author)
+    convert_peft_to_mlx(args.input, args.output, mlx_model_path=args.mlx_model, author=args.author,
+                        train_config=args.train_config)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ template: qwen
 # 768 — max example is 585 tokens, p99 is 486. Lowering from 2048 saves
 # ~4GB activation memory (critical for fitting bf16 32B on single A100 80GB).
 cutoff_len: 768
-packing: true
+packing: false  # packed rows attend to each other; see hemmingway1_27b_lora.yaml
 overwrite_cache: true
 preprocessing_num_workers: 1
 

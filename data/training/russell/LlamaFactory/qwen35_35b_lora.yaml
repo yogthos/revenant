@@ -47,16 +47,17 @@ neftune_noise_alpha: 5.0
 dataset: russell_sft
 template: qwen3_5_nothink
 # 2048 — DDP replicates model on each GPU so per-GPU VRAM is unchanged.
-# 4096 OOMs even on H100 80GB with rank 256. Only 6 entries exceed 2048.
+# 4096 OOMs even on H100 80GB with rank 256. filter_training_data.py drops
+# rows over 2048 tokens.
 cutoff_len: 2048
-packing: true
+packing: false  # packed rows attend to each other; see hemmingway1_27b_lora.yaml
 overwrite_cache: true
 preprocessing_num_workers: 16
 
 ### Output
 output_dir: saves/Qwen3.5-35B-A3B/lora/russell
 logging_steps: 10
-save_steps: 100
+save_steps: 200
 plot_loss: true
 overwrite_output_dir: true
 
@@ -94,7 +95,7 @@ eval_steps: 200
 #
 # paged_adamw_8bit: 8-bit optimizer states save ~30% optimizer memory vs adamw_torch.
 # This is safe — it only affects optimizer state precision, not model weights.
-# Gives headroom for rank 128 + cutoff 4096 on A100 80GB.
+# Gives headroom for rank 256 on A100 80GB.
 #
 # flash_attn: Use sdpa, NOT fa2 — Flash Attention 2 causes CUDA errors with Qwen 3.5.
 flash_attn: sdpa

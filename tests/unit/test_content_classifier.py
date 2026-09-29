@@ -107,3 +107,47 @@ class TestSubstringMatchingFix:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestLongExpositoryParagraphs:
+    """Long essay paragraphs used to score as narrative: counts of past
+    participles ("is contained") and words like "when" grow with length."""
+
+    CONCEPTUAL = [
+        "Technically, the whole of the special theory is contained in the Lorentz transformation. This "
+        "transformation has the advantage that it makes the velocity of light the same with respect to any two "
+        "bodies which are moving uniformly relatively to each other, and, more generally, that it makes the laws "
+        "of electromagnetic phenomena (Maxwell's equations) the same with respect to any two such bodies. It was "
+        "for the sake of this advantage that it was originally invented, but it has since been found to have a "
+        "wider significance and a more general foundation. When we consider the matter, we see that it was "
+        "suggested by the failure of earlier experiments, which had been designed to detect the motion of the earth.",
+        "Survival of bodily death is, however, a different matter from immortality: it may only mean a "
+        "postponement of psychical death. It is immortality that men desire to believe in. Believers in "
+        "immortality will object to physiological arguments, such as we have been using, on the ground that soul "
+        "and body are totally disparate, and that the soul is something quite other than its empirical "
+        "manifestations through our bodily organs. We believe this to be a metaphysical superstition. Mind and "
+        "matter alike are, for certain purposes, convenient terms, but are not ultimate realities.",
+        "The problem of individual liberty does not arise among savages, because they feel no need of it, but it "
+        "arises among civilized men with more and more urgency as they become more civilized. And at the same "
+        "time the part played by government in the regulation of their lives is continually increasing, as it "
+        "becomes more clear that government can help to liberate us from the physical obstacles to freedom. The "
+        "problem of freedom in society is therefore one which is likely to increase in urgency, unless we cease "
+        "to become more civilized. It was once supposed that freedom would follow when government was abolished.",
+    ]
+
+    NARRATIVE = (
+        "When the war came in August 1914, I was staying in Cambridge. I went up to London on the Sunday and "
+        "walked about the streets, watching the cheering crowds in Trafalgar Square. I was astonished to find "
+        "that average men and women were delighted at the prospect of war. I had supposed, like most pacifists, "
+        "that wars were forced upon a reluctant population. That night I stayed with my brother, and we talked "
+        "until the early hours about what the coming months would bring."
+    )
+
+    @pytest.mark.parametrize("text", CONCEPTUAL, ids=["relativity", "immortality", "liberty"])
+    def test_russell_argument_is_conceptual(self, text):
+        from src.utils.content_classifier import classify_content_type, ContentType
+        assert classify_content_type(text) == ContentType.CONCEPTUAL
+
+    def test_russell_memoir_is_narrative(self):
+        from src.utils.content_classifier import classify_content_type, ContentType
+        assert classify_content_type(self.NARRATIVE) == ContentType.NARRATIVE

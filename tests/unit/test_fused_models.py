@@ -95,6 +95,7 @@ class TestFuseMLXScaleOverride:
 
         with patch("mlx_lm.utils.load", return_value=(fake_model, fake_tokenizer, fake_config)), \
              patch("mlx_lm.utils.save"), \
+             patch("src.generation.lora_generator.check_adapter_loaded"), \
              patch("mlx.utils.tree_unflatten"):
             from scripts.fuse_model import fuse_mlx
 
@@ -141,6 +142,7 @@ class TestFuseMLXScaleOverride:
 
         with patch("mlx_lm.utils.load", return_value=(fake_model, MagicMock(), {})), \
              patch("mlx_lm.utils.save"), \
+             patch("src.generation.lora_generator.check_adapter_loaded"), \
              patch("mlx.utils.tree_unflatten"):
             from scripts.fuse_model import fuse_mlx
 
@@ -643,3 +645,48 @@ class TestGenerationConfigFromFusedModel:
         assert gen.min_p == 0.07
         assert gen.repetition_penalty == 1.22
         assert gen.max_tokens == 1234
+
+
+class TestFusedModelKeepsTrainingTemplate:
+    """A fused model has no adapter, so the template recorded in the adapter's
+    metadata.json has to travel with it or prompts fall back to the default."""
+
+    ADAPTER_META = {"author": "Bertrand Russell", "base_model": "models/Hemmingway-1-6bit-MLX",
+                    "lora_rank": 64, "lora_alpha": 64, "template": "qwen3_8",
+                    "enable_thinking": False, "persona_turn": "system"}
+
+    def test_fuse_copies_the_adapter_metadata(self, tmp_path):
+        import scripts.fuse_model as fm
+        adapter, out = tmp_path / "adapter", tmp_path / "fused"
+        adapter.mkdir(); out.mkdir()
+        (adapter / "metadata.json").write_text(json.dumps(self.ADAPTER_META))
+        (adapter / "adapter_config.json").write_text(json.dumps({"lora_parameters": {"rank": 64, "scale": 1.0}}))
+        fm.write_fuse_metadata(out, adapter, "models/Hemmingway-1", scale=None, qbits=8, group_size=64)
+        meta = json.loads((out / "metadata.json").read_text())
+        assert meta["template"] == "qwen3_8"
+        assert meta["enable_thinking"] is False and meta["persona_turn"] == "system"
+        assert meta["base_model"] == "models/Hemmingway-1"
+        assert json.loads((out / "fuse_metadata.json").read_text())["quantization_bits"] == 8
+
+    def test_generator_reads_it_in_fused_mode(self, tmp_path):
+        pytest.importorskip("mlx_lm")
+        from src.generation.lora_generator import LoRAStyleGenerator
+        from src.generation.base_generator import GenerationConfig
+        (tmp_path / "metadata.json").write_text(json.dumps(self.ADAPTER_META))
+        gen = LoRAStyleGenerator(base_model=str(tmp_path), config=GenerationConfig())
+        assert gen.metadata.template == "qwen3_8"
+        assert gen.metadata.persona_turn == "system"
+        assert gen.base_model_name == str(tmp_path)
+        assert gen.chat_prompt("PERSONA", "text").startswith("<|im_start|>system\nPERSONA")
+
+    def test_pytorch_generator_reads_it_in_fused_mode(self, tmp_path):
+        pytest.importorskip("torch")
+        from src.generation.pytorch_generator import PyTorchStyleGenerator
+        from src.generation.base_generator import GenerationConfig
+        (tmp_path / "metadata.json").write_text(json.dumps(self.ADAPTER_META))
+        gen = PyTorchStyleGenerator(base_model=str(tmp_path), config=GenerationConfig())
+        assert gen.metadata.template == "qwen3_8" and gen.metadata.persona_turn == "system"
+
+    def test_mlx_conversion_keeps_it(self):
+        import scripts.fuse_model as fm
+        assert '"metadata.json"' in inspect.getsource(fm.convert_to_mlx)

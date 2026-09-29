@@ -38,10 +38,27 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from ..rag.structural_grafter import GraftingGuidance
 
-
 # =============================================================================
 # Persona File Loading
 # =============================================================================
+
+_PROMPTS_DIR = Path(__file__).parent.parent.parent / "prompts"
+
+
+def _parse_directives(section: str, filename: str) -> list:
+    directives = []
+    for line in section.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        check, _, text = line.partition(":")
+        check, text = check.strip(), text.strip()
+        if check not in DIRECTIVE_CHECKS or not text:
+            raise ValueError(f"{filename}: unknown directive check {check!r}; "
+                             f"known checks: {', '.join(sorted(DIRECTIVE_CHECKS))}")
+        directives.append((check, text))
+    return directives
+
 
 @lru_cache(maxsize=4)
 def _load_persona_file(persona_filename: str) -> Dict[str, Any]:
@@ -58,17 +75,21 @@ def _load_persona_file(persona_filename: str) -> Dict[str, Any]:
     ---
     Frame 2
 
-    Returns dict with keys: narrative_frames, conceptual_frames
+    [DIRECTIVES]
+    check_name: Directive text
+
+    Returns dict with keys: narrative_frames, conceptual_frames, directives
+    (a list of (check_name, text) pairs).
     """
     if not persona_filename:
-        return {"narrative_frames": [], "conceptual_frames": []}
+        return {"narrative_frames": [], "conceptual_frames": [], "directives": []}
 
-    prompts_dir = Path(__file__).parent.parent.parent / "prompts"
-    filepath = prompts_dir / persona_filename
+    filepath = _PROMPTS_DIR / persona_filename
 
     result = {
         "narrative_frames": [],
         "conceptual_frames": [],
+        "directives": [],
     }
 
     if not filepath.exists():
@@ -85,7 +106,7 @@ def _load_persona_file(persona_filename: str) -> Dict[str, Any]:
     current_section = None
     for part in sections:
         part = part.strip()
-        if part in ("PERSONA_FRAMES_NARRATIVE", "PERSONA_FRAMES_CONCEPTUAL"):
+        if part in ("PERSONA_FRAMES_NARRATIVE", "PERSONA_FRAMES_CONCEPTUAL", "DIRECTIVES"):
             current_section = part
         elif current_section and part:
             if current_section == "PERSONA_FRAMES_NARRATIVE":
@@ -94,6 +115,8 @@ def _load_persona_file(persona_filename: str) -> Dict[str, Any]:
             elif current_section == "PERSONA_FRAMES_CONCEPTUAL":
                 frames = [f.strip() for f in part.split("---") if f.strip()]
                 result["conceptual_frames"] = frames
+            elif current_section == "DIRECTIVES":
+                result["directives"] = _parse_directives(part, persona_filename)
 
     return result
 
@@ -136,9 +159,10 @@ def _get_worldview_filename(adapter_path: Optional[str] = None) -> str:
     return "default_persona.txt"
 
 
-def _get_persona_frame(is_narrative: bool, adapter_path: Optional[str] = None) -> str:
-    """Get a persona frame from the configured worldview file."""
-    filename = _get_worldview_filename(adapter_path)
+def _get_persona_frame(is_narrative: bool, adapter_path: Optional[str] = None,
+                       worldview: Optional[str] = None) -> str:
+    """Get a persona frame from the worldview file (named, or from config)."""
+    filename = worldview or _get_worldview_filename(adapter_path)
     persona_data = _load_persona_file(filename)
 
     if is_narrative:
@@ -190,7 +214,101 @@ ROTATING_CONSTRAINTS = [
 ]
 
 
-def _build_constraints() -> str:
+_TRANSITIONS = r"\b(however|moreover|furthermore|therefore|thus|hence|consequently|nevertheless|nonetheless)\b"
+
+# How to tell whether a text obeys a constraint. Training keeps only the
+# constraints its target obeys; a row that says "never use Therefore" above a
+# target that does teaches the model to ignore constraints. Constraints with
+# no check here ("Do not explain. Imply.") are never put on training rows.
+_CONSTRAINT_CHECKS = {
+    ALWAYS_CONSTRAINTS[0]: lambda t: not re.search(
+        r"\b(moreover|furthermore|therefore|thus|hence|in conclusion|it is important to note|"
+        r"it is worth noting|this highlights|this underscores|in essence|ultimately)\b", t, re.I),
+    ALWAYS_CONSTRAINTS[1]: lambda t: not re.search(
+        r"\b(arguably|it could be said|one might argue|perhaps it is|it seems that)\b", t, re.I),
+    FREQUENT_CONSTRAINTS[1]: lambda t: not re.search(
+        r"\b(firstly|secondly|thirdly)\b|^\s*\d+[.)]\s", t, re.I | re.M),
+    "Use fragments. Interrupt yourself with dashes (—).": lambda t: bool(re.search(r"[—–]| -- ", t)),
+    "Let ideas collide without transition words.": lambda t: not re.search(_TRANSITIONS, t, re.I),
+    "Use at least one rhetorical question.": lambda t: "?" in t,
+    "Interrupt yourself with a parenthetical thought.": lambda t: bool(re.search(r"\([^)]+\)", t)),
+    "Start the paragraph with a conjunction (But, And, Yet, So).":
+        lambda t: bool(re.match(r"[\s\"'“‘]*(but|and|yet|so)\b", t, re.I)),
+}
+
+
+def constraint_holds(constraint: str, text: str) -> bool:
+    """True if ``text`` demonstrably obeys ``constraint``."""
+    check = _CONSTRAINT_CHECKS.get(constraint)
+    return bool(check and check(text))
+
+
+# Style directives. The wording lives in the author's worldview file
+# ([DIRECTIVES], "check: text"); these are the generic checks it can name.
+# A directive only ever goes on a training row whose target obeys it, and at
+# inference only when the grafted exemplar obeys it.
+def _sentences(text: str) -> list:
+    return [s for s in re.split(r'(?<=[.!?])["\'\u201d\u2019)]*\s+(?=["\'\u201c\u2018(]?[A-Z0-9])', text.strip())
+            if s.strip()]
+
+
+def _lengths(text: str) -> list:
+    return [len(s.split()) for s in _sentences(text)] or [0]
+
+
+DIRECTIVE_CHECKS = {
+    "opens_long": lambda t: _lengths(t)[0] >= 30,
+    "opens_short": lambda t: _lengths(t)[0] <= 10,
+    "long_sentence": lambda t: max(_lengths(t)) >= 40,
+    "short_after_long": lambda t: any(a >= 30 and b <= 12 for a, b in zip(_lengths(t), _lengths(t)[1:])),
+    "ends_short": lambda t: len(_lengths(t)) > 1 and _lengths(t)[-1] <= 12,
+    "semicolon": lambda t: ";" in t,
+    "colon": lambda t: bool(re.search(r"\w:\s", t)),
+    "parenthesis": lambda t: bool(re.search(r"\([^)]+\)", t)),
+    "dash": lambda t: bool(re.search(r"[\u2014\u2013]| -- ", t)),
+    "question": lambda t: "?" in t,
+    "example": lambda t: bool(re.search(r"\b(for example|for instance|e\.g\.|take|consider)\b", t, re.I)),
+    "hypothetical": lambda t: bool(re.search(r"\b(suppose|supposing|let us|imagine|if we)\b", t, re.I)),
+    "not_but": lambda t: bool(re.search(r"\bnot\b[^.;:?!]{1,60}?\bbut\b", t)),
+    "conjunction_start": lambda t: any(re.match(r"[\"\u201c]?(But|And|Yet|So|Or|Nor)\b", s)
+                                       for s in _sentences(t)[1:]),
+    "we": lambda t: bool(re.search(r"\b(we|us|our)\b", t, re.I)),
+    "first_person": lambda t: bool(re.search(r"\bI\b", t)),
+    "scare_quotes": lambda t: bool(re.search(r"[\"\u201c][^\"\u201d]{1,40}[\"\u201d]", t)),
+    "concession": lambda t: bool(re.search(r"\b(of course|no doubt|doubtless|admittedly|it is true that)\b",
+                                           t, re.I)),
+}
+
+
+def _get_directives(adapter_path: Optional[str] = None, worldview: Optional[str] = None) -> list:
+    try:
+        return _load_persona_file(worldview or _get_worldview_filename(adapter_path))["directives"]
+    except FileNotFoundError:
+        return []
+
+
+def _build_directive_constraints(directives: list, exemplar: Optional[str]) -> str:
+    """Generic constraints plus 2-4 directives, all true of ``exemplar``.
+
+    ``exemplar`` is the row's target in training and the grafted corpus
+    paragraph at inference. Without one only the generic constraints apply.
+    """
+    constraints = list(ALWAYS_CONSTRAINTS)
+    chosen = []
+    if exemplar is not None:
+        constraints = [c for c in constraints if constraint_holds(c, exemplar)]
+        obeyed = [text for check, text in directives if DIRECTIVE_CHECKS[check](exemplar)]
+        chosen = random.sample(obeyed, min(len(obeyed), random.randint(2, 4)))
+    return "\n".join(f"[CONSTRAINT]: {c}" for c in constraints + chosen)
+
+
+def _format_constraints(constraints: list, satisfied_by: Optional[str] = None) -> str:
+    if satisfied_by is not None:
+        constraints = [c for c in constraints if constraint_holds(c, satisfied_by)]
+    return "\n".join(f"[CONSTRAINT]: {c}" for c in constraints)
+
+
+def _build_constraints(satisfied_by: Optional[str] = None) -> str:
     """Build constraint block matching training format.
 
     Training used tiered constraints (3 tiers only):
@@ -214,7 +332,7 @@ def _build_constraints() -> str:
     if random.random() < 0.40:
         constraints.append(random.choice(ROTATING_CONSTRAINTS))
 
-    return "\n".join(f"[CONSTRAINT]: {c}" for c in constraints)
+    return _format_constraints(constraints, satisfied_by)
 
 
 def _detect_content_type(content: str) -> bool:
@@ -235,29 +353,32 @@ def build_persona_instruction(
     target_words: Optional[int] = None,
     deterministic_constraints: bool = False,
     adapter_path: Optional[str] = None,
+    worldview: Optional[str] = None,
+    satisfied_by: Optional[str] = None,
 ) -> str:
-    """Build the instruction half of a training-format prompt.
+    """Build the persona instruction for one paragraph.
 
-    Training rows keep the instruction and the neutral input in separate
-    fields, which LlamaFactory joins into one user turn. Keeping them
-    separate here lets the generator lay them out the same way.
+    Training rows (filter_training_data.PersonaBuilder) and inference both
+    build it here, so they get the same frame, guidance and constraints.
 
-    ``content`` is only used to pick a narrative or conceptual frame. Training
-    classifies the neutral input too, so the frame matches.
+    ``content`` picks the narrative or conceptual frame. ``worldview`` names
+    the persona file directly; otherwise it comes from the adapter's entry in
+    config.json. ``satisfied_by`` is a training row's target: constraints it
+    doesn't obey are left out. At inference the grafted exemplar plays that
+    part for authors whose worldview file has [DIRECTIVES].
     """
     is_narrative = _detect_content_type(content)
 
-    # Situational persona frame from the config file (this is what triggers the LoRA)
-    persona_frame = _get_persona_frame(is_narrative, adapter_path=adapter_path)
+    # Situational persona frame from the worldview file (this is what triggers the LoRA)
+    persona_frame = _get_persona_frame(is_narrative, adapter_path=adapter_path, worldview=worldview)
 
     if target_words is None:
         target_words = len(content.split())
 
-    # Training format: "Write approximately N words." on its own line, nothing else
     parts = [persona_frame, "", f"Write approximately {target_words} words."]
 
-    # Skeleton structure (matches training's 50% skeleton)
-    if grafting_guidance and hasattr(grafting_guidance, 'skeleton') and grafting_guidance.skeleton:
+    # Rhetorical skeleton of the most similar corpus paragraph
+    if grafting_guidance and getattr(grafting_guidance, "skeleton", None):
         parts.append("")
         parts.append(f"Follow this structure: {grafting_guidance.skeleton.format_for_prompt()}")
 
@@ -266,14 +387,22 @@ def build_persona_instruction(
         parts.append("")
         parts.append(structural_guidance)
 
-    # Constraints (TIERED - matching training distribution)
-    parts.append("")
-    if deterministic_constraints:
+    # Constraints. Authors with [DIRECTIVES] get directives true of a real
+    # paragraph; the rest keep the old tiers their adapters were trained on.
+    directives = _get_directives(adapter_path, worldview)
+    if satisfied_by is None and grafting_guidance is not None:
+        satisfied_by = getattr(grafting_guidance, "sample_text", None)
+    if directives:
+        constraints = _build_directive_constraints(directives, satisfied_by)
+    elif deterministic_constraints:
         # For testing: include all constraints
-        constraints = ALWAYS_CONSTRAINTS + FREQUENT_CONSTRAINTS + [ROTATING_CONSTRAINTS[0]]
-        parts.append("\n".join(f"[CONSTRAINT]: {c}" for c in constraints))
+        constraints = _format_constraints(
+            ALWAYS_CONSTRAINTS + FREQUENT_CONSTRAINTS + [ROTATING_CONSTRAINTS[0]], satisfied_by)
     else:
-        parts.append(_build_constraints())
+        constraints = _build_constraints(satisfied_by)
+    if constraints:
+        parts.append("")
+        parts.append(constraints)
 
     return "\n".join(parts)
 
@@ -293,7 +422,7 @@ def build_persona_prompt(
 
     Write approximately {word_count} words.
 
-    Follow this structure: {skeleton}  (50% of training data)
+    Follow this structure: {skeleton}
 
     [CONSTRAINT]: Do not use: 'Moreover'...
 

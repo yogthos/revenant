@@ -96,3 +96,27 @@ class TestTrainingUsesSharedPerturbation:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestNamesAndNumbersAreNeverMisspelled:
+    """A typo in a name or number is a content error the model can't undo:
+    it copies it ("Jason Furman" came out as "Jasno Furman")."""
+
+    TEXT = "Jason Furman at Harvard said AI capex was 90 percent of GDP growth in 2025, per MSCI and Fitch."
+
+    @pytest.mark.parametrize("fn", ["perturb_text", "heavy_perturb_text"])
+    def test_names_numbers_and_acronyms_survive(self, fn):
+        import random
+        from src.utils import perturbation
+        keep = {"Jason", "Furman", "Harvard", "AI", "90", "GDP", "2025,", "MSCI", "Fitch."}
+        for seed in range(200):
+            random.seed(seed)
+            out = getattr(perturbation, fn)(self.TEXT, perturbation_rate=1.0)
+            assert keep <= set(out.split()), (seed, out)
+
+    def test_lowercase_words_still_get_typos(self):
+        import random
+        from src.utils.perturbation import perturb_text
+        random.seed(0)
+        outs = {perturb_text("considerable consequences throughout", perturbation_rate=1.0) for _ in range(50)}
+        assert any(o != "considerable consequences throughout" for o in outs)

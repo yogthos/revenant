@@ -39,7 +39,7 @@ The LoRA's quality depends on matching inference conditions to training conditio
 | RTT neutralization | YES | Same neutralizer at training and inference |
 | Perspective conversion | YES | Happens BEFORE RTT, not after |
 | Word count ratio | Fixed | ~1.21x, cannot change via config |
-| LoRA scale | YES | Match training scale in config.json |
+| LoRA scale | Baked in | config.json `scale` multiplies it; 1.0 = as trained |
 
 ### 3. Input Perturbation Is Critical
 
@@ -103,7 +103,8 @@ variants are kept separate to avoid Frankenstein text.
 `generate_flat_training.py` runs this at the end for LlamaFactory output. To rerun it:
 
 ```bash
-python scripts/filter_training_data.py data/training/author/train.jsonl
+python scripts/filter_training_data.py data/training/author/train.jsonl \
+    --author "Author Name" --worldview author_worldview.txt
 ```
 
 It drops rows whose input kept an entity placeholder or stray leading punctuation,
@@ -111,6 +112,15 @@ rows with too much lexical bleed, rows with an output/input word ratio over 2.0 
 inputs under 15 words, and (unless `--no-nli`) rows that fail a two-way,
 sentence-level entailment check: the target must not state things the input lacks,
 and the input must not state things the target lacks.
+
+Each kept row then gets its persona, built by the same
+`build_persona_instruction` inference uses: persona frame, word count, the
+rhetorical skeleton of the most similar *other* corpus paragraph (never the
+row's own), structural RAG hints and the tiered constraints. It needs the
+corpus indexed with `scripts/load_corpus.py` (with skeletons), the same index
+inference reads. Rows are written in chat layout: the persona in the `system`
+column, the neutral text as the user turn. `--no-rag` / `--no-grafting` leave
+the guidance out; only use them if inference runs without it.
 
 It then writes `LlamaFactory/train.jsonl`, `LlamaFactory/val.jsonl` and
 `dataset_info.json`. Validation holds out whole source paragraphs, so overlapping
@@ -122,16 +132,57 @@ Point the yaml at it with `eval_dataset: <name>_val` rather than `val_size`.
 Frames are split into NARRATIVE and CONCEPTUAL to avoid instruction-content mismatch.
 A narrative about characters should not use "Explain the concept..." prompts.
 
-Frames must be:
-1. Defined in `PERSONA_FRAMES` dict in `generate_flat_training.py` for training
-2. Copied exactly to `prompts/{author}_worldview.txt` for inference
+LlamaFactory rows and inference both read frames from `prompts/{author}_worldview.txt`
+(`--worldview` in training, `worldview` in config.json). The `PERSONA_FRAMES` dict in
+`generate_flat_training.py` is only used for the legacy MLX format.
 
-### Anti-AI Constraints
+### LLM-Style Inputs (Structure, Not Just Vocabulary)
 
-Every training entry includes tiered constraints to prevent LLM-speak:
-- **Always** (100%): Ban "Moreover", "Furthermore", "Therefore", etc.
-- **Frequent** (70%): No topic sentences, no numbered lists
-- **Rotating** (40%): One random stylistic constraint (fragments, rhetorical questions, etc.)
+A retold input keeps the author's sentence order and argument, so a model
+trained only on retellings learns to swap vocabulary and keeps whatever
+structure it is given. Fed LLM-written text, the first Hemmingway run
+produced Russell's words over the source's LLM skeleton: thesis-first
+paragraphs, "X isn't Y. It's Z." reversals, tricolons, summary closers.
+
+`generate_flat_training.py` now gives each original chunk:
+- a **standard** row: its own text through RTT
+- **llm_style** rows (`--llm-style-per-original`, default 2): DeepSeek first
+  rewrites the chunk in a typical LLM register (explainer, punchy, memo,
+  conversational; `prompts/llm_style_rewrite.txt`), in its own words with
+  every claim kept, and that rewrite goes through the same RTT and noise as
+  inference input. The target is still the author's paragraph, so the model
+  has to rebuild the author's paragraph and sentence structure.
+
+Rewrites that keep over 30% of the author's 4-grams, drift in length or open
+with a preface are dropped. The old `info_dropout` (no adjectives) and
+`abstract` (`[THING]` placeholders) inputs are gone from this pipeline: they
+taught the model to invent detail.
+
+Chunks overlap by two sentences (style lives in the transitions) and each
+aims for a random length between 100 and 300 words, so the model sees
+paragraphs the size of the ones it restyles.
+
+### Constraints and Style Directives
+
+A constraint only goes on a training row if the target obeys it. A row that
+says "never use Therefore" above a Russell paragraph that uses it teaches the
+model to ignore constraints.
+
+Authors whose worldview file has a `[DIRECTIVES]` section (`check: text` lines,
+see `prompts/russell_worldview.txt`) get:
+- the anti-LLM constraints (banned transitions, no hedging) when the text obeys them
+- 2-4 random directives drawn from the author's own habits (a long opening
+  sentence, a semicolon, a hypothetical, a short sentence after a long one...),
+  each checked by `DIRECTIVE_CHECKS` in `src/persona/prompt_builder.py`
+
+In training the directives are checked against the row's target; at inference
+against the grafted corpus paragraph. Both are real paragraphs by the author, so
+the directive sets have the same distribution, and every paragraph gets a
+different structure to aim for. Write directives from measured frequencies:
+ones most paragraphs obey do little, and ones almost none obey never show up.
+
+Authors without `[DIRECTIVES]` keep the old tiers their adapters were trained
+on (always 100%, frequent 70%, one rotating 40%).
 
 ### Instruction Template Diversity
 
@@ -142,8 +193,8 @@ used 15 templates × 5 system prompts (75 combinations) to prevent this.
 
 Our pipeline achieves diversity through:
 - Multiple persona frames (3+ narrative, 3+ conceptual per author)
-- Random constraint selection (ALWAYS + 70% FREQUENT + 40% ROTATING)
-- Optional rhetorical skeleton (50% chance)
+- Random style directives drawn from the target (or the old constraint tiers)
+- Grafted rhetorical skeleton and RAG rhythm pattern, which vary per row
 - Random word count targets
 
 Combined, this produces high instruction variety. For blended authors with fewer frames,
@@ -445,13 +496,15 @@ and eval loss only.
        --author "Author Name" \
        --output data/training/author \
        --snowflake-topics data/training/author/snowflake_topics.py \
+       --worldview author_worldview.txt \
        --format llama_factory --skip-curation --workers 4
    ```
-5. **Filter and split** (runs automatically for llama_factory; rerun with `python scripts/filter_training_data.py data/training/author/train.jsonl`)
-6. **Create worldview file** in `prompts/` with EXACT same persona frames as training
+   Index the corpus first: `python scripts/load_corpus.py --input data/corpus/curated/author.txt --author "Author Name" --clear`
+5. **Filter, add persona and split** (runs automatically for llama_factory; rerun with `filter_training_data.py ... --author ... --worldview ...`)
+6. **Create worldview file** in `prompts/` before step 4; training and inference both read it
 7. **Configure LlamaFactory** yaml and dataset_info.json
 8. **Train on RunPod** (see docs/runpod.md)
-9. **Convert adapter** to MLX for local inference (see docs/inference.md)
+9. **Convert adapter** to MLX for local inference with `--train-config <yaml>` so the chat template is recorded (see docs/runpod.md)
 
 ## References
 

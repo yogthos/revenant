@@ -37,7 +37,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -78,8 +78,10 @@ class OverlapConfig:
 
     See: https://muratcankoylan.com/projects/gertrude-stein-style-training
     """
-    min_words: int = 150  # Minimum words per chunk
-    max_words: int = 400  # Maximum words per chunk
+    # 100-300 covers the paragraphs restyled at inference (~60-250 words);
+    # the Stein study's 150-400 left the model no short paragraphs.
+    min_words: int = 100  # Minimum words per chunk
+    max_words: int = 300  # Maximum words per chunk
     overlap_sentences: int = 2  # Sentences to overlap between chunks
 
 
@@ -87,7 +89,7 @@ class OverlapConfig:
 # DeepSeek API (for fact variation)
 # =============================================================================
 
-def call_deepseek(prompt: str, system: str = "", max_retries: int = 3) -> str:
+def call_deepseek(prompt: str, system: str = "", max_retries: int = 3, temperature: float = 0.3) -> str:
     """Call DeepSeek API."""
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
@@ -109,7 +111,7 @@ def call_deepseek(prompt: str, system: str = "", max_retries: int = 3) -> str:
                 json={
                     "model": "deepseek-chat",
                     "messages": messages,
-                    "temperature": 0.3,
+                    "temperature": temperature,
                     "max_tokens": 2048
                 },
                 timeout=90
@@ -121,6 +123,166 @@ def call_deepseek(prompt: str, system: str = "", max_retries: int = 3) -> str:
                 time.sleep(2 ** attempt)
                 continue
             raise
+
+
+# =============================================================================
+# LLM-style inputs
+# =============================================================================
+# Retold inputs keep the author's sentence order and argument, so the model
+# learned to swap vocabulary and kept whatever structure it was given. For
+# llm_style rows DeepSeek first rewrites the author's paragraph in typical LLM
+# prose (registers in prompts/llm_style_rewrite.txt), that rewrite goes
+# through the same RTT as inference input, and the target stays the author's
+# paragraph: the model has to rebuild the author's structure.
+
+LLM_STYLE_PROMPT = Path(__file__).parent.parent / "prompts" / "llm_style_rewrite.txt"
+LLM_STYLE_PER_ORIGINAL = 2
+# Share of the author's 4-word sequences a rewrite may keep; above this it
+# is a paraphrase in the author's structure, not an LLM rewrite.
+MAX_LLM_REWRITE_OVERLAP = 0.3
+# Prefaces about the rewrite itself. "Here's the thing:" is a register's
+# opener, not a preface.
+_META_RE = re.compile(
+    r"^\s*(\*\*|#|sure\b|certainly\b|okay\b|rewritten\b|the rewritten"
+    r"|here(?: is|'s|’s) (?:the|a|your|my) (?:rewrit|revis|version|paragraph|passage))", re.I)
+_llm_registers_cache = {}
+
+
+@dataclass
+class LLMRegister:
+    """One LLM style: prompts run in turn, each on the previous output."""
+    name: str
+    steps: List[str]
+    weight: float = 1.0
+
+
+def load_llm_style_registers(path: Path = LLM_STYLE_PROMPT) -> Dict[str, "LLMRegister"]:
+    """Registers from [REGISTER:name weight=w] and [POLISH:name] sections.
+
+    [POLISH:name] adds name_polished: name's prompt, then the polish prompt.
+    """
+    path = Path(path)
+    if path in _llm_registers_cache:
+        return _llm_registers_cache[path]
+    sections, header, lines = [], None, []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        m = re.match(r"^\[(REGISTER|POLISH):(\w+)((?:\s+\w+=[\d.]+)*)\]\s*$", line)
+        if m:
+            if header:
+                sections.append((*header, "\n".join(lines).strip()))
+            opts = dict(o.split("=") for o in m.group(3).split())
+            header, lines = (m.group(1), m.group(2), float(opts.get("weight", 1.0))), []
+        elif header:
+            lines.append(line)
+        # lines before the first section are comments
+    if header:
+        sections.append((*header, "\n".join(lines).strip()))
+
+    registers = {}
+    for kind, name, weight, body in sections:
+        if kind == "REGISTER":
+            registers[name] = LLMRegister(name, [body], weight)
+    for kind, name, weight, body in sections:
+        if kind == "POLISH":
+            base = registers[name]
+            registers[f"{name}_polished"] = LLMRegister(f"{name}_polished", base.steps + [body], base.weight)
+    _llm_registers_cache[path] = registers
+    return registers
+
+
+def llm_rewrite_problem(source: str, rewrite: str) -> Optional[str]:
+    """Why a rewrite can't be used, or None."""
+    from src.llm.mlx_provider import ngram_overlap
+
+    if _META_RE.match(rewrite):
+        return "meta text"
+    ratio = len(rewrite.split()) / max(1, len(source.split()))
+    if not 0.6 <= ratio <= 1.5:
+        return f"length ratio {ratio:.2f}"
+    overlap = ngram_overlap(source, rewrite)
+    if overlap > MAX_LLM_REWRITE_OVERLAP:
+        return f"echo ({overlap:.0%} of 4-grams kept)"
+    return None
+
+
+def llm_style_rewrite(text: str, register: str) -> Optional[str]:
+    """The text rewritten in one LLM register, or None if unusable."""
+    steps = load_llm_style_registers()[register].steps
+    for _ in range(2):
+        rewrite = text
+        try:
+            for n, step in enumerate(steps):
+                prompt = step.format(text=rewrite, words=len(text.split()))
+                rewrite = " ".join(call_deepseek(prompt, temperature=0.8 if n == 0 else 0.5).split())
+        except Exception as e:
+            logger.debug(f"LLM-style rewrite ({register}) failed: {e}")
+            continue
+        problem = llm_rewrite_problem(text, rewrite)
+        if problem is None:
+            return rewrite
+        logger.debug(f"LLM-style rewrite ({register}) rejected: {problem}")
+    return None
+
+
+def _pick_registers(registers: Dict[str, "LLMRegister"], k: int) -> List[str]:
+    """k distinct register names, drawn by weight."""
+    pool = dict(registers)
+    picked = []
+    while pool and len(picked) < k:
+        names = list(pool)
+        name = random.choices(names, weights=[pool[n].weight for n in names])[0]
+        picked.append(name)
+        del pool[name]
+    return picked
+
+
+@dataclass
+class RTTJob:
+    """One RTT call: rtt_source is neutralized, styled is the target."""
+    idx: int
+    styled: str
+    vtype: str
+    src: tuple
+    rtt_source: str
+    register: str = ""
+
+
+def rtt_jobs(batch, rewrite=None, per_original: int = LLM_STYLE_PER_ORIGINAL,
+             registers=None, include_standard: bool = True) -> List[RTTJob]:
+    """RTT jobs for a batch of (idx, styled, vtype, src) chunks.
+
+    An original chunk gives a "standard" job (its own text retold) and up to
+    ``per_original`` llm_style jobs, each from a rewrite in a different
+    register, drawn by weight. Other variation types give one job. With
+    ``include_standard`` false only the llm_style jobs are made.
+    ``registers`` is a {name: LLMRegister} dict, a list of equally weighted
+    names, or None for the prompt file's.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    rewrite = rewrite or llm_style_rewrite
+    if registers is None:
+        registers = load_llm_style_registers()
+    elif not isinstance(registers, dict):
+        registers = {name: LLMRegister(name, [], 1.0) for name in registers}
+    jobs, wanted = [], []
+    for idx, styled, vtype, src in batch:
+        if vtype == "original":
+            if include_standard:
+                jobs.append(RTTJob(idx, styled, "standard", src, styled))
+            for register in _pick_registers(registers, per_original):
+                wanted.append((idx, styled, src, register))
+        elif include_standard:
+            jobs.append(RTTJob(idx, styled, vtype, src, styled))
+    if wanted:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            rewrites = list(pool.map(lambda w: rewrite(w[1], w[3]), wanted))
+        for (idx, styled, src, register), text in zip(wanted, rewrites):
+            if text:
+                jobs.append(RTTJob(idx, styled, "llm_style", src, text, register))
+    order = {idx: n for n, (idx, *_rest) in enumerate(batch)}
+    jobs.sort(key=lambda j: order[j.idx])  # stable: a chunk's jobs stay together
+    return jobs
 
 
 # =============================================================================
@@ -162,11 +324,25 @@ def clean_text(text: str) -> str:
 
 
 def split_into_sentences(text: str, nlp=None) -> List[str]:
-    """Split text into sentences using spaCy."""
+    """Split text into sentences using spaCy.
+
+    A "sentence" starting with a lowercase letter is spaCy breaking after an
+    abbreviation or a quoted exclamation mid-sentence, so it rejoins the
+    previous one.
+    """
     if nlp is None:
         nlp = get_nlp()
     doc = nlp(text)
-    return [sent.text.strip() for sent in doc.sents if sent.text.strip()]
+    sentences = []
+    for sent in doc.sents:
+        s = sent.text.strip()
+        if not s:
+            continue
+        if sentences and s[0].islower():
+            sentences[-1] = f"{sentences[-1]} {s}"
+        else:
+            sentences.append(s)
+    return sentences
 
 
 def count_special_chars(text: str) -> float:
@@ -931,16 +1107,19 @@ def create_overlapping_chunks(paragraphs: List[Item], config: OverlapConfig) -> 
         chunks_for_type = []
         i = 0
         while i < len(sentences):
-            # Build a chunk starting at sentence i
+            # Build a chunk starting at sentence i. Each chunk aims for its
+            # own length in [min_words, max_words]; filling every one to the
+            # maximum left no short paragraphs to learn from.
             chunk_sentences = []
             chunk_words = 0
             j = i
+            target = random.randint(config.min_words, config.max_words)
 
-            # Add sentences until we reach max_words or run out
-            while j < len(sentences) and chunk_words < config.max_words:
+            # Add sentences until we reach the target or run out
+            while j < len(sentences) and chunk_words < target:
                 sent = sentences[j]
-                # Don't exceed max_words by too much
-                if chunk_words + sent['words'] > config.max_words * 1.1 and chunk_words >= config.min_words:
+                # Don't exceed the target by too much
+                if chunk_words + sent['words'] > target * 1.1 and chunk_words >= config.min_words:
                     break
                 chunk_sentences.append(sent)
                 chunk_words += sent['words']
@@ -1129,20 +1308,40 @@ def _bleed_words(text: str) -> List[str]:
     return re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
 
 
-def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = 0.50) -> Tuple[bool, float]:
-    """Check if neutral input retains too much distinctive vocabulary from styled output.
+# Limits for how close a neutral input may stay to its styled target. They
+# were 50% vocabulary when DeepSeek paraphrased loosely; the current model
+# keeps content words (median ~62% shared), so vocabulary alone would reject
+# ~90% of faithful rows. Copying shows in repeated phrases instead.
+MAX_VOCAB_OVERLAP = 0.75
+MAX_PHRASE_OVERLAP = 0.40
 
-    If the neutral text already contains most of the distinctive words from the output,
-    the model learns copy-paste rather than style transfer.
+
+def check_lexical_bleed(neutral: str, styled: str, max_overlap: float = MAX_VOCAB_OVERLAP,
+                        max_phrase_overlap: Optional[float] = None) -> Tuple[bool, float]:
+    """Check if neutral input retains too much of the styled output's wording.
+
+    If the neutral text already contains most of the distinctive words or
+    phrases from the output, the model learns copy-paste rather than style
+    transfer.
 
     Args:
         neutral: Neutralized input text
         styled: Original styled text
-        max_overlap: Maximum allowed overlap ratio (default 0.6)
+        max_overlap: Maximum share of the styled text's distinctive words
+        max_phrase_overlap: Maximum share of its 4-word sequences, or None
+            to skip (only meaningful on the final, perturbed input)
 
     Returns:
-        Tuple of (is_valid, overlap_ratio)
+        Tuple of (is_valid, overlap_ratio). The ratio is the phrase overlap
+        when that check is what failed.
     """
+    from src.llm.mlx_provider import ngram_overlap
+
+    if max_phrase_overlap is not None:
+        phrase = ngram_overlap(styled, neutral)
+        if phrase > max_phrase_overlap:
+            return False, phrase
+
     # Tokenize on letters so "cruelty," and "cruelty" count as the same word.
     neutral_words = set(_bleed_words(neutral))
     styled_words = set(_bleed_words(styled))
@@ -1561,7 +1760,8 @@ def format_training_example(
     """Format a training example for LoRA training.
 
     Supports two output formats:
-    - llama_factory: {"instruction": "...", "input": "...", "output": "..."}
+    - llama_factory: {"input": "...", "output": "..."}. filter_training_data.finalize
+      adds the persona as the system turn, built the way inference builds it.
     - mlx: {"text": "prompt + completion"} for base models
 
     Uses Acting Directions (not Translation Instructions):
@@ -1569,16 +1769,8 @@ def format_training_example(
     - Structural Skeleton: 50% chance to include rhetorical structure
     - Negative Constraints: 30% chance to add ONE anti-AI-writing rule
     """
-    # Persona-based instruction (Acting Direction)
-    instruction = get_persona_instruction(
-        author=author,
-        word_count=word_count,
-        styled_text=styled_text,
-        input_text=neutral_text,
-    )
-
-    # Apply perturbation based on variation type
-    # info_dropout and abstract variants are already processed
+    # Apply perturbation based on variation type. llm_style inputs get the
+    # standard noise, like inference input.
     if variation_type == "robustness":
         perturbed_input = create_heavy_perturbation(neutral_text)
     elif variation_type in ("info_dropout", "abstract"):
@@ -1588,13 +1780,15 @@ def format_training_example(
         perturbed_input = perturb_text(neutral_text)
 
     if output_format == "llama_factory":
-        # LLaMA-Factory SFT format: {"instruction": "...", "input": "...", "output": "..."}
-        return {
-            "instruction": instruction,
-            "input": perturbed_input,
-            "output": styled_text,
-        }
+        return {"input": perturbed_input, "output": styled_text}
     else:
+        # Persona-based instruction (Acting Direction)
+        instruction = get_persona_instruction(
+            author=author,
+            word_count=word_count,
+            styled_text=styled_text,
+            input_text=neutral_text,
+        )
         # MLX format: {"text": "prompt + completion"} for base models
         # With mask_prompt=true, only the completion (after prompt) is trained
         prompt = f"{instruction}\n\n{perturbed_input}\n###\n"
@@ -1640,6 +1834,10 @@ def generate_training_data(
     monotone: bool = False,
     resume: bool = False,
     output_format: str = "llama_factory",
+    llm_style_per_original: int = LLM_STYLE_PER_ORIGINAL,
+    llm_style_only: bool = False,
+    llm_style_add: bool = False,
+    llm_style_registers: Optional[List[str]] = None,
 ) -> int:
     """Generate training data using RTT neutralization, writing progressively.
 
@@ -1648,7 +1846,8 @@ def generate_training_data(
 
     Uses persona-based training:
     - Acting Directions (not Translation Instructions)
-    - Many-to-One mapping: 3 variants per anchor (standard, info_dropout, abstract)
+    - Many-to-One mapping: each original chunk gives a standard row (its own
+      text retold) and llm_style rows (an LLM-style rewrite of it, retold)
     - Structural skeletons: 50% chance to include rhetorical structure
     - Negative constraints: 30% chance to add ONE anti-AI-writing rule
 
@@ -1672,7 +1871,30 @@ def generate_training_data(
     mode = "monotone" if monotone else "standard"
 
     processed_indices = set()
-    if resume and output_path.exists():
+    registers = None
+    if llm_style_registers:
+        available = load_llm_style_registers()
+        unknown = set(llm_style_registers) - set(available)
+        if unknown:
+            raise ValueError(f"Unknown llm_style registers {sorted(unknown)}; have {sorted(available)}")
+        registers = {name: available[name] for name in llm_style_registers}
+
+    if llm_style_only:
+        # Regenerate the llm_style rows only: keep every other row, then
+        # append new ones below. Without llm_style_add the old llm_style
+        # rows are dropped first.
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if not llm_style_add:
+            kept = []
+            if output_path.exists():
+                kept = [line for line in output_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip() and json.loads(line).get("variation_type") != "llm_style"]
+            output_path.write_text("".join(line + "\n" for line in kept), encoding="utf-8")
+            logger.info(f"llm_style only: kept {len(kept)} other rows in {output_path}")
+        else:
+            logger.info(f"llm_style add: appending to {output_path}")
+        processed_indices = {i for i, c in enumerate(chunks) if c[1] != "original"}
+    elif resume and output_path.exists():
         processed_indices = _read_processed_indices(output_path)
         logger.info(f"Resuming: found {len(processed_indices)} already processed items")
 
@@ -1691,7 +1913,8 @@ def generate_training_data(
     neutralizer, _ = get_rtt_neutralizer()
     batch_size = getattr(neutralizer, 'batch_size', 1)
     concurrent_batches = getattr(neutralizer, 'concurrent_batches', 1)
-    use_batching = isinstance(batch_size, int) and batch_size > 1 and hasattr(neutralizer, 'neutralize_batch')
+    # The batch pipeline also runs single-text requests in parallel.
+    use_batching = isinstance(batch_size, int) and batch_size >= 1 and hasattr(neutralizer, 'neutralize_batch')
 
     # Super-batch = batch_size * concurrent_batches (to fully utilize parallelism)
     # e.g., batch_size=10, concurrent_batches=4 → send 40 texts at once
@@ -1708,16 +1931,15 @@ def generate_training_data(
         if idx not in processed_indices
     ]
 
-    def write_rows(f, idx, styled_text, vtype, src, neutral) -> None:
+    def write_rows(f, idx, styled_text, vtype, src, neutral, register="") -> None:
         nonlocal success_count, failed_count
         neutral = clean_neutral_text(neutral)
         word_count = len(styled_text.split())
 
-        # Many-to-One: 3 input variants per anchor (standard, info_dropout, abstract)
-        if vtype == "original":
-            variants = create_input_variants(styled_text, neutral)
-        else:
-            variants = [(neutral, vtype)]
+        # An original chunk arrives as a "standard" job and llm_style jobs
+        # (rtt_jobs); the old info_dropout/abstract inputs taught the model
+        # to invent adjectives and nouns.
+        variants = [(neutral, vtype)]
 
         for variant_neutral, variant_type in variants:
             # Lexical bleed filter: reject if neutral retains too much distinctive vocabulary
@@ -1738,6 +1960,8 @@ def generate_training_data(
             example["source_idx"] = idx
             example["source_paragraphs"] = list(src)
             example["variation_type"] = variant_type
+            if register:
+                example["register"] = register
             if output_format == "mlx":
                 example["many_to_one"] = len(variants) > 1
 
@@ -1746,7 +1970,7 @@ def generate_training_data(
             type_counts[variant_type] = type_counts.get(variant_type, 0) + 1
 
     # Append if resuming, otherwise overwrite
-    file_mode = 'a' if resume and processed_indices else 'w'
+    file_mode = 'a' if (resume and processed_indices) or llm_style_only else 'w'
     with open(output_path, file_mode, encoding='utf-8') as f:
         for batch_start in range(0, len(pending_chunks), super_batch_size):
             batch = pending_chunks[batch_start:batch_start + super_batch_size]
@@ -1762,31 +1986,33 @@ def generate_training_data(
                     f"{rate:.2f}/s | ETA: {eta/60:.1f}m"
                 )
 
+            jobs = rtt_jobs(batch, per_original=llm_style_per_original, registers=registers,
+                            include_standard=not llm_style_only)
             if use_batching:
                 # Retries are handled inside the queue-based pipeline
                 try:
-                    neutrals = neutralize_batch([styled for _, styled, _, _ in batch], monotone=monotone)
+                    neutrals = neutralize_batch([j.rtt_source for j in jobs], monotone=monotone)
                 except Exception as e:
                     logger.warning(f"Batch RTT error: {e}")
-                    neutrals = [None] * len(batch)
+                    neutrals = [None] * len(jobs)
             else:
                 neutrals = []
-                for idx, styled_text, _, _ in batch:
+                for job in jobs:
                     neutral = None
                     for retry in range(3):
                         try:
-                            neutral = neutralize_text(styled_text, monotone=monotone)
+                            neutral = neutralize_text(job.rtt_source, monotone=monotone)
                         except Exception as e:
-                            logger.debug(f"  [{idx}] RTT attempt {retry + 1} error: {e}")
+                            logger.debug(f"  [{job.idx}] RTT attempt {retry + 1} error: {e}")
                         if neutral:
                             break
                     if not neutral:
-                        logger.warning(f"  [{idx}] ✗ All retries exhausted ({len(styled_text.split())}w)")
+                        logger.warning(f"  [{job.idx}] ✗ All retries exhausted ({len(job.rtt_source.split())}w)")
                     neutrals.append(neutral)
 
-            for (idx, styled_text, vtype, src), neutral in zip(batch, neutrals):
+            for job, neutral in zip(jobs, neutrals):
                 if neutral:
-                    write_rows(f, idx, styled_text, vtype, src, neutral)
+                    write_rows(f, job.idx, job.styled, job.vtype, job.src, neutral, job.register)
                 else:
                     failed_count += 1
 
@@ -1825,9 +2051,21 @@ def main():
     parser.add_argument("--max-paragraphs", type=int, default=None, help="Max paragraphs to process")
     parser.add_argument("--min-para-words", type=int, default=100, help="Min words per paragraph (curation)")
     parser.add_argument("--max-para-words", type=int, default=650, help="Max words per paragraph (curation)")
-    parser.add_argument("--min-chunk-words", type=int, default=150, help="Min words per chunk (default: 150)")
-    parser.add_argument("--max-chunk-words", type=int, default=400, help="Max words per chunk (default: 400)")
+    parser.add_argument("--min-chunk-words", type=int, default=OverlapConfig.min_words,
+                        help=f"Min words per chunk (default: {OverlapConfig.min_words})")
+    parser.add_argument("--max-chunk-words", type=int, default=OverlapConfig.max_words,
+                        help=f"Max words per chunk (default: {OverlapConfig.max_words})")
     parser.add_argument("--overlap-sentences", type=int, default=2, help="Sentence overlap between chunks")
+    parser.add_argument("--llm-style-only", action="store_true",
+                        help="Regenerate only the llm_style rows of an existing train.jsonl (with "
+                             "--resume-from-chunks): other rows are kept, old llm_style rows replaced")
+    parser.add_argument("--llm-style-add", action="store_true",
+                        help="With --llm-style-only: add llm_style rows instead of replacing the existing ones")
+    parser.add_argument("--llm-style-registers", default=None,
+                        help="Comma-separated registers to draw from (default: all, by weight)")
+    parser.add_argument("--llm-style-per-original", type=int, default=LLM_STYLE_PER_ORIGINAL,
+                        help="LLM-style rewrites per original chunk, each in a different register "
+                             "(prompts/llm_style_rewrite.txt); 0 disables")
     parser.add_argument("--resume-from", type=str, default=None, help="Resume from intermediate JSON (skips Steps 1-2)")
     parser.add_argument("--resume-from-chunks", type=str, default=None, help="Resume from chunks JSON (skips Steps 1-3)")
     parser.add_argument("--resume", action="store_true", help="Resume from last processed item (checks train.jsonl)")
@@ -1842,6 +2080,9 @@ def main():
                         help="Share of source paragraphs held out for validation (default: 0.05)")
     parser.add_argument("--no-nli", action="store_true",
                         help="Skip the two-way entailment filter when writing LlamaFactory splits")
+    parser.add_argument("--worldview", default=None,
+                        help="Persona file in prompts/ for the LlamaFactory system prompt "
+                             "(required for --format llama_factory)")
     parser.add_argument("--snowflake-topics", type=str, default=None,
                         help="Path to Python file with custom snowflake topics list "
                              "(e.g., data/training/russell/snowflake_topics.py). "
@@ -1851,6 +2092,14 @@ def main():
 
     if not args.resume_from and not args.resume_from_chunks and not args.corpus and not args.from_selected:
         parser.error("--corpus or --from-selected is required unless using --resume-from or --resume-from-chunks")
+
+    persona = None
+    if args.format == "llama_factory":
+        if not args.worldview:
+            parser.error("--worldview is required for --format llama_factory")
+        # Load it now so a missing corpus index fails before hours of API calls.
+        from filter_training_data import load_persona_builder
+        persona = load_persona_builder(args.author, args.worldview)
 
     overall_start = time.time()
     output_dir = Path(args.output)
@@ -2041,7 +2290,11 @@ def main():
     num_examples = generate_training_data(
         chunks, args.author, train_output_path,
         workers=args.workers, monotone=not args.no_monotone,
-        resume=args.resume, output_format=args.format
+        resume=args.resume, output_format=args.format,
+        llm_style_per_original=args.llm_style_per_original,
+        llm_style_only=args.llm_style_only,
+        llm_style_add=args.llm_style_add,
+        llm_style_registers=args.llm_style_registers.split(",") if args.llm_style_registers else None,
     )
 
     # Step 5: filter and split by source paragraph for LlamaFactory
@@ -2049,13 +2302,15 @@ def main():
         logger.info("=" * 60)
         logger.info("STEP 5: Filtering rows and writing train/val splits")
         logger.info("=" * 60)
-        from filter_training_data import finalize
+        from filter_training_data import NLI_CACHE_NAME, finalize
         finalize(
             train_output_path,
             output_dir / "LlamaFactory",
             dataset_name=output_dir.name,
+            persona=persona,
             val_fraction=args.val_fraction,
             nli=not args.no_nli,
+            nli_cache=output_dir / NLI_CACHE_NAME,
             log=logger.info,
         )
 

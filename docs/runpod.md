@@ -7,15 +7,57 @@ For training concepts and hyperparameter rationale, see `style_transfer_training
 
 | Config | GPU | Use Case |
 |--------|-----|----------|
+| 1x H200 141GB | Hemmingway-1 27B bf16 LoRA (rank 256, ~92GB) | ~$3.60/hr |
+| 1x H100 or A100 80GB | Hemmingway-1 27B bf16 LoRA at rank 64 (~70GB; see the yaml's MEMORY note) | ~$1.64-2.69/hr |
 | 1x A100 80GB | Qwen 2.5-32B QLoRA 4-bit (rank 256, ~35GB) | ~$1.64/hr |
 | 2x A100 80GB | Qwen 2.5-32B bf16 + DeepSpeed ZeRO-3 (rank 256, ~40GB/GPU) | ~$3.28/hr |
 | 2x H100 80GB | Qwen 3.5-35B bf16 (rank 256, ~80GB per GPU) | ~$6.58/hr |
 
+- **On-demand, not spot/interruptible**, for multi-hour runs
 - **Container disk**: 20GB default is fine
-- **Volume disk**: 200GB+ (model weights + checkpoints — ZeRO-3 checkpoints are ~29GB each)
+- **Volume disk**: 200GB+ (model weights + checkpoints — ZeRO-3 checkpoints are ~29GB each).
+  Hemmingway-1 at rank 256: 350GB, since every checkpoint's adapter (~7.5GB) is archived
 - **Template**: RunPod PyTorch 2.x (CUDA 12.x)
 
-## Setup
+## Hemmingway-1 Quick Start
+
+`scripts/runpod/` does all of this. Everything goes on `/workspace`, including
+a venv, so stopping and restarting the pod loses nothing.
+
+```bash
+cd /workspace && git clone https://github.com/yogthos/revenant revenant
+bash revenant/scripts/runpod/setup.sh          # installs, copies data, downloads the model
+bash revenant/scripts/runpod/train.sh --smoke  # 5 steps with a save and an eval
+tmux attach -t train                           # check memory and loss, then exit the shell
+tmux kill-session -t train
+bash revenant/scripts/runpod/train.sh          # the real run, detached in tmux
+```
+
+- `tmux attach -t train` to watch, `Ctrl-b d` to detach, `Ctrl-b n` for the
+  archive window. Scroll with the mouse wheel (`train.sh` turns on mouse mode
+  and a 100k-line scrollback), or `Ctrl-b [` then PgUp/PgDn, `q` to leave.
+  Hold Shift to select text for copying while mouse mode is on. You can close the SSH session; the run keeps going.
+- If the run dies (or the pod restarts), run `train.sh` again: the yaml keeps
+  `overwrite_output_dir: false`, so LlamaFactory resumes from the last checkpoint.
+- A checkpoint every 100 steps (~27 in all). The trainer keeps the last four
+  full checkpoints plus the best; the archive window copies every checkpoint's
+  adapter (~2GB) to `/workspace/adapters/checkpoint-N` for evaluation.
+- Progress: `tail -n 2 /workspace/russell_training/saves/Hemmingway-1/lora/russell/trainer_log.jsonl`
+  shows loss, eval loss and remaining time. Expect roughly 1-1.5h per epoch on
+  an H100 and 2.5-3.5h on an A100, so 4-10h for the three epochs.
+
+`train.sh` runs `scripts/runpod/lf_train.py` instead of `llamafactory-cli
+train`. LlamaFactory's `qwen3_8` template carries the Qwen3-VL image plugin,
+which fails every row with "Processor was not found" on a text-only model;
+the launcher swaps in the text plugin and otherwise runs the same thing.
+
+What the smoke test should show: loss starting around 1-3, no OOM
+(`nvidia-smi` in another window, ~70GB), `Found linear modules:` listing
+`in_proj_qkv`, `in_proj_z`, `in_proj_a`, `in_proj_b` and `out_proj` next to
+`q_proj`... `down_proj`, no "fast path is not available" warning, and a
+`saves/smoke/checkpoint-5` with an eval loss in its `trainer_state.json`.
+
+## Setup (manual)
 
 ```bash
 # tmux so you can disconnect
@@ -26,7 +68,8 @@ tmux new -s train
 
 # CRITICAL: Point caches to workspace (root overlay is only 20GB)
 export HF_HOME=/workspace/huggingface_cache
-export HF_DATASETS_CACHE=/workspace/huggingface_cache/datasets
+# Not on /workspace for network volumes: datasets chmods its cache files.
+export HF_DATASETS_CACHE=/root/.cache/huggingface/datasets
 mkdir -p $HF_DATASETS_CACHE
 
 # Install LlamaFactory from git
@@ -39,15 +82,41 @@ pip install flash-attn --no-build-isolation
 # DeepSpeed (required for 2x GPU ZeRO-3 sharding)
 pip install deepspeed
 
-# For Qwen 3.5 ONLY — pin transformers version:
-# pip install transformers==5.2.0
+# Qwen 3.5 architecture (Hemmingway-1, Qwen3.5-35B): LlamaFactory allows
+# transformers <= 5.8.0, which has Qwen3_5ForCausalLM.
+pip install transformers==5.8.0
+# Fast Gated DeltaNet kernels. Without them transformers falls back to a slow,
+# memory-hungry torch implementation of the linear-attention layers.
+pip install flash-linear-attention causal-conv1d --no-build-isolation
 
 # Clone repo
 cd /workspace
-git clone -b qwen-35 <your-repo-url> revenant
+git clone <your-repo-url> revenant
 ```
 
 ## Prepare Training Directory
+
+### Hemmingway-1 — Russell
+
+`train.jsonl`, `val.jsonl` and `dataset_info.json` come from
+`generate_flat_training.py --format llama_factory` (or `filter_training_data.py`).
+Rows put the persona in the `system` column and the neutral text in the user
+turn. LlamaFactory reads `dataset_info.json` from `./data` by default.
+
+```bash
+mkdir -p /workspace/russell_training/data
+cp revenant/data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml \
+    /workspace/russell_training/
+cp revenant/data/training/russell/LlamaFactory/{dataset_info.json,train.jsonl,val.jsonl} \
+    /workspace/russell_training/data/
+```
+
+The yaml trains in Hemmingway-1's own chat format: persona as the system
+message, text as the user message, thinking off (`template: qwen3_8`,
+`enable_thinking: false`), without packing, and keeps the checkpoint with the
+lowest validation loss (`load_best_model_at_end`). It is bf16 LoRA: Unsloth
+advises against QLoRA on Qwen3.5-architecture models. Rank 64 fits one 80GB
+card; for rank 128+ use an H200. The model is CC BY-NC 4.0.
 
 ### Qwen 2.5 — Howard Russell (blended)
 
@@ -77,11 +146,13 @@ cp revenant/data/training/russell/LlamaFactory/train.jsonl \
 ## Train
 
 ```bash
-cd /workspace/howard_russell_training   # or russell_training
-llamafactory-cli train qwen25_32b_lora.yaml  # or qwen35_35b_lora.yaml
+cd /workspace/russell_training
+llamafactory-cli train hemmingway1_27b_lora.yaml
+# or, from howard_russell_training: llamafactory-cli train qwen25_32b_lora.yaml
 ```
 
 Model auto-downloads from HuggingFace on first run.
+- Hemmingway-1 27B: ~55GB (bf16, trained in bf16)
 - Qwen 2.5-32B: ~18GB (4-bit quantized during training)
 - Qwen 3.5-35B-A3B: ~70GB (bf16)
 
@@ -96,6 +167,20 @@ First 10-20 steps: loss should be in the 1-3 range and declining. If loss spikes
 1000 or drops to 0.0, the config has a problem.
 
 ## Grabbing a Mid-Training Checkpoint
+
+For Hemmingway-1 the archive window has already copied every checkpoint's
+adapter to `/workspace/adapters/checkpoint-N`. Its `trainer_state.json` has
+the eval losses so far. Pull one and convert it as below:
+
+```bash
+scp -r -P <port> root@<pod-ip>:/workspace/adapters/checkpoint-900 .
+python scripts/convert_peft_to_mlx.py --input checkpoint-900 \
+    --output lora_adapters/russell_hemmingway_900 \
+    --mlx-model models/Hemmingway-1-8bit-MLX \
+    --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+```
+
+For the other configs:
 
 You can download and test any checkpoint while training continues. Useful for
 evaluating epoch 1 quality without stopping a 3-epoch run.
@@ -146,6 +231,46 @@ while true; do bash /workspace/revenant/scripts/cleanup_checkpoints.sh; sleep 30
 ls -d saves/Qwen2.5-32B/lora/howard_russell/checkpoint-* | sort -t- -k2 -n | head -n -3 | xargs rm -rf
 ```
 
+## Run Locally (MLX)
+
+`--train-config` records the chat template in the adapter's `metadata.json`,
+so inference renders prompts exactly as training did. Without it the
+generator assumes `qwen3_5_nothink`; set `chat_template` on the adapter's
+config.json entry for adapters converted before this existed (`qwen` for the
+Qwen 2.5 ones).
+
+mlx_lm has no `qwen3_5_text` model type, but its `qwen3_5` module loads the
+flat text config, so Hemmingway-1 needs its `model_type` changed before
+conversion:
+
+```bash
+hf download Altworld/Hemmingway-1 --local-dir models/Hemmingway-1
+python -c "import json; p='models/Hemmingway-1/config.json'; c=json.load(open(p)); \
+    c['model_type']='qwen3_5'; json.dump(c, open(p, 'w'), indent=2)"
+python -m mlx_lm convert --hf-path models/Hemmingway-1 \
+    --mlx-path models/Hemmingway-1-8bit-MLX -q --q-bits 8
+
+python scripts/convert_peft_to_mlx.py \
+    --input /path/to/saves/Hemmingway-1/lora/russell \
+    --output lora_adapters/russell_hemmingway_mlx \
+    --mlx-model models/Hemmingway-1-8bit-MLX \
+    --author "Bertrand Russell" \
+    --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+```
+
+`--mlx-model` is required in practice: the converter names each weight after
+the module mlx_lm builds from that model's config (`language_model.model.layers.N...`
+for Qwen3.5, not the Hugging Face `model.layers.N...`) and fails if one has no
+module. mlx_lm loads adapters with `strict=False`, so a wrong name would be
+dropped silently and the model would run untrained; the generator and
+`fuse_model.py` also refuse to run when that happens.
+
+Run the adapter unfused on the 8-bit base (`lora_adapters` in config.json,
+`use_adapter: true`). The Russell LoRA's weight changes are smaller than 8-bit
+rounding error, so fusing and then quantizing blurs them; applied at runtime
+they stay exact, for a ~2% compute cost. `scale` in config.json
+multiplies the strength the adapter was trained at, so start at 1.0.
+
 ## Upload Adapter
 
 ```bash
@@ -170,7 +295,7 @@ print('Done!')
 
 **Installation:**
 - **`qwen3_5` template not found**: Need LlamaFactory from git (0.9.5.dev0+), not PyPI (0.9.4). Only affects Qwen 3.5 — Qwen 2.5 uses `template: qwen` which works on any version.
-- **transformers version errors**: Only Qwen 3.5 requires exactly 5.2.0. Qwen 2.5 works with any recent version.
+- **transformers version errors**: LlamaFactory pins transformers <= 5.8.0; use 5.8.0 for the Qwen 3.5 architecture (Hemmingway-1, Qwen3.5-35B). Qwen 2.5 works with any recent version.
 - **`bitsandbytes` not found**: `pip install bitsandbytes` — needed for `paged_adamw_8bit` and QLoRA.
 
 **Disk:**
@@ -178,6 +303,8 @@ print('Done!')
 - **I/O error during preprocessing**: Set `HF_DATASETS_CACHE`, reduce `preprocessing_num_workers` to 1.
 
 **Training:**
+- **"The fast path is not available" warning (Qwen 3.5)**: install `flash-linear-attention` and `causal-conv1d`; the torch fallback is slow and uses far more memory.
+- **Don't turn packing on**: packed rows attend to each other and the DeltaNet layers carry state across them. LlamaFactory only isolates rows with `neat_packing` + `flash_attn: fa2` + flash-linear-attention, and fa2 has had problems with Qwen 3.5.
 - **CUDA OOM**: Reduce cutoff_len → grad_accum → rank (in that order). Qwen 2.5 with QLoRA should not OOM on A100 80GB.
 - **Loss spike then 0.0 (Qwen 3.5)**: rsLoRA alpha too high — see `qwen35_training.md`.
 - **DDP replicates model**: Per-GPU memory = single GPU. Multi-GPU gives throughput, not more memory per card.

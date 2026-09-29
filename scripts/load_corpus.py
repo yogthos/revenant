@@ -188,46 +188,37 @@ def deduplicate_paragraphs(
 def extract_skeletons_batch(
     chunks: List[str],
     llm_provider,
-    batch_save_fn=None,
-    batch_size: int = 10
+    workers: int = 16,
 ) -> List[Optional[str]]:
-    """Extract rhetorical skeletons for chunks.
+    """Extract rhetorical skeletons for chunks, ``workers`` API calls at a time.
 
     Args:
         chunks: List of text chunks.
         llm_provider: LLM provider with call() method.
-        batch_save_fn: Optional callback to save after each batch.
-        batch_size: How often to call batch_save_fn.
+        workers: Concurrent requests.
 
     Returns:
-        List of skeleton strings (or None if extraction failed).
+        List of skeleton strings (or None if extraction failed), in chunk order.
     """
-    from src.rag.skeleton_extractor import extract_skeleton
+    from concurrent.futures import ThreadPoolExecutor
+    from src.rag import skeleton_extractor
 
-    skeletons = []
-
-    try:
-        from tqdm import tqdm
-        iterator = tqdm(enumerate(chunks), total=len(chunks), desc="Extracting skeletons")
-    except ImportError:
-        iterator = enumerate(chunks)
-
-    for i, chunk in iterator:
+    def one(i: int) -> Optional[str]:
         try:
-            skeleton = extract_skeleton(chunk, llm_provider)
-            if skeleton.moves:
-                skeletons.append(skeleton.to_metadata())
-            else:
-                skeletons.append(None)
+            skeleton = skeleton_extractor.extract_skeleton(chunks[i], llm_provider)
+            return skeleton.to_metadata() if skeleton.moves else None
         except Exception as e:
             logger.warning(f"Skeleton extraction failed for chunk {i}: {e}")
-            skeletons.append(None)
+            return None
 
-        # Batch save callback
-        if batch_save_fn and (i + 1) % batch_size == 0:
-            batch_save_fn(i + 1)
-
-    return skeletons
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        results = pool.map(one, range(len(chunks)))
+        try:
+            from tqdm import tqdm
+            results = tqdm(results, total=len(chunks), desc="Extracting skeletons")
+        except ImportError:
+            pass
+        return list(results)
 
 
 def load_corpus(
@@ -259,6 +250,14 @@ def load_corpus(
     from src.rag.style_analyzer import get_style_analyzer
 
     stats = ChunkStats()
+
+    # Set up the skeleton LLM before any slow work, so a missing config or API
+    # key stops the run instead of indexing a corpus without skeletons.
+    llm_provider = None
+    if extract_skeletons:
+        from src.config import load_config
+        from src.llm.provider import create_critic_provider
+        llm_provider = create_critic_provider(load_config().llm)
 
     # Load corpus
     path = Path(corpus_path)
@@ -325,20 +324,10 @@ def load_corpus(
     skeleton_list = [None] * len(quality_paragraphs)
     if extract_skeletons:
         logger.info("Extracting rhetorical skeletons...")
-        try:
-            from src.config import load_config
-            from src.llm.provider import create_critic_provider
-
-            config = load_config()
-            llm_provider = create_critic_provider(config.llm)
-
-            skeleton_list = extract_skeletons_batch(quality_paragraphs, llm_provider)
-            stats.skeletons_extracted = sum(1 for s in skeleton_list if s)
-            logger.info(f"Extracted {stats.skeletons_extracted} skeletons")
-
-        except Exception as e:
-            logger.error(f"Skeleton extraction failed: {e}")
-            logger.info("Continuing without skeletons...")
+        # extract_skeletons_batch tolerates individual failures.
+        skeleton_list = extract_skeletons_batch(quality_paragraphs, llm_provider)
+        stats.skeletons_extracted = sum(1 for s in skeleton_list if s)
+        logger.info(f"Extracted {stats.skeletons_extracted} skeletons")
 
     # Prepare data for ChromaDB
     ids = []

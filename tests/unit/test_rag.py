@@ -1564,3 +1564,20 @@ class TestDuplicateFragmentGuidance:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestGuidanceSkipsUnusedExemplars:
+    def test_get_guidance_does_not_retrieve_exemplars(self):
+        # format_for_prompt never shows exemplar sentences, and finding them
+        # spaCy-splits ten corpus chunks per paragraph.
+        from src.rag.structural_rag import StructuralRAG
+        rag = StructuralRAG.__new__(StructuralRAG)
+        rag.author = "A"
+        rag.analyzer = MagicMock()
+        rag.analyzer.extract_rhythm.return_value.sentence_count = 3
+        rag._cached_rhythms = []
+        rag._enhanced_profile = None
+        rag._loaded = True
+        with patch.object(rag, "_get_exemplar_sentences") as exemplars:
+            rag.get_guidance("Some input text.")
+        exemplars.assert_not_called()

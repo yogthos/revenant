@@ -1,0 +1,129 @@
+### Model
+# Altworld/Hemmingway-1: dense 27B Qwen3.8 fine-tune (Qwen3_5ForCausalLM,
+# model_type qwen3_5_text, text only). 48 Gated DeltaNet linear-attention
+# layers + 16 full-attention layers. It is a chat model with a thinking chat
+# template. 27.3B bf16 parameters (54.6GB). CC BY-NC 4.0.
+model_name_or_path: Altworld/Hemmingway-1
+
+### Method
+stage: sft
+do_train: true
+finetuning_type: lora
+# Every linear layer: attention q/k/v/o, DeltaNet in_proj_qkv/z/a/b and
+# out_proj, and the MLP. Two thirds of the layers are DeltaNet, so a q/k/v/o +
+# MLP list would miss most of the attention. lm_head is left alone.
+lora_target: all
+# Rank 256 (~1.9B trainable parameters). The first run, rank 64 on retold
+# inputs, learned Russell's vocabulary but kept whatever structure the input
+# had; the llm_style rows ask the model to rebuild paragraph and sentence
+# structure, and rank 256 gives that room. Needs an H200; see MEMORY below.
+lora_rank: 256
+# Plain LoRA scaling alpha/rank = 1.0, the scale the MLX converter bakes in.
+# config.json's "scale" multiplies it at inference (1.0 = as trained).
+lora_alpha: 256
+lora_dropout: 0.05
+neftune_noise_alpha: 5.0
+
+### Dataset
+dataset: russell_sft
+# qwen3_8 matches Hemmingway-1's own chat template. With enable_thinking
+# false the prompt ends in an empty <think></think> block and the loss is on
+# the answer only, which is exactly what inference renders
+# (src/generation/base_generator.render_chat_prompt).
+template: qwen3_8
+enable_thinking: false
+# filter_training_data.py drops rows longer than this, so nothing is cut.
+cutoff_len: 2048
+# No packing: packed rows attend to each other, and the DeltaNet layers carry
+# their recurrent state across them (LlamaFactory only isolates rows with
+# neat_packing + fa2 + flash-linear-attention). With batch size 1 there is no
+# padding to save anyway.
+packing: false
+overwrite_cache: true
+preprocessing_num_workers: 8
+
+### Output
+output_dir: saves/Hemmingway-1/lora/russell
+logging_steps: 10
+# A checkpoint every 100 steps (~800 rows, ~0.07 epoch), ~30 over the run.
+# scripts/runpod/archive_adapters.sh copies each one's adapter (~7.5GB at
+# rank 256, fp32) to /workspace/adapters for evaluation: size the volume at
+# 300GB+. The full checkpoints (adapter + optimizer state, ~23GB) are pruned
+# to the last two plus the best.
+save_steps: 100
+save_total_limit: 2
+plot_loss: true
+# false: relaunching the same command resumes from the last checkpoint.
+# LlamaFactory ignores existing checkpoints when this is true.
+overwrite_output_dir: false
+save_only_model: false
+report_to: none
+
+### Training
+# ~12k rows / effective batch 8 = ~1,500 steps per epoch, ~3,000 in all.
+# Small batches: LoRA tolerates large ones worse than full fine-tuning.
+per_device_train_batch_size: 1
+gradient_accumulation_steps: 8
+# With alpha/rank scaling the update size goes with alpha x learning rate.
+# The first run (alpha 64, 4e-5 = 2.6e-3) had its best eval loss at 0.4
+# epochs and memorised after; alpha 256 x 6e-6 = 1.5e-3 is ~40% gentler,
+# and two epochs are plenty with checkpoints to choose from.
+learning_rate: 6.0e-6
+num_train_epochs: 2.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.05
+# The DeltaNet layers produce the occasional gradient spike early on.
+max_grad_norm: 0.3
+bf16: true
+
+### Evaluation
+# val.jsonl holds out whole source paragraphs (filter_training_data.py), so
+# eval loss measures generalisation. The final adapter is the checkpoint with
+# the lowest eval loss; every checkpoint's adapter is still archived.
+eval_dataset: russell_val
+per_device_eval_batch_size: 2
+eval_strategy: steps
+eval_steps: 100
+load_best_model_at_end: true
+metric_for_best_model: eval_loss
+greater_is_better: false
+
+### Memory (1x H200 141GB, ~92GB used)
+# bf16 LoRA. Unsloth advises against QLoRA on Qwen3.5 models, dense or MoE,
+# because they lose more to 4-bit quantization than usual.
+#   base weights bf16            54.6GB
+#   LoRA params, grads (fp32)    15GB    (1.9B params x 2 x 4 bytes)
+#   AdamW states (fp32)          15GB
+#   activations (checkpointed)   ~6GB
+# Liger's fused cross-entropy never materialises the 2048 x 248k logits.
+# That doesn't fit an 80GB A100/H100; there, lora_rank/lora_alpha 64 and
+# learning_rate 2.4e-5 keep the same update size (~70GB).
+flash_attn: sdpa
+gradient_checkpointing: true
+enable_liger_kernel: true
+optim: adamw_torch
+
+# =============================================================================
+# POST-TRAINING: run locally with MLX (see docs/runpod.md)
+# =============================================================================
+#
+# 1. Convert the base model. mlx_lm has no "qwen3_5_text" model type, but its
+#    qwen3_5 module loads the flat text config:
+#
+#    hf download Altworld/Hemmingway-1 --local-dir models/Hemmingway-1
+#    python -c "import json; p='models/Hemmingway-1/config.json'; c=json.load(open(p)); \
+#        c['model_type']='qwen3_5'; json.dump(c, open(p, 'w'), indent=2)"
+#    python -m mlx_lm convert --hf-path models/Hemmingway-1 \
+#        --mlx-path models/Hemmingway-1-8bit-MLX -q --q-bits 8
+#
+# 2. Convert the adapter (--train-config records the chat template; run it
+#    unfused, the LoRA delta is smaller than q8 rounding):
+#
+#    python scripts/convert_peft_to_mlx.py \
+#        --input saves/Hemmingway-1/lora/russell \
+#        --output lora_adapters/russell_hemmingway_mlx \
+#        --mlx-model models/Hemmingway-1-8bit-MLX --author "Bertrand Russell" \
+#        --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+#
+# 3. python restyle.py input.md -o output.md \
+#        --adapter lora_adapters/russell_hemmingway_mlx --author "Bertrand Russell"

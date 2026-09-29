@@ -10,26 +10,21 @@ See `docs/lora_training_strategy.md` for the complete analysis. Key requirements
 
 | Must Match | Training | Inference |
 |------------|----------|-----------|
-| **Prompt format** | Qwen chat template (`<\|im_start\|>...`) | Auto-applied by `lora_generator.py` |
+| **Prompt format** | LlamaFactory `template` from the yaml | `render_chat_prompt` rebuilds it from the adapter's `metadata.json` |
 | **Perspective** | Multiple perspectives (first/third/impersonal) | `perspective` setting converts input before RTT |
 | Input perturbation | 8% noise | `apply_input_perturbation: true` |
 | Persona frames | `PERSONA_FRAMES` dict | `prompts/{author}_worldview.txt` |
 | Content classifier | `classify_content_type()` | `src/utils/content_classifier.py` |
-| Scale | 2.0-4.0 | Match training `lora_alpha/lora_rank` |
+| Scale | Baked in by the converter | `scale` multiplies it; 1.0 = as trained |
 
 ### Prompt Format (Critical for LLaMA-Factory Models)
 
-LLaMA-Factory with `template: qwen` trains on chat format. The inference code auto-applies this:
-
-```
-<|im_start|>system
-{persona_frame + constraints}<|im_end|>
-<|im_start|>user
-{neutral_content}<|im_end|>
-<|im_start|>assistant
-```
-
-If output looks unchanged from input, the chat template may not be applied. Check logs for "Applied chat template to prompt".
+LlamaFactory joins `instruction` and `input` into one user turn and renders it
+with the yaml's `template`. Inference rebuilds that exact text in
+`src/generation/base_generator.render_chat_prompt`, using the template recorded
+by `convert_peft_to_mlx.py --train-config` (or `chat_template` in config.json).
+For `template: qwen` that includes LlamaFactory's default system prompt; for
+`qwen3_8` with `enable_thinking: false` it ends in an empty think block.
 
 **CRITICAL Pipeline Order**: Narrativize must happen BEFORE RTT, not after:
 
@@ -287,7 +282,7 @@ subprocess.run(f"mlx_lm.generate --model ./models/Qwen2.5-14B-Base-4bit-MLX --ad
 | **"Command buffer execution failed: Insufficient Memory"** | You ran out of VRAM. | 1. Enable `grad_checkpoint: true` 2. Reduce Rank to 16. 3. Use `max_seq_length: 1024`. |
 | **Model outputs gibberish / loops** | "Fried" weights (Overfitting). | Reduce `iters` (you trained too long). Load an earlier checkpoint. |
 | **Model refuses to generate ("I cannot...")** | Safety Refusal. | You are using an Instruct model. **Switch to Base model.** |
-| **Style is too weak** | Scale mismatch. | Set `scale: 2.0` to match training. Check `use_persona: true`. |
+| **Style is too weak** | Adapter too weak. | Raise `scale` above 1.0 (it multiplies the trained scale). Check `use_persona: true`. |
 | **Output is mechanical/formulaic** | Distribution mismatch. | Enable `apply_input_perturbation: true`. Verify persona frames match training. |
 | **Output is passive/descriptive/impersonal** | Input perspective mismatch. | Set `perspective: first_person_singular` to convert input before RTT. |
 | **Output doesn't expand** | LoRA can't expand. | Enable `expand_for_texture: true`. LoRA trained on similar-length pairs. |

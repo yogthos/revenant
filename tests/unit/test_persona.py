@@ -19,7 +19,7 @@ class TestLoadPersonaFile:
         # Clear lru_cache to ensure fresh call
         _load_persona_file.cache_clear()
         result = _load_persona_file("")
-        assert result == {"narrative_frames": [], "conceptual_frames": []}
+        assert result == {"narrative_frames": [], "conceptual_frames": [], "directives": []}
 
     def test_nonexistent_file_raises(self):
         """Bug M10: Non-empty filename that doesn't exist should raise, not silently
@@ -84,7 +84,7 @@ class TestBuildPersonaPromptAdapterPath:
             adapter_path="lora_adapters/test",
         )
 
-        mock_get_frame.assert_called_once_with(True, adapter_path="lora_adapters/test")
+        mock_get_frame.assert_called_once_with(True, adapter_path="lora_adapters/test", worldview=None)
 
 
 class TestConstraintTiers:
@@ -238,3 +238,58 @@ class TestUnusedParameters:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestConstraintsTheTargetKeeps:
+    """Training rows only carry constraints their target obeys. Telling the
+    model "never use Therefore" above Russell writing "Therefore" taught it to
+    ignore constraints."""
+
+    RUSSELL = ("It is generally recognized that he has revolutionized our conception of the physical world. "
+               "Therefore the ordinary man is puzzled, and he is right to be puzzled by the theory.")
+
+    def _constraints(self, target):
+        from src.persona.prompt_builder import build_persona_instruction
+        with patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME"):
+            # A worldview without [DIRECTIVES]: these are the legacy tiers.
+            text = build_persona_instruction("some neutral input", deterministic_constraints=True,
+                                             satisfied_by=target, worldview="lovecraft_worldview.txt")
+        return [line for line in text.splitlines() if line.startswith("[CONSTRAINT]")]
+
+    def test_drops_a_banned_word_the_target_uses(self):
+        assert not any("'Moreover'" in c for c in self._constraints(self.RUSSELL))
+
+    def test_keeps_constraints_the_target_obeys(self):
+        cons = self._constraints("Plain words — nothing else. Numbered lists never appear here at all.")
+        assert any("'Moreover'" in c for c in cons)
+        assert any("dashes" in c for c in cons)
+
+    def test_drops_dashes_when_the_target_has_none(self):
+        assert not any("dashes" in c for c in self._constraints(self.RUSSELL))
+
+    def test_drops_constraints_that_cannot_be_checked(self):
+        from src.persona.prompt_builder import constraint_holds
+        assert not constraint_holds("Do not explain. Imply.", self.RUSSELL)
+        assert not constraint_holds("Do not start with a topic sentence. Start with a sensory detail, "
+                                    "a question, or mid-thought.", self.RUSSELL)
+
+    @pytest.mark.parametrize("constraint, good, bad", [
+        ("Use at least one rhetorical question.", "Why? Because.", "Because."),
+        ("Interrupt yourself with a parenthetical thought.", "He (oddly) left.", "He left."),
+        ("Start the paragraph with a conjunction (But, And, Yet, So).", "But he left.", "He left."),
+        ("Do not use numbered lists or 'Firstly/Secondly/Thirdly' structures.", "He left.", "Firstly, he left."),
+        ("Let ideas collide without transition words.", "He left. She stayed.", "He left. However, she stayed."),
+        ("Do not hedge. Avoid: 'arguably', 'it could be said', 'one might argue', 'perhaps it is', "
+         "'it seems that'. State things directly.", "He left.", "It seems that he left."),
+    ])
+    def test_checks(self, constraint, good, bad):
+        from src.persona.prompt_builder import constraint_holds
+        assert constraint_holds(constraint, good)
+        assert not constraint_holds(constraint, bad)
+
+    def test_without_a_target_inference_keeps_everything(self):
+        from src.persona.prompt_builder import build_persona_instruction
+        with patch("src.persona.prompt_builder._get_persona_frame", return_value="FRAME"):
+            text = build_persona_instruction("input", deterministic_constraints=True,
+                                             worldview="lovecraft_worldview.txt")
+        assert text.count("[CONSTRAINT]") == 5
