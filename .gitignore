@@ -68,3 +68,8 @@ data/blended/howard_russell_corpus_full.json
 data/blended/howard_russell_forward.json
 data/blended/howard_russell_reverse.json
 data/blended/howard_russell_short.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
