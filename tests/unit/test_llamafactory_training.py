@@ -81,14 +81,24 @@ class TestTrainingConfigs:
 
     def test_hemmingway_capacity_and_schedule(self):
         # Run 2 (alpha x lr = 1.5e-3, stopped at its best eval loss) only
-        # reworded. Match the Qwen2.5 run's update size, train well past the
-        # eval minimum, and keep checkpoints to pick from by structure score.
+        # reworded. Match the Qwen2.5 run's update size and keep checkpoints
+        # to pick from by structure score.
         cfg = _load(HEMMINGWAY)
         assert cfg["lora_rank"] == 256
         assert cfg["lora_alpha"] * cfg["learning_rate"] >= 512 * 1.0e-5
-        assert cfg["num_train_epochs"] >= 3
-        assert cfg["train_on_prompt"] is True
-        assert cfg["save_steps"] == cfg["eval_steps"] <= 200
+        assert cfg["save_steps"] == cfg["eval_steps"] <= 250
+
+    def test_hemmingway_does_not_learn_the_prompt(self):
+        # Most prompt tokens are the persona and AI-style input prose: the
+        # style the adapter is meant to replace.
+        cfg = _load(HEMMINGWAY)
+        assert not cfg.get("train_on_prompt")
+
+    def test_hemmingway_repeats_each_passage_a_few_times(self):
+        # ~5,900 unique targets over ~9.5k rows: two epochs show each about
+        # 3-4 times, like the Qwen2.5 run. More invites memorisation.
+        cfg = _load(HEMMINGWAY)
+        assert cfg["num_train_epochs"] <= 2
 
     def test_hemmingway_run_resumes_after_a_crash(self):
         # With overwrite_output_dir LlamaFactory ignores existing checkpoints,

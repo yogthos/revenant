@@ -70,12 +70,12 @@ def _body_paragraphs(text: str) -> List[str]:
     return [p for p in split_into_paragraphs(text) if not is_heading(p)]
 
 
-def document_score(inp: str, out: str) -> dict:
+def document_score(inp: str, out: str, corpus_index: Optional[set] = None, n: int = 8) -> dict:
     inp_paras, out_paras = _body_paragraphs(inp), _body_paragraphs(out)
     if len(inp_paras) != len(out_paras):
         raise ValueError(f"input has {len(inp_paras)} paragraphs, output {len(out_paras)}")
     scores = [paragraph_score(i, o) for i, o in zip(inp_paras, out_paras)]
-    lengths = [n for s in scores for n in s["lengths"]]
+    lengths = [k for s in scores for k in s["lengths"]]
     n_out = sum(s["n_out"] for s in scores)
     orders = [s["order"] for s in scores if s["order"] is not None]
     return {
@@ -86,6 +86,8 @@ def document_score(inp: str, out: str) -> dict:
         "order": statistics.mean(orders) if orders else None,
         "mean_len": statistics.mean(lengths) if lengths else 0.0,
         "sd_len": statistics.pstdev(lengths) if lengths else 0.0,
+        "copied": max((longest_copied_run(p, corpus_index, n) for p in out_paras), default=0)
+        if corpus_index is not None else None,
     }
 
 
@@ -98,13 +100,39 @@ def shuffle_sentences(text: str, rng, max_tau: float = 0.2, tries: int = 20) -> 
     sentences = split_into_sentences(text)
     if len(sentences) < 2:
         return text
-    best = None
+    best_tau, best = 2.0, list(range(len(sentences)))
     for _ in range(tries):
         order = list(range(len(sentences)))
         rng.shuffle(order)
-        tau = kendall_tau(order)
-        if best is None or tau < best[0]:
-            best = (tau, order)
+        tau = kendall_tau(order) or 0.0  # never None: there are at least two
+        if tau < best_tau:
+            best_tau, best = tau, order
         if tau <= max_tau:
             break
-    return " ".join(sentences[i] for i in best[1])
+    return " ".join(sentences[i] for i in best)
+
+
+# Runs this long shared with the author's corpus are copying, not style
+# (Russell is in the base model's pretraining data too).
+COPIED_RUN_FLAG = 12
+
+
+def _words(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+(?:['’][a-z]+)?", text.lower())
+
+
+def ngram_index(corpus: str, n: int = 8) -> set:
+    """Every n-word sequence in the corpus, lowercased and without punctuation."""
+    words = _words(corpus)
+    return {tuple(words[i:i + n]) for i in range(len(words) - n + 1)}
+
+
+def longest_copied_run(text: str, index: set, n: int = 8) -> int:
+    """Length in words of the longest run of ``text`` found verbatim in the indexed corpus."""
+    words = _words(text)
+    best = streak = 0
+    for i in range(len(words) - n + 1):
+        streak = streak + 1 if tuple(words[i:i + n]) in index else 0
+        if streak:
+            best = max(best, streak + n - 1)
+    return best

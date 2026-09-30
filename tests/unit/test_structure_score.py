@@ -97,3 +97,32 @@ class TestShuffleSentences:
         from src.utils.structure import shuffle_sentences
         text = self._text(7)
         assert shuffle_sentences(text, random.Random(5)) == shuffle_sentences(text, random.Random(5))
+
+
+class TestCopiedRuns:
+    CORPUS = ("The man who has no tincture of philosophy goes through life imprisoned in the prejudices "
+              "derived from common sense, from the habitual beliefs of his age or his nation.")
+
+    def test_finds_the_longest_run_shared_with_the_corpus(self):
+        from src.utils.structure import longest_copied_run, ngram_index
+        index = ngram_index(self.CORPUS, n=4)
+        text = ("Today I read that the man who has no tincture of philosophy goes through life "
+                "quite happily.")
+        assert longest_copied_run(text, index, n=4) == 11  # "the man ... through life"
+
+    def test_ignores_case_and_punctuation(self):
+        from src.utils.structure import longest_copied_run, ngram_index
+        index = ngram_index(self.CORPUS, n=4)
+        assert longest_copied_run("From Common Sense; from the habitual beliefs!", index, n=4) == 7
+
+    def test_no_shared_ngram_is_zero(self):
+        from src.utils.structure import longest_copied_run, ngram_index
+        index = ngram_index(self.CORPUS, n=4)
+        assert longest_copied_run("Stocks rose sharply in May on chip demand.", index, n=4) == 0
+
+    def test_document_score_reports_the_longest_copy(self):
+        from src.utils.structure import document_score, ngram_index
+        index = ngram_index(self.CORPUS, n=4)
+        out = f"{A} The man who has no tincture of philosophy goes on. {B}"
+        s = document_score(f"{A} {B}", out, corpus_index=index, n=4)
+        assert s["copied"] == 9  # "the man ... philosophy goes"

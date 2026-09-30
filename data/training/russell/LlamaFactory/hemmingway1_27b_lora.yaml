@@ -36,8 +36,10 @@ template: qwen3_8
 enable_thinking: false
 # filter_training_data.py drops rows longer than this, so nothing is cut.
 cutoff_len: 2048
-# Loss on the prompt too, as in the Qwen2.5 run.
-train_on_prompt: true
+# No loss on the prompt: most prompt tokens are the persona and DeepSeek's
+# AI-style prose, the style the adapter is meant to replace. (The Qwen2.5
+# run trained on its prompts, but those were plain paraphrases.)
+train_on_prompt: false
 # No packing: packed rows attend to each other, and the DeltaNet layers carry
 # their recurrent state across them (LlamaFactory only isolates rows with
 # neat_packing + fa2 + flash-linear-attention). With batch size 1 there is no
@@ -49,12 +51,12 @@ preprocessing_num_workers: 8
 ### Output
 output_dir: saves/Hemmingway-1/lora/russell
 logging_steps: 10
-# A checkpoint every 200 steps, ~18 over the run.
+# A checkpoint every 250 steps, ~10 over the run.
 # scripts/runpod/archive_adapters.sh copies each one's adapter (~7.5GB at
-# rank 256, fp32) to /workspace/adapters for evaluation, ~140GB in all: size
+# rank 256, fp32) to /workspace/adapters for evaluation, ~75GB in all: size
 # the volume at 300GB+. The full checkpoints (adapter + optimizer state,
 # ~23GB) are pruned to the last two.
-save_steps: 200
+save_steps: 250
 save_total_limit: 2
 plot_loss: true
 # false: relaunching the same command resumes from the last checkpoint.
@@ -64,7 +66,10 @@ save_only_model: false
 report_to: none
 
 ### Training
-# ~7.4k rows / effective batch 8 = ~925 steps per epoch, ~3,700 in all.
+# ~9.5k rows / effective batch 8 = ~1,200 steps per epoch, ~2,400 in all.
+# The 963k-word corpus gives ~5,900 unique targets, so two epochs show each
+# about 3-4 times, close to the Qwen2.5 run (~3.7). More repetition invites
+# memorised Russell passages rather than style.
 # Small batches: LoRA tolerates large ones worse than full fine-tuning.
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
@@ -72,9 +77,11 @@ gradient_accumulation_steps: 8
 # 1.5e-3) stopped at its best eval loss and only reworded; 512 x 1e-5 =
 # 5.1e-3 matches the Qwen2.5 run. LoRA wants a high learning rate ("LoRA
 # Without Regret"), and eval loss rewards copying, so train well past its
-# minimum and pick the checkpoint by structure (see Evaluation).
+# minimum and pick the checkpoint by structure (see Evaluation). Each step
+# moves ~3.3x as far as run 2's, so the best checkpoint is likely at 1-1.5
+# epochs.
 learning_rate: 1.0e-5
-num_train_epochs: 4.0
+num_train_epochs: 2.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.05
 # The DeltaNet layers produce the occasional gradient spike early on.
@@ -85,11 +92,12 @@ bf16: true
 # val.jsonl holds out whole source paragraphs (filter_training_data.py). Eval
 # loss is logged but doesn't choose the adapter: it rewards copying the input.
 # Pick from the archived adapters by running each on input/finance.md and
-# scoring with scripts/structure_score.py (low 1:1, low order), then GPTZero.
+# scoring with scripts/structure_score.py (low 1:1, low order, no long runs
+# copied from the corpus), then GPTZero.
 eval_dataset: russell_val
 per_device_eval_batch_size: 2
 eval_strategy: steps
-eval_steps: 200
+eval_steps: 250
 load_best_model_at_end: false
 
 ### Memory (1x H200 141GB, ~92GB used)

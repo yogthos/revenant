@@ -112,6 +112,39 @@ taxonomy and the LAMP edit corpus.
 Evidence gaps: no paper isolates sentence-shuffle augmentation for LLM
 author-voice fine-tuning, and GPTZero's structural features are not public.
 
+## Corpus size and repetition
+
+Run 3 as first planned (7.7k rows, 2,873 unique targets, 4 epochs) would have
+shown each Russell passage about 11 times, and overlapping sentences 13-22
+times. The Qwen2.5 run that passed GPTZero showed each sentence about 3.7
+times over a ~2M-word blended corpus.
+
+- Per-author fine-tunes in Chakrabarty et al. 2025 used each author's
+  complete works (2-22 books) for about 3 epochs. Reader preference didn't
+  depend on corpus size (https://arxiv.org/abs/2510.13939).
+- Up to about 4 epochs of repeated data is roughly as good as unique data in
+  pretraining (Muennighoff et al., NeurIPS 2023,
+  https://arxiv.org/abs/2305.16264). In SFT, verbatim recall rises with
+  epochs and duplication, and memorisation rises with LoRA rank and alpha
+  (https://arxiv.org/abs/2506.20856).
+- Fine-tuning on one author can bring back verbatim text the base model saw
+  in pretraining, including books held out of fine-tuning
+  (https://arxiv.org/abs/2603.20957). Russell is public domain, so outputs
+  are checked for long runs copied from the corpus
+  (`structure_score.py --corpus`).
+- `train_on_prompt` would put loss on the persona and on DeepSeek's AI-style
+  inputs, the prose the adapter is meant to replace. A small prompt-loss
+  weight suits short completions (Huerta-Enochian & Ko, EMNLP 2024,
+  https://arxiv.org/abs/2401.13586), but these prompts are the anti-style,
+  so it's off.
+
+Changes made:
+- Ten more Russell books (531k words, all published by 1930) were added,
+  taking the corpus to 963k words and extending its topics to politics,
+  education, happiness and war.
+- Two epochs, with a checkpoint every 250 steps.
+- The mix is 50% llm_style, with 60% of the other rows shuffled.
+
 ## Plan
 
 1. **Break sentence order in training inputs** (`c95.1`)
@@ -120,9 +153,10 @@ author-voice fine-tuning, and GPTZero's structural features are not public.
    - In a share of the Russell-structure rows, the input sentences are
      shuffled after the NLI check, so meaning is checked on the original order
      (DIPPER).
-2. **Train harder** (`c95.2`): alpha 512, lr 1e-5, `train_on_prompt`, about 4
-   epochs. Choose the checkpoint with `structure_score.py` on
-   `input/finance.md` (low 1:1, low order), then confirm with GPTZero.
+2. **Train harder** (`c95.2`): alpha 512, lr 1e-5, 2 epochs on the 963k-word
+   corpus, no prompt loss. Choose the checkpoint with `structure_score.py
+   --corpus` on `input/finance.md` (low 1:1, low order, no copied runs of 12+
+   words), then confirm with GPTZero.
 3. Later: a preference stage on the adapter's own copying outputs (`c95.3`),
    and a base-versus-chat ablation (`c95.4`).
 4. Optional: a 15-25% slice of prose content-description inputs (`c95.5`).

@@ -39,13 +39,13 @@ bash revenant/scripts/runpod/train.sh          # the real run, detached in tmux
   Hold Shift to select text for copying while mouse mode is on. You can close the SSH session; the run keeps going.
 - If the run dies (or the pod restarts), run `train.sh` again: the yaml keeps
   `overwrite_output_dir: false`, so LlamaFactory resumes from the last checkpoint.
-- A checkpoint every 200 steps (~18 in all). The trainer keeps the last two
+- A checkpoint every 250 steps (~10 in all). The trainer keeps the last two
   full checkpoints; the archive window copies every checkpoint's adapter
   (~7.5GB at rank 256) to `/workspace/adapters/checkpoint-N` for evaluation.
   Use an H200 and a 350GB volume.
 - Progress: `tail -n 2 /workspace/russell_training/saves/Hemmingway-1/lora/russell/trainer_log.jsonl`
   shows loss, eval loss and remaining time. Run 2 took ~5.4s a step on an
-  H200 at rank 256 (6.7s with evals); ~3,700 steps is about 7h.
+  H200 at rank 256 (6.7s with evals); ~2,400 steps is about 4.5h.
 
 `train.sh` runs `scripts/runpod/lf_train.py` instead of `llamafactory-cli
 train`. LlamaFactory's `qwen3_8` template carries the Qwen3-VL image plugin,
