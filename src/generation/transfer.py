@@ -184,6 +184,9 @@ class TransferConfig:
     apply_input_perturbation: bool = (
         True  # Apply 8% noise to match training distribution
     )
+    # Reorder the LoRA input's sentences. Adapters trained on shuffled inputs
+    # then build their own order instead of following the source's.
+    shuffle_input_sentences: bool = False
 
 
 @dataclass
@@ -362,6 +365,12 @@ class StyleTransfer:
                 self.config.use_structural_rag = adapter_cfg.use_structural_rag
                 logger.info(
                     f"Using adapter-specific use_structural_rag={adapter_cfg.use_structural_rag}"
+                )
+
+            if adapter_cfg.shuffle_input_sentences is not None:
+                self.config.shuffle_input_sentences = adapter_cfg.shuffle_input_sentences
+                logger.info(
+                    f"Using adapter-specific shuffle_input_sentences={adapter_cfg.shuffle_input_sentences}"
                 )
 
             self.generator = create_style_generator(
@@ -738,6 +747,13 @@ class StyleTransfer:
             logger.info(
                 f"PERTURBATION: {pre_perturb_words} → {post_perturb_words} words (8% noise)"
             )
+
+        if self.config.shuffle_input_sentences:
+            import random
+            from ..utils.structure import shuffle_sentences
+
+            content_for_generation = shuffle_sentences(content_for_generation, random)
+            logger.info("SHUFFLE: input sentences reordered")
 
         # ========================================
         # STEP 2: Pass to LoRA for style transformation

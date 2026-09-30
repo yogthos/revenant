@@ -134,3 +134,45 @@ class TestInferenceNeutralization:
             transfer.transfer_paragraph("The first line of this paragraph has several words in it.")
         assert build.call_args.kwargs["structural_guidance"] == "RAG"
         assert build.call_args.kwargs["grafting_guidance"] is graft
+
+
+class TestShuffledInput:
+    """shuffle_input_sentences reorders the LoRA input, as 36% of run-3 training inputs were."""
+
+    SENTS = ["Markets rose sharply in May across every region.", "Two chip makers drove most of the gain.",
+             "They are a tiny share of the index.", "Investors have made the economy depend on one trade."]
+
+    def _transfer(self, generator, **cfg):
+        from src.generation.transfer import StyleTransfer, TransferConfig
+        return StyleTransfer(
+            adapter_path=None, author_name="Test", critic_provider=MagicMock(provider_name="mock"),
+            config=TransferConfig(verify_semantic_fidelity=False, skip_neutralization=True,
+                                  use_persona=False, apply_input_perturbation=False,
+                                  use_structural_rag=False, use_structural_grafting=False,
+                                  min_paragraph_words=3, **cfg),
+        )
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_shuffles_the_sentences_the_model_sees(self, mock_gen_factory):
+        generator = MagicMock()
+        generator.generate.return_value = "Styled output text from the generator model here."
+        mock_gen_factory.return_value = generator
+        text = " ".join(self.SENTS)
+        self._transfer(generator, shuffle_input_sentences=True).transfer_paragraph(text)
+        content = generator.generate.call_args.kwargs["content"]
+        assert content != text
+        assert sorted(s for s in self.SENTS) == sorted(s for s in self.SENTS if s in content)
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_off_by_default(self, mock_gen_factory):
+        generator = MagicMock()
+        generator.generate.return_value = "Styled output text from the generator model here."
+        mock_gen_factory.return_value = generator
+        text = " ".join(self.SENTS)
+        self._transfer(generator).transfer_paragraph(text)
+        assert generator.generate.call_args.kwargs["content"] == text
+
+    def test_adapter_entry_can_turn_it_on(self):
+        from src.config import _parse_model_config
+        assert _parse_model_config({"shuffle_input_sentences": True}).shuffle_input_sentences is True
+        assert _parse_model_config({}).shuffle_input_sentences is None

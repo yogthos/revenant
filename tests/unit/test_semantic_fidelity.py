@@ -361,13 +361,22 @@ class TestSemanticFidelityPrompt:
         assert '"host"' in prompt
         assert "NEVER adds a sentence" in prompt
 
-    def test_prompt_permits_consistent_additions(self):
-        """Flourish that sits comfortably with the original must survive."""
+    def test_prompt_keeps_flourish_but_cuts_added_claims(self):
+        """Imagery and asides survive; invented claims don't.
+
+        The run-3 Russell adapter added a definition of memory chips, an
+        argument about "no further winners" and a quote from "one analyst at
+        a top-tier Wall Street firm"; the old rule let all three through.
+        """
         from src.utils.prompts import load_prompt
 
-        prompt = load_prompt("semantic_fidelity").lower()
-        assert "added material is allowed" in prompt
-        assert "imagery" in prompt
+        prompt = load_prompt("semantic_fidelity")
+        lower = prompt.lower()
+        assert "imagery" in lower and "aside" in lower
+        for kind in ("claim", "explanation", "example", "attribution", "quotation"):
+            assert kind in lower, kind
+        assert '"added"' in prompt
+        assert "added material is allowed" not in lower
 
     def test_prompt_requires_both_walks(self):
         """Walk 1 catches drops and distortions, Walk 2 catches invented specifics."""
