@@ -190,36 +190,37 @@ class TestValidateSemanticFidelity:
         # Should use restyled as fallback since "result" key missing
         assert result.corrected == "restyled fallback"
 
-    def test_max_tokens_scales_with_input(self):
-        """max_tokens should scale with restyled text length."""
+    def test_max_tokens_covers_the_whole_response(self):
+        """The reply walks every claim, quotes spans and repeats the paragraph.
+
+        With max_tokens at 4x the restyled words, 7 of 15 replies on a
+        170-word essay stopped at 1024 tokens mid-JSON and went unchecked.
+        """
         from src.validation.semantic_fidelity import validate_semantic_fidelity
 
         mock_provider = MagicMock()
-        mock_provider.call.return_value = json.dumps({
-            "changes": [],
-            "result": "short",
-        })
+        mock_provider.call.return_value = json.dumps({"changes": [], "result": "short"})
+        text = " ".join(["word"] * 170)
+        validate_semantic_fidelity(original=text, restyled=text, critic_provider=mock_provider)
+        budget = mock_provider.call.call_args.kwargs.get("max_tokens")
+        assert budget >= 4096
+        # Coverage claims ~ the original, found spans + result ~ twice the restyled text.
+        long_text = " ".join(["word"] * 900)
+        validate_semantic_fidelity(original=long_text, restyled=long_text, critic_provider=mock_provider)
+        assert mock_provider.call.call_args.kwargs.get("max_tokens") >= 900 * 3 * 3
 
-        # Short text — should use minimum of 1024
-        validate_semantic_fidelity(
-            original="short",
-            restyled="short",
-            critic_provider=mock_provider,
-        )
+    def test_a_cut_off_reply_is_retried_with_more_room(self):
+        from src.validation.semantic_fidelity import validate_semantic_fidelity
 
-        call_kwargs = mock_provider.call.call_args
-        assert call_kwargs.kwargs.get("max_tokens") == 1024
-
-        # Long text — should scale up
-        long_text = " ".join(["word"] * 500)
-        validate_semantic_fidelity(
-            original=long_text,
-            restyled=long_text,
-            critic_provider=mock_provider,
-        )
-
-        call_kwargs = mock_provider.call.call_args
-        assert call_kwargs.kwargs.get("max_tokens") == 500 * 4
+        mock_provider = MagicMock()
+        mock_provider.call.side_effect = [
+            '{"coverage": [{"claim": "cut off',
+            json.dumps({"changes": [{"type": "missing", "issue": "x"}], "result": "fixed text"}),
+        ]
+        result = validate_semantic_fidelity(original="orig", restyled="restyled", critic_provider=mock_provider)
+        assert result.corrected == "fixed text"
+        first, second = [c.kwargs["max_tokens"] for c in mock_provider.call.call_args_list]
+        assert second > first
 
     def test_multiple_changes_logged(self):
         """Multiple changes should all be present in result."""

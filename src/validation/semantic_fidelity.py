@@ -54,16 +54,27 @@ def validate_semantic_fidelity(
     system_prompt = load_prompt("semantic_fidelity")
     user_prompt = f"ORIGINAL:\n{original}\n\nRESTYLED:\n{restyled}"
 
+    # The reply walks every claim of the original, quotes the restyled spans
+    # and repeats the whole paragraph; 4x the restyled words cut half the
+    # replies off mid-JSON, leaving those paragraphs unchecked.
+    budget = max(4096, (len(original.split()) + 2 * len(restyled.split())) * 3)
     try:
-        response = critic_provider.call(
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            temperature=0.1,
-            max_tokens=max(1024, len(restyled.split()) * 4),
-            require_json=True,
-        )
-
-        result = json.loads(response)
+        result = None
+        for attempt in range(2):
+            response = critic_provider.call(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                temperature=0.1,
+                max_tokens=budget * (attempt + 1),
+                require_json=True,
+            )
+            try:
+                result = json.loads(response)
+                break
+            except json.JSONDecodeError:
+                if attempt == 1:
+                    raise
+                logger.info("Fidelity reply was cut off or malformed; retrying with more room")
         changes = result.get("changes", [])
         corrected = result.get("result", restyled)
 
