@@ -51,9 +51,9 @@ preprocessing_num_workers: 8
 ### Output
 output_dir: saves/Hemmingway-1/lora/russell
 logging_steps: 10
-# A checkpoint every 250 steps, ~10 over the run.
+# A checkpoint every 250 steps, ~12 over the run.
 # scripts/runpod/archive_adapters.sh copies each one's adapter (~7.5GB at
-# rank 256, fp32) to /workspace/adapters for evaluation, ~75GB in all: size
+# rank 256, fp32) to /workspace/adapters for evaluation, ~90GB in all: size
 # the volume at 300GB+. The full checkpoints (adapter + optimizer state,
 # ~23GB) are pruned to the last two.
 save_steps: 250
@@ -66,10 +66,10 @@ save_only_model: false
 report_to: none
 
 ### Training
-# ~9.5k rows / effective batch 8 = ~1,200 steps per epoch, ~2,400 in all.
-# The 963k-word corpus gives ~5,900 unique targets, so two epochs show each
-# about 3-4 times, close to the Qwen2.5 run (~3.7). More repetition invites
-# memorised Russell passages rather than style.
+# 7,800 rows / effective batch 8 = ~975 steps per epoch, ~2,900 in all.
+# The 963k-word corpus gives 6,458 unique targets, 1.2 rows each, so three
+# epochs show each about 3.6 times, close to the Qwen2.5 run (~3.7). More
+# repetition invites memorised Russell passages rather than style.
 # Small batches: LoRA tolerates large ones worse than full fine-tuning.
 per_device_train_batch_size: 1
 gradient_accumulation_steps: 8
@@ -81,7 +81,7 @@ gradient_accumulation_steps: 8
 # moves ~3.3x as far as run 2's, so the best checkpoint is likely at 1-1.5
 # epochs.
 learning_rate: 1.0e-5
-num_train_epochs: 2.0
+num_train_epochs: 3.0
 lr_scheduler_type: cosine
 warmup_ratio: 0.05
 # The DeltaNet layers produce the occasional gradient spike early on.

@@ -142,8 +142,8 @@ Changes made:
 - Ten more Russell books (531k words, all published by 1930) were added,
   taking the corpus to 963k words and extending its topics to politics,
   education, happiness and war.
-- Two epochs, with a checkpoint every 250 steps.
-- The mix is 50% llm_style, with 60% of the other rows shuffled.
+- Three epochs (each target seen ~3.6 times), with a checkpoint every 250 steps.
+- The mix is 40% llm_style, with 60% of the other rows shuffled: 7,800 rows, 76% with no Russell order to copy.
 
 ## Plan
 
@@ -153,7 +153,7 @@ Changes made:
    - In a share of the Russell-structure rows, the input sentences are
      shuffled after the NLI check, so meaning is checked on the original order
      (DIPPER).
-2. **Train harder** (`c95.2`): alpha 512, lr 1e-5, 2 epochs on the 963k-word
+2. **Train harder** (`c95.2`): alpha 512, lr 1e-5, 3 epochs on the 963k-word
    corpus, no prompt loss. Choose the checkpoint with `structure_score.py
    --corpus` on `input/finance.md` (low 1:1, low order, no copied runs of 12+
    words), then confirm with GPTZero.

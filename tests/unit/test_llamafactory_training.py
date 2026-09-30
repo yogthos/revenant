@@ -95,10 +95,12 @@ class TestTrainingConfigs:
         assert not cfg.get("train_on_prompt")
 
     def test_hemmingway_repeats_each_passage_a_few_times(self):
-        # ~5,900 unique targets over ~9.5k rows: two epochs show each about
-        # 3-4 times, like the Qwen2.5 run. More invites memorisation.
+        # About 3-5 showings of each target, like the Qwen2.5 run (~3.7).
+        # Fewer and the style doesn't take; more invites memorised Russell.
         cfg = _load(HEMMINGWAY)
-        assert cfg["num_train_epochs"] <= 2
+        rows = [json.loads(line) for line in (HEMMINGWAY.parent / "train.jsonl").read_text().splitlines()]
+        exposures = cfg["num_train_epochs"] * len(rows) / len({r["output"] for r in rows})
+        assert 3 <= exposures <= 5
 
     def test_hemmingway_run_resumes_after_a_crash(self):
         # With overwrite_output_dir LlamaFactory ignores existing checkpoints,
