@@ -160,3 +160,44 @@ Changes made:
 3. Later: a preference stage on the adapter's own copying outputs (`c95.3`),
    and a base-versus-chat ablation (`c95.4`).
 4. Optional: a 15-25% slice of prose content-description inputs (`c95.5`).
+
+## Run 3 results (2026-10-01)
+
+Hemmingway-1, rank 256, alpha 512, lr 1e-5, 3 epochs on the regenerated data
+(7,800 rows, 76% with no Russell order to copy). Eval loss bottomed at step
+750 (0.863), sat at ~0.885 through epoch 2 and jumped to ~0.95 in epoch 3.
+
+Each checkpoint was run on `input/finance.md` (a 2,100-word AI-written essay)
+with the stricter fidelity check, then scored with `structure_score.py
+--corpus`:
+
+| Checkpoint | Sentences | 1:1 | Order | Mean len | Len sd | Added claims cut | GPTZero |
+|---|---|---|---|---|---|---|---|
+| run 2 / 1100 | 130 -> 125 | 49% | 0.85 | 18.9 | 10.3 | - | 100% AI, "AI paraphrasing" |
+| 1000 | 130 -> 119 | 41% | 0.45 | 20.3 | 9.2 | - | 69% AI / 31% mixed |
+| 1750 | 130 -> 107 | 36% | 0.49 | 21.9 | 10.3 | 27 | - |
+| **2250** | 130 -> 100 | 36% | 0.62 | 22.2 | 11.4 | 25 | **61% human** |
+| 2925 | 130 -> 108 | 39% | 0.51 | 21.6 | 9.8 | 22 | mixed (partial scan) |
+
+- Training past the eval minimum gave the structure, as the research
+  predicted; eval loss would have picked step 750. The final epoch went too
+  far: 2925 is worse on every measure.
+- Order mattered less than expected. Shuffling the LoRA input at inference
+  (`shuffle_input_sentences`) cut order to 0.21 but left 1:1 at 41%, and
+  GPTZero still said "AI paraphrasing". What moves the detector is merging
+  and rebuilding sentences (fewer, longer, more varied ones).
+- Sentences full of figures and finance jargon (the essay's opening) stay
+  AI-like; the argument passages come out as Russell (periodic sentences,
+  "If the world were stable, there would be no ...; there would not be ...").
+- The adapter invents journalistic specifics (sources, named companies,
+  quotations). The fidelity check now cuts them, ~25 per essay. The likely
+  cause is the training filter: `nli_min_fraction` 0.75 lets up to a quarter
+  of a target's sentences go unsupported by its input, so adding is part of
+  what the model learns. A stricter target-adds threshold is the next data
+  fix.
+- Two fidelity bugs were fixed along the way: replies were cut off at 1024
+  tokens (half the paragraphs went unchecked), and the prompt allowed any
+  addition that didn't contradict the source.
+
+Checkpoint 2250 is the default Russell adapter. A scale sweep (0.8, 1.25,
+1.5) is next.
