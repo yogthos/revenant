@@ -169,6 +169,7 @@ class GenerationConfig:
         True  # Apply 8% noise to match training distribution
     )
     shuffle_input_sentences: bool = False  # Reorder the LoRA input's sentences
+    paragraph_position_hints: bool = False  # Mark a document's opening and closing paragraphs
 
 
 @dataclass
@@ -431,6 +432,7 @@ def load_config(config_path: str = "config.json") -> Config:
             use_persona=gen.get("use_persona", True),
             apply_input_perturbation=gen.get("apply_input_perturbation", True),
             shuffle_input_sentences=gen.get("shuffle_input_sentences", False),
+            paragraph_position_hints=gen.get("paragraph_position_hints", False),
         )
 
     if "style" in data:

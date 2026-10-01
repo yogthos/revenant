@@ -176,3 +176,51 @@ class TestShuffledInput:
         from src.config import _parse_model_config
         assert _parse_model_config({"shuffle_input_sentences": True}).shuffle_input_sentences is True
         assert _parse_model_config({}).shuffle_input_sentences is None
+
+
+class TestParagraphPositionHints:
+    """paragraph_position_hints tells the model which paragraph opens and which closes the piece."""
+
+    PARAS = ["The first paragraph sets the scene for everything that follows here.",
+             "The middle paragraph carries the argument forward with some evidence.",
+             "The last paragraph draws the threads together and ends the piece."]
+
+    def _run(self, mock_gen_factory, text, **cfg):
+        from src.generation.transfer import StyleTransfer, TransferConfig
+        generator = MagicMock()
+        generator.generate.return_value = "Styled output text from the generator model here."
+        mock_gen_factory.return_value = generator
+        transfer = StyleTransfer(
+            adapter_path=None, author_name="Test", critic_provider=MagicMock(provider_name="mock"),
+            config=TransferConfig(verify_semantic_fidelity=False, skip_neutralization=True,
+                                  use_persona=True, apply_input_perturbation=False,
+                                  use_structural_rag=False, use_structural_grafting=False,
+                                  min_paragraph_words=3, **cfg),
+        )
+        with patch("src.generation.transfer.build_persona_instruction", return_value="INSTRUCTION"):
+            transfer.transfer_document(text)
+        return [c.kwargs["instruction"] for c in generator.generate.call_args_list]
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_first_and_last_paragraphs_are_marked(self, mock_gen_factory):
+        from src.utils.prompts import load_prompt
+        hints = load_prompt("paragraph_position")
+        text = "# Title\n\n" + "\n\n".join(self.PARAS)
+        first, middle, last = self._run(mock_gen_factory, text, paragraph_position_hints=True)
+        assert "opening paragraph" in first and "closing paragraph" not in first
+        assert middle == "INSTRUCTION"
+        assert "closing paragraph" in last and "opening paragraph" not in last
+        assert hints  # the wording lives in prompts/, not in code
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_a_single_paragraph_is_only_an_opening(self, mock_gen_factory):
+        (only,) = self._run(mock_gen_factory, self.PARAS[0], paragraph_position_hints=True)
+        assert "opening paragraph" in only and "closing paragraph" not in only
+
+    @patch("src.generation.transfer.create_style_generator")
+    def test_off_by_default(self, mock_gen_factory):
+        assert self._run(mock_gen_factory, "\n\n".join(self.PARAS)) == ["INSTRUCTION"] * 3
+
+    def test_config_reads_it(self):
+        from src.config import GenerationConfig
+        assert GenerationConfig().paragraph_position_hints is False

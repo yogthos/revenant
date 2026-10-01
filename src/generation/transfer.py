@@ -187,6 +187,20 @@ class TransferConfig:
     # Reorder the LoRA input's sentences. Adapters trained on shuffled inputs
     # then build their own order instead of following the source's.
     shuffle_input_sentences: bool = False
+    # Tell the model which paragraph opens the document and which closes it
+    # (prompts/paragraph_position.txt).
+    paragraph_position_hints: bool = False
+
+
+def _position_hints() -> dict:
+    """{"opening": hint, "closing": hint} from prompts/paragraph_position.txt."""
+    import re
+    from ..utils.prompts import load_prompt
+
+    text = "\n".join(l for l in load_prompt("paragraph_position").splitlines() if not l.startswith("#"))
+    return {m.group(1).lower(): m.group(2).strip()
+            for m in re.finditer(r"^\[(OPENING|CLOSING)\]\s*\n(.*?)(?=^\[(?:OPENING|CLOSING)\]|\Z)",
+                                 text, re.M | re.S)}
 
 
 @dataclass
@@ -616,6 +630,7 @@ class StyleTransfer:
         self,
         paragraph: str,
         previous: Optional[str] = None,
+        position: Optional[str] = None,
     ) -> Tuple[str, float]:
         """Transfer a single paragraph with graph-based validation.
 
@@ -630,6 +645,8 @@ class StyleTransfer:
         Args:
             paragraph: Source paragraph.
             previous: Previous output paragraph for continuity.
+            position: "opening" or "closing" for a document's first and last
+                paragraphs, hinted to the model when paragraph_position_hints is on.
 
         Returns:
             Tuple of (styled_paragraph, entailment_score).
@@ -793,6 +810,11 @@ class StyleTransfer:
                 adapter_path=self.adapter_path,
             )
             structural_guidance = None  # Already included in the instruction
+            if position and self.config.paragraph_position_hints:
+                hint = _position_hints().get(position)
+                if hint:
+                    instruction = f"{instruction}\n{hint}"
+                    logger.info(f"POSITION: {position} paragraph")
             logger.debug(f"Using persona prompt (target={target_words} words)")
 
         output = self.generator.generate(
@@ -1055,6 +1077,18 @@ class StyleTransfer:
 
         previous = None
 
+        # The first and last paragraphs that will actually be restyled.
+        def _restyled(p: str) -> bool:
+            lines = p.strip().split("\n")
+            heading = self.config.pass_headings_unchanged and len(lines) == 1 and is_heading(lines[0])
+            return not heading and len(p.split()) >= self.config.min_paragraph_words
+
+        body = [i for i, p in enumerate(paragraphs) if _restyled(p)]
+        positions = {}
+        if body:
+            positions[body[-1]] = "closing"
+            positions[body[0]] = "opening"
+
         for i, para in enumerate(paragraphs):
             if on_progress:
                 on_progress(i + 1, len(paragraphs), f"Processing paragraph {i + 1}")
@@ -1074,7 +1108,7 @@ class StyleTransfer:
                 output = para
                 score = 1.0
             else:
-                output, score = self.transfer_paragraph(para, previous)
+                output, score = self.transfer_paragraph(para, previous, position=positions.get(i))
 
             para_time = time.time() - para_start
             logger.debug(f"Paragraph {i + 1}: {para_time:.1f}s, score={score:.2f}")

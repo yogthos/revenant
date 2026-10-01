@@ -343,6 +343,7 @@ def transfer_file(
             rag_sample_size=gen.rag_sample_size,
             apply_input_perturbation=gen.apply_input_perturbation,
             shuffle_input_sentences=gen.shuffle_input_sentences,
+            paragraph_position_hints=gen.paragraph_position_hints,
             use_persona=gen.use_persona,
         )
     else:

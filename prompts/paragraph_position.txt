@@ -1,0 +1,9 @@
+# Appended to the persona instruction for the first and last paragraphs of a
+# document when generation.paragraph_position_hints is on, so the model opens
+# and closes the piece instead of treating every paragraph as a middle one.
+
+[OPENING]
+[CONTEXT]: This is the opening paragraph of the piece; begin where the passage begins.
+
+[CLOSING]
+[CONTEXT]: This is the closing paragraph of the piece; end where the passage ends.

@@ -469,6 +469,7 @@ def run_repl(
             use_persona=gen.use_persona,
             apply_input_perturbation=gen.apply_input_perturbation,
             shuffle_input_sentences=gen.shuffle_input_sentences,
+            paragraph_position_hints=gen.paragraph_position_hints,
             pass_headings_unchanged=False,
             min_paragraph_words=5,
         )
