@@ -22,7 +22,9 @@ Two specifics are never derivable, no matter how plausible they look:
 
 The general rule behind both: the restyled paragraph may be vaguer than the original, never more specific than it.
 
-Claims that came back null in Walk 1 are your "missing" candidates. Claims marked faithful:false, and specifics marked in_original:false, are your "contradiction" candidates. Do not report a fix you did not first surface in a walk.
+Walk 3 — every claim in the restyled paragraph. Go through the restyled text once more, clause by clause, and list each thing it asserts that the original does not: a claim, an explanation or definition, a reason or consequence, an example or analogy offered as evidence, a comparison, an attribution, a quotation. Report as an "additions" array of {"added": "<quoted span from the restyled paragraph>", "kind": "claim|explanation|example|attribution|quotation"}. Something the original states in other words, or implies so plainly that no reader could miss it, is not an addition. Imagery and asides that only colour what the original says are not additions either (see below).
+
+Claims that came back null in Walk 1 are your "missing" candidates. Claims marked faithful:false, and specifics marked in_original:false, are your "contradiction" candidates. Everything in "additions" is an "added" candidate. Do not report a fix you did not first surface in a walk.
 
 STRUCTURE OUTRANKS EVERYTHING:
 The restyled sentence structure, rhythm, and word choices are the point of the exercise and they outrank your preferences. When information has to be restored, work it INTO the sentences that are already there — extend a clause, add a modifier, name the thing left unnamed. Do not append explanatory sentences. Do not rebuild a sentence to make room. Never move the restyled wording back toward the original's wording; differing language is the goal, not a defect. If a repair would cost more structure than the defect costs meaning, leave it alone and report nothing.
@@ -30,23 +32,25 @@ The restyled sentence structure, rhythm, and word choices are the point of the e
 WHAT TO FIX, in priority order:
 1. Missing information — a fact, actor, number, condition, or step in the argument that the original states and no reader of the restyled paragraph could recover.
 2. Contradiction — the restyled paragraph hands the reader a belief the original rules out: flipped polarity, reversed causation, swapped roles, wrong number or name, a "therefore" the original does not license, certainty where the original hedged or hedging where the original was firm, "all" where the original said "some", a judgment the original declines to make.
-3. Grammar that breaks a sentence: subject-verb disagreement, wrong article, pronoun with no antecedent, dangling modifier, broken syntax. Deliberate fragments and unconventional rhythm are style, not errors.
+3. Added content — a claim, explanation, definition, reason, consequence, example, comparison, attribution or quotation the original does not make. The reader would come away believing something the source never told them. Cut it.
+4. Grammar that breaks a sentence: subject-verb disagreement, wrong article, pronoun with no antecedent, dangling modifier, broken syntax. Deliberate fragments and unconventional rhythm are style, not errors.
 
 WHAT NOT TO TOUCH:
-Added material is allowed. The stylist may add imagery, an aside, a connecting observation, an intensifier, or a concrete illustration of something the original only implied. Leave it alone as long as it sits comfortably with the original — an addition earns its place by not fighting the source. Cut an addition ONLY when the original contradicts it, or when it invents a specific a reader would take as sourced fact: a number, date, name, place, event, or attribution that is neither in the original nor derivable from it.
+Flourish is not an addition. The stylist may add imagery, an aside, an intensifier, a figure of speech, irony, or a rhetorical restatement of something the original says. Flourish colours what the original says; it never tells the reader something new. The test for any added material: would a reader come away believing a fact, a reason, an example, an explanation or a source that the original did not give them? If not, it is flourish; leave it. If so, it is an added claim; cut it, however plausible or well written it is.
 
 Also leave alone: different words for the same idea, different sentence boundaries, different order, changed register or tone, and phrasing that is plainer or more vivid than the original without changing what is claimed.
 
 HOW TO EDIT:
-The smallest intervention that works, made inside the restyled sentence already closest to the problem. Restoring missing information NEVER adds a sentence. You fold it into a sentence that is already there — extend the nearest clause with a phrase that sounds like the sentence it joins, in the stylist's language rather than the original's. Copying the original's sentence in whole is always wrong, even when it is the easiest repair, and appending it as a new final sentence is the most common way this check fails. Every "missing" change must name, in a "host" field, the existing restyled sentence you folded the information into. If you cannot name a host, you have written a new sentence and must go back and fold it in instead. Prefer, in order: extend or modify an existing clause; swap the single wrong word; and only if neither works, add one short phrase. Never rewrite a sentence wholesale.
+The smallest intervention that works, made inside the restyled sentence already closest to the problem. To cut an addition, remove the clause that carries it and mend the join; remove a whole sentence only when the whole sentence is the addition. Restoring missing information NEVER adds a sentence. You fold it into a sentence that is already there — extend the nearest clause with a phrase that sounds like the sentence it joins, in the stylist's language rather than the original's. Copying the original's sentence in whole is always wrong, even when it is the easiest repair, and appending it as a new final sentence is the most common way this check fails. Every "missing" change must name, in a "host" field, the existing restyled sentence you folded the information into. If you cannot name a host, you have written a new sentence and must go back and fold it in instead. Prefer, in order: extend or modify an existing clause; swap the single wrong word; and only if neither works, add one short phrase. Never rewrite a sentence wholesale.
 
 FINAL CHECK:
-Against the restyled text you were given — is every sentence still recognisably the stylist's? Against the original — could a reader now recover everything it claims? Both answers must be yes.
+Against the restyled text you were given — is every sentence still recognisably the stylist's? Against the original — could a reader now recover everything it claims, and nothing it doesn't? Both answers must be yes.
 
-Respond in JSON. Each change carries a type: "missing", "contradiction", or "grammar".
+Respond in JSON. Each change carries a type: "missing", "contradiction", "added", or "grammar".
 {
   "coverage": [{"claim": "...", "found": "...", "faithful": true}],
   "specifics": [{"specific": "...", "in_original": true}],
+  "additions": [{"added": "...", "kind": "claim"}],
   "changes": [{"type": "missing", "issue": "...", "host": "<existing restyled sentence the fix folds into; omit for other types>", "fix": "..."}],
   "result": "corrected text"
 }

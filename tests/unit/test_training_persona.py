@@ -229,3 +229,52 @@ class TestLLMStyleMix:
                          block_size=1, val_fraction=0.1, llm_style_share=0.5)
         assert stats["train"] + stats["val"] + stats["straddling"] == 40
         assert stats["mixed_out"] == 60
+
+
+class TestShuffleInputs:
+    """--shuffle-share reorders the input sentences of rows that keep the author's order."""
+
+    SENTS = ["The man walked slowly to the old town market.", "He bought fresh bread for his whole family.",
+             "Then he carried it home along the river path.", "His children were waiting at the garden gate.",
+             "They ate the bread together before the evening meal."]
+    OUT = ("Going down to the market in the old town, as was his habit, he came away with loaves enough "
+           "for everyone; and when he had brought them home by the river, his children, who had waited "
+           "for him at the gate, shared them with him before supper.")
+
+    def _rows(self, n=40):
+        rows = []
+        for i in range(n):
+            vtype = "llm_style" if i % 4 == 0 else "standard"
+            rows.append({"input": " ".join(self.SENTS) + f" Row {i} ends here now.",
+                         "output": self.OUT + f" So ended day {i}.",
+                         "source_idx": i, "source_paragraphs": [i], "variation_type": vtype})
+        return rows
+
+    def test_shuffles_that_share_of_non_llm_rows(self):
+        from filter_training_data import shuffle_inputs
+        rows = self._rows()
+        out, n = shuffle_inputs([dict(r) for r in rows], share=0.5, seed=1)
+        changed = [o for o, r in zip(out, rows) if o["input"] != r["input"]]
+        assert n == len(changed)
+        assert 10 <= n <= 20  # about half of the 30 standard rows
+        assert all(o["variation_type"] == "standard" for o in changed)
+        assert all(sorted(o["input"].split()) == sorted(r["input"].split()) for o, r in zip(out, rows))
+
+    def test_outputs_are_untouched(self):
+        from filter_training_data import shuffle_inputs
+        rows = self._rows()
+        out, _ = shuffle_inputs([dict(r) for r in rows], share=1.0, seed=1)
+        assert [o["output"] for o in out] == [r["output"] for r in rows]
+
+    def test_finalize_checks_entailment_before_shuffling(self, tmp_path, monkeypatch):
+        import filter_training_data as ftd
+        seen = []
+        monkeypatch.setattr(ftd, "entailment_problem",
+                            lambda i, o, n, min_fraction=0.75: seen.append(i) or None)
+        raw = tmp_path / "train.jsonl"
+        rows = self._rows(8)
+        raw.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        stats = ftd.finalize(raw, tmp_path / "lf", "d", persona=lambda r: "P", nli_model=object(),
+                             block_size=1, val_fraction=0.2, shuffle_share=1.0)
+        assert sorted(seen) == sorted(r["input"] for r in rows)
+        assert stats["shuffled"] == 6

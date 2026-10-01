@@ -140,6 +140,10 @@ LLM_STYLE_PER_ORIGINAL = 2
 # Share of the author's 4-word sequences a rewrite may keep; above this it
 # is a paraphrase in the author's structure, not an LLM rewrite.
 MAX_LLM_REWRITE_OVERLAP = 0.3
+# Kendall tau of the source sentences in the rewrite's order. Inputs that keep
+# the target's order teach the model to keep whatever order it is given;
+# STRAP (Krishna et al. 2020) dropped paraphrase pairs above 0.5.
+MAX_LLM_REWRITE_ORDER = 0.5
 # Prefaces about the rewrite itself. "Here's the thing:" is a register's
 # opener, not a preface.
 _META_RE = re.compile(
@@ -202,14 +206,22 @@ def llm_rewrite_problem(source: str, rewrite: str) -> Optional[str]:
     overlap = ngram_overlap(source, rewrite)
     if overlap > MAX_LLM_REWRITE_OVERLAP:
         return f"echo ({overlap:.0%} of 4-grams kept)"
+    from src.utils.structure import paragraph_score
+    order = paragraph_score(rewrite, source)["order"]
+    if order is not None and order > MAX_LLM_REWRITE_ORDER:
+        return f"source order kept (tau {order:.2f})"
     return None
 
 
 def llm_style_rewrite(text: str, register: str) -> Optional[str]:
     """The text rewritten in one LLM register, or None if unusable."""
+    from src.utils.structure import shuffle_sentences
+
     steps = load_llm_style_registers()[register].steps
     for _ in range(2):
-        rewrite = text
+        # Asked to reorder, DeepSeek still follows the passage; from shuffled
+        # sentences it builds its own order, which llm_rewrite_problem requires.
+        rewrite = shuffle_sentences(text, random)
         try:
             for n, step in enumerate(steps):
                 prompt = step.format(text=rewrite, words=len(text.split()))
@@ -2063,6 +2075,11 @@ def main():
                         help="With --llm-style-only: add llm_style rows instead of replacing the existing ones")
     parser.add_argument("--llm-style-registers", default=None,
                         help="Comma-separated registers to draw from (default: all, by weight)")
+    parser.add_argument("--llm-style-share", type=float, default=None,
+                        help="Passed to filter_training_data: sample other rows so llm_style is this fraction")
+    parser.add_argument("--shuffle-share", type=float, default=None,
+                        help="Passed to filter_training_data: shuffle input sentences in this share of "
+                             "the non-llm_style rows")
     parser.add_argument("--llm-style-per-original", type=int, default=LLM_STYLE_PER_ORIGINAL,
                         help="LLM-style rewrites per original chunk, each in a different register "
                              "(prompts/llm_style_rewrite.txt); 0 disables")
@@ -2311,6 +2328,8 @@ def main():
             val_fraction=args.val_fraction,
             nli=not args.no_nli,
             nli_cache=output_dir / NLI_CACHE_NAME,
+            llm_style_share=args.llm_style_share,
+            shuffle_share=args.shuffle_share,
             log=logger.info,
         )
 

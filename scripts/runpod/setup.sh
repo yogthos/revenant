@@ -7,7 +7,7 @@
 # training data, checkpoints, archived adapters. A restarted pod wipes /root;
 # clone again and rerun this (the model download is skipped when cached).
 #
-#   cd /root && git clone -b fix/llamafactory-training <repo> revenant
+#   cd /root && git clone -b <branch> <repo> revenant
 #   bash /root/revenant/scripts/runpod/setup.sh
 set -euo pipefail
 

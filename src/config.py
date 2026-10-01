@@ -90,6 +90,9 @@ class ModelConfig:
     verify_entailment: Optional[bool] = None
     merge_paragraphs: Optional[int] = None
     use_structural_rag: Optional[bool] = None
+    # Shuffle the sentences of the LoRA input, for adapters trained on
+    # shuffled inputs (see docs/structure_transfer_research.md).
+    shuffle_input_sentences: Optional[bool] = None
     # Additive logit bias per character/string. Keys are strings (e.g. ";",
     # "—"), values are floats added to that token's logit at every sampling
     # step. Positive values encourage the token; negative values suppress.
@@ -165,6 +168,7 @@ class GenerationConfig:
     apply_input_perturbation: bool = (
         True  # Apply 8% noise to match training distribution
     )
+    shuffle_input_sentences: bool = False  # Reorder the LoRA input's sentences
 
 
 @dataclass
@@ -265,6 +269,7 @@ _KNOWN_MODEL_FIELDS = {
     "verify_entailment",
     "merge_paragraphs",
     "use_structural_rag",
+    "shuffle_input_sentences",
     "logit_bias",
     "author",
     "chat_template",
@@ -309,6 +314,7 @@ def _parse_model_config(data: Dict) -> ModelConfig:
         verify_entailment=data.get("verify_entailment"),
         merge_paragraphs=data.get("merge_paragraphs"),
         use_structural_rag=data.get("use_structural_rag"),
+        shuffle_input_sentences=data.get("shuffle_input_sentences"),
         logit_bias=data.get("logit_bias", {}),
         author=data.get("author", ""),
         chat_template=data.get("chat_template", ""),
@@ -424,6 +430,7 @@ def load_config(config_path: str = "config.json") -> Config:
             rag_sample_size=gen.get("rag_sample_size", 300),
             use_persona=gen.get("use_persona", True),
             apply_input_perturbation=gen.get("apply_input_perturbation", True),
+            shuffle_input_sentences=gen.get("shuffle_input_sentences", False),
         )
 
     if "style" in data:

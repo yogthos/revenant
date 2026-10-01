@@ -309,6 +309,27 @@ def mix_llm_style(rows: List[dict], share: float, seed: int = 42) -> List[dict]:
     return [r for i, r in enumerate(rows) if i in keep]
 
 
+def shuffle_inputs(rows: List[dict], share: float, seed: int = 42) -> Tuple[List[dict], int]:
+    """Shuffle the input sentences of ``share`` of the non-llm_style rows, in place.
+
+    Those inputs keep the author's sentence order, so the model learns to keep
+    whatever order it is given. DIPPER (Krishna et al. 2023) shuffled its
+    inputs so the model had to learn the order. Returns (rows, number shuffled).
+    """
+    from src.utils.structure import shuffle_sentences
+
+    rng = random.Random(seed)
+    shuffled = 0
+    for row in rows:
+        if row.get("variation_type") == "llm_style" or rng.random() >= share:
+            continue
+        new = shuffle_sentences(row["input"], rng)
+        if new != row["input"]:
+            row["input"] = new
+            shuffled += 1
+    return rows, shuffled
+
+
 # ---------------------------------------------------------------------------
 # Finalize
 # ---------------------------------------------------------------------------
@@ -350,14 +371,16 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
              block_size: int = 20, max_ratio: float = 2.0, min_input_words: int = 15,
              nli_min_fraction: float = 0.75, nli_model=None, max_tokens: int = DEFAULT_MAX_TOKENS,
              nli_cache: Optional[Path] = None, llm_style_share: Optional[float] = None,
-             log=print) -> dict:
+             shuffle_share: Optional[float] = None, log=print) -> dict:
     """Filter raw rows, add the persona, split by source paragraph, write LlamaFactory files.
 
     ``persona`` maps a row to its system prompt (see PersonaBuilder).
     ``nli_cache`` is a JSON file of earlier entailment results, so rows
     already checked aren't checked again (it's the slow step).
     ``llm_style_share`` samples the kept rows down so llm_style rows make up
-    that fraction (see mix_llm_style).
+    that fraction (see mix_llm_style). ``shuffle_share`` then shuffles the
+    input sentences of that share of the other rows (see shuffle_inputs),
+    after the entailment check so it runs on the original order.
     """
     rows = list(_read_jsonl(raw_path))
     reasons: dict = {}
@@ -408,6 +431,11 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
         kept = mixed
         log(f"  Mix: llm_style {llm_style_share:.0%}, {mixed_out} other rows sampled out")
 
+    shuffled = 0
+    if shuffle_share:
+        kept, shuffled = shuffle_inputs(kept, shuffle_share, seed=seed)
+        log(f"  Shuffle: input sentences reordered in {shuffled} rows")
+
     train, val, straddling = split_by_source(kept, val_fraction=val_fraction, seed=seed, block_size=block_size)
 
     llama_factory_dir.mkdir(parents=True, exist_ok=True)
@@ -421,7 +449,8 @@ def finalize(raw_path: Path, llama_factory_dir: Path, dataset_name: str, *, pers
     (llama_factory_dir / "dataset_info.json").write_text(json.dumps(info, indent=2) + "\n")
 
     stats = {"raw": len(rows), "rejected": reasons, "straddling": straddling,
-             "train": len(train), "val": len(val), "mixed_out": mixed_out}
+             "train": len(train), "val": len(val), "mixed_out": mixed_out,
+             "shuffled": shuffled}
     log(f"Rows: {len(rows)} raw -> {len(train)} train + {len(val)} val "
         f"({sum(reasons.values())} rejected, {straddling} straddled the split)")
     for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1]):
@@ -458,6 +487,8 @@ def main():
     parser.add_argument("--llm-style-share", type=float, default=None,
                         help="Keep every llm_style row and sample the rest so llm_style is this "
                              "fraction of the data (e.g. 0.7)")
+    parser.add_argument("--shuffle-share", type=float, default=None,
+                        help="Shuffle the input sentences of this share of the non-llm_style rows")
     args = parser.parse_args()
 
     out_dir = args.llama_factory_dir or args.input.parent / "LlamaFactory"
@@ -468,6 +499,7 @@ def main():
              seed=args.seed, block_size=args.block_size, max_ratio=args.max_ratio,
              min_input_words=args.min_input_words, nli_min_fraction=args.nli_min_fraction,
              max_tokens=args.max_tokens, llm_style_share=args.llm_style_share,
+             shuffle_share=args.shuffle_share,
              nli_cache=None if args.no_nli_cache else args.input.parent / NLI_CACHE_NAME)
 
 

@@ -342,6 +342,7 @@ def transfer_file(
             use_structural_grafting=gen.use_structural_grafting,
             rag_sample_size=gen.rag_sample_size,
             apply_input_perturbation=gen.apply_input_perturbation,
+            shuffle_input_sentences=gen.shuffle_input_sentences,
             use_persona=gen.use_persona,
         )
     else:

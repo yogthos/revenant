@@ -23,7 +23,15 @@ RUSSELL = (
     "man the world tends to become definite, finite, obvious; common objects rouse no questions, and "
     "unfamiliar possibilities are contemptuously rejected."
 )
+# The points in a different order (consequence first), as a training input needs.
 REWRITE = (
+    "The world feels fixed, limited, and obvious. Everyday things spark no curiosity. New possibilities "
+    "get dismissed out of hand. Why? Without philosophy, a person stays trapped. Common sense, the "
+    "beliefs of their era and nation, and ideas they never consciously chose all shape how they think. "
+    "That's the real cost of ignoring philosophy: not ignorance, but a closed mind."
+)
+# The same points in the passage's order: it would teach the model to keep the order.
+IN_ORDER = (
     "Without philosophy, a person stays trapped. Common sense, the beliefs of their era and nation, and "
     "ideas they never consciously chose all shape how they think. The result? The world feels fixed, "
     "limited, and obvious. Everyday things spark no curiosity. New possibilities get dismissed out of "
@@ -74,14 +82,33 @@ class TestPrompts:
         monkeypatch.setattr(gft, "load_llm_style_registers",
                             lambda: {"two": LLMRegister("two", ["A {words} {text}", "B {text}"], 1.0)})
         assert gft.llm_style_rewrite(RUSSELL, "two") == REWRITE
-        assert prompts[0].startswith("A ") and RUSSELL in prompts[0]
+        assert prompts[0].startswith("A ")
         assert prompts[1] == "B DRAFT TEXT"
+
+    def test_the_rewrite_starts_from_shuffled_sentences(self, monkeypatch):
+        # Told to reorder, DeepSeek still followed the passage (tau ~0.75);
+        # rewriting shuffled sentences gave tau ~0 (DIPPER shuffles its inputs).
+        import generate_flat_training as gft
+        from generate_flat_training import LLMRegister
+        from src.utils.nlp import split_into_sentences
+        prompts = []
+        monkeypatch.setattr(gft, "call_deepseek", lambda prompt, **kw: prompts.append(prompt) or REWRITE)
+        monkeypatch.setattr(gft, "load_llm_style_registers",
+                            lambda: {"one": LLMRegister("one", ["{text}"], 1.0)})
+        gft.llm_style_rewrite(RUSSELL, "one")
+        first, second = split_into_sentences(RUSSELL)
+        assert prompts[0] == f"{second} {first}"
 
 
 class TestRewriteCheck:
     def test_accepts_a_restructured_rewrite(self):
         from generate_flat_training import llm_rewrite_problem
         assert llm_rewrite_problem(RUSSELL, REWRITE) is None
+
+    def test_rejects_a_rewrite_in_the_source_order(self):
+        # STRAP dropped paraphrase pairs with Kendall tau above 0.5.
+        from generate_flat_training import llm_rewrite_problem
+        assert "order" in llm_rewrite_problem(RUSSELL, IN_ORDER)
 
     def test_rejects_an_echo(self):
         from generate_flat_training import llm_rewrite_problem

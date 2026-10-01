@@ -39,12 +39,13 @@ bash revenant/scripts/runpod/train.sh          # the real run, detached in tmux
   Hold Shift to select text for copying while mouse mode is on. You can close the SSH session; the run keeps going.
 - If the run dies (or the pod restarts), run `train.sh` again: the yaml keeps
   `overwrite_output_dir: false`, so LlamaFactory resumes from the last checkpoint.
-- A checkpoint every 100 steps (~27 in all). The trainer keeps the last four
-  full checkpoints plus the best; the archive window copies every checkpoint's
-  adapter (~2GB) to `/workspace/adapters/checkpoint-N` for evaluation.
+- A checkpoint every 250 steps (~12 in all). The trainer keeps the last two
+  full checkpoints; the archive window copies every checkpoint's adapter
+  (~7.5GB at rank 256) to `/workspace/adapters/checkpoint-N` for evaluation.
+  Use an H200 and a 350GB volume.
 - Progress: `tail -n 2 /workspace/russell_training/saves/Hemmingway-1/lora/russell/trainer_log.jsonl`
-  shows loss, eval loss and remaining time. Expect roughly 1-1.5h per epoch on
-  an H100 and 2.5-3.5h on an A100, so 4-10h for the three epochs.
+  shows loss, eval loss and remaining time. Run 2 took ~5.4s a step on an
+  H200 at rank 256 (6.7s with evals); ~2,900 steps is about 4.5-5h.
 
 `train.sh` runs `scripts/runpod/lf_train.py` instead of `llamafactory-cli
 train`. LlamaFactory's `qwen3_8` template carries the Qwen3-VL image plugin,
@@ -113,10 +114,12 @@ cp revenant/data/training/russell/LlamaFactory/{dataset_info.json,train.jsonl,va
 
 The yaml trains in Hemmingway-1's own chat format: persona as the system
 message, text as the user message, thinking off (`template: qwen3_8`,
-`enable_thinking: false`), without packing, and keeps the checkpoint with the
-lowest validation loss (`load_best_model_at_end`). It is bf16 LoRA: Unsloth
+`enable_thinking: false`), without packing. It does not keep the checkpoint with the lowest
+validation loss: that one rewords its input sentence by sentence. Pick one
+by running the archived adapters on `input/finance.md` and scoring them with
+`scripts/structure_score.py` (see docs/structure_transfer_research.md). It is bf16 LoRA: Unsloth
 advises against QLoRA on Qwen3.5-architecture models. Rank 64 fits one 80GB
-card; for rank 128+ use an H200. The model is CC BY-NC 4.0.
+card; for rank 128+ (the yaml uses 256) use an H200. The model is CC BY-NC 4.0.
 
 ### Qwen 2.5 — Howard Russell (blended)
 
