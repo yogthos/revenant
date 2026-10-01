@@ -71,21 +71,25 @@
     },
     "_comment4a": "LoRA adapters with per-adapter generation settings (enabled: true/false to toggle)",
     "lora_adapters": {
-      "lora_adapters/russell_hemmingway_mlx": {
-        "_comment": "Hemmingway-1 27B, data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml. Base model and template come from metadata.json. Run it unfused on an 8-bit base: the LoRA delta is smaller than q8 rounding, so fusing then quantizing blurs it.",
-        "enabled": false,
+      "lora_adapters/russell_run3_2250": {
+        "_comment": "Hemmingway-1 27B, run 3 checkpoint 2250 (yogthos/russell-hemmingway1-r256-run3, private), converted with scripts/convert_peft_to_mlx.py --mlx-model models/Hemmingway-1-8bit-MLX. Run it unfused on the 8-bit base. Scale 1.25 with expand_for_texture scored 83% human on GPTZero; 1.5 starts changing the meaning (docs/structure_transfer_research.md).",
+        "enabled": true,
         "_comment_scale": "scale multiplies the strength the adapter was trained at: 1.0 = as trained",
-        "scale": 1.0,
+        "scale": 1.25,
         "temperature": 0.7,
-        "top_p": 0.95,
-        "min_p": 0.03,
-        "repetition_penalty": 1.05,
-        "max_tokens": 1024,
-        "worldview": "russell_worldview.txt"
+        "top_p": 0.92,
+        "min_p": 0.05,
+        "repetition_penalty": 1.07,
+        "max_tokens": 2048,
+        "worldview": "russell_worldview.txt",
+        "expand_for_texture": true,
+        "author": "Bertrand Russell",
+        "perspective": "preserve",
+        "verify_entailment": true
       },
       "lora_adapters/lovecraft_32b": {
         "_comment": "Qwen2.5-32B trained on RunPod A100, checkpoint-600 has best val_loss",
-        "enabled": true,
+        "enabled": false,
         "expand_for_texture": false,
         "scale": 1.0,
         "chat_template": "qwen",
@@ -101,7 +105,7 @@
         "_comment_bias": "logit_bias: additive bias per character/string applied to that token's logit every step. Positive values encourage the token, negative suppress. Typical range -5.0 to +5.0. Useful for nudging characteristic punctuation (em-dash, semicolon) without fighting repetition_penalty.",
         "logit_bias": {
           ";": 1.0,
-          "—": 1.5
+          "\u2014": 1.5
         }
       },
       "lora_adapters/lovecraft_14b": {
