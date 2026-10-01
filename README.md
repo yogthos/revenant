@@ -37,6 +37,39 @@ python restyle.py input.md -o output.md \
     --author "Author Name"
 ```
 
+## Pretrained Bertrand Russell Adapter
+
+[yogthos/hemmingway1-russell-lora-r256](https://huggingface.co/yogthos/hemmingway1-russell-lora-r256)
+is a rank-256 LoRA for [Altworld/Hemmingway-1](https://huggingface.co/Altworld/Hemmingway-1) (27B),
+trained on ten Russell books with LLM-style inputs. Use `checkpoint-2250`. At scale 1.25,
+restyling an AI-written essay scored 83% human on GPTZero; see
+[docs/structure_transfer_research.md](docs/structure_transfer_research.md). It runs unfused on an
+8-bit base: about 35GB of memory and 35GB of disk.
+
+```bash
+# Base model: 8-bit MLX (mlx_lm loads the flat qwen3_5_text config as qwen3_5)
+hf download Altworld/Hemmingway-1 --local-dir models/Hemmingway-1
+python -c "import json; p='models/Hemmingway-1/config.json'; c=json.load(open(p)); \
+    c['model_type']='qwen3_5'; json.dump(c, open(p, 'w'), indent=2)"
+python -m mlx_lm convert --hf-path models/Hemmingway-1 \
+    --mlx-path models/Hemmingway-1-8bit-MLX -q --q-bits 8
+rm -rf models/Hemmingway-1   # the bf16 copy isn't needed after conversion
+
+# Adapter
+hf download yogthos/hemmingway1-russell-lora-r256 --include "checkpoint-2250/*" \
+    --local-dir saves/hemmingway1-russell
+python scripts/convert_peft_to_mlx.py \
+    --input saves/hemmingway1-russell/checkpoint-2250 \
+    --output lora_adapters/russell_run3_2250 \
+    --mlx-model models/Hemmingway-1-8bit-MLX --author "Bertrand Russell" \
+    --train-config data/training/russell/LlamaFactory/hemmingway1_27b_lora.yaml
+
+# config.json.sample already enables lora_adapters/russell_run3_2250 at scale 1.25
+python restyle.py input.md -o output.md --author "Bertrand Russell"
+```
+
+Hemmingway-1, and so the adapter, is CC BY-NC 4.0.
+
 ## Usage
 
 ```bash
