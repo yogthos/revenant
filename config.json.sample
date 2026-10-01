@@ -72,7 +72,7 @@
     "_comment4a": "LoRA adapters with per-adapter generation settings (enabled: true/false to toggle)",
     "lora_adapters": {
       "lora_adapters/russell_run3_2250": {
-        "_comment": "Hemmingway-1 27B, run 3 checkpoint 2250 (https://huggingface.co/yogthos/hemmingway1-russell-lora-r256), converted with scripts/convert_peft_to_mlx.py --mlx-model models/Hemmingway-1-8bit-MLX. Run it unfused on the 8-bit base. Scale 1.25 with expand_for_texture scored 83% human on GPTZero; 1.5 starts changing the meaning (docs/structure_transfer_research.md).",
+        "_comment": "Hemmingway-1 27B, run 3 checkpoint 2250 (https://huggingface.co/yogthos/hemmingway1-russell-lora-r256), converted with scripts/convert_peft_to_mlx.py --mlx-model models/Hemmingway-1-8bit-MLX. Run it unfused on the 8-bit base. Scale 1.25 without expand_for_texture scored 77% human on GPTZero (83% with it, but DeepSeek's expansion added ~29 invented claims per essay); 1.5 starts changing the meaning (docs/structure_transfer_research.md).",
         "enabled": true,
         "_comment_scale": "scale multiplies the strength the adapter was trained at: 1.0 = as trained",
         "scale": 1.25,
@@ -82,7 +82,7 @@
         "repetition_penalty": 1.07,
         "max_tokens": 2048,
         "worldview": "russell_worldview.txt",
-        "expand_for_texture": true,
+        "expand_for_texture": false,
         "author": "Bertrand Russell",
         "perspective": "preserve",
         "verify_entailment": true

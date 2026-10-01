@@ -206,6 +206,14 @@ Scale sweep on checkpoint 2250 (config scale multiplies the trained 2.0):
 | 1.0 | 130 -> 100 | 36% | 0.62 | 22.2 | 11.4 | 25 | 61% human |
 | **1.25** | 130 -> 114 | **24%** | **0.19** | 20.4 | 10.9 | 29 | **83% human, "highly confident"** |
 
-At 1.25 even the figure-heavy opening paragraph scans human. It drifts a
-little more (29 added claims cut against 25), which the fidelity check
-handles. Checkpoint 2250 at scale 1.25 is the default Russell adapter.
+At 1.25 even the figure-heavy opening paragraph scans human. At 1.5 it
+starts changing the meaning: one paragraph gained a first-person narrator and
+an invented quote that the fidelity check missed.
+
+All of the runs above had `expand_for_texture` on (inherited from an old
+config entry), so DeepSeek padded each paragraph before the adapter saw it.
+With it off, checkpoint 2250 at 1.25 scored 77% human (130 -> 92 sentences,
+1:1 34%, length sd 12.1) and the fidelity check cut 3 invented claims instead
+of 29. The invention blamed on the training filter was mostly the expansion.
+
+Default: checkpoint 2250, scale 1.25, `expand_for_texture` off.
