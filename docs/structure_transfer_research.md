@@ -199,5 +199,13 @@ with the stricter fidelity check, then scored with `structure_score.py
   tokens (half the paragraphs went unchecked), and the prompt allowed any
   addition that didn't contradict the source.
 
-Checkpoint 2250 is the default Russell adapter. A scale sweep (0.8, 1.25,
-1.5) is next.
+Scale sweep on checkpoint 2250 (config scale multiplies the trained 2.0):
+
+| Scale | Sentences | 1:1 | Order | Mean len | Len sd | Added claims cut | GPTZero |
+|---|---|---|---|---|---|---|---|
+| 1.0 | 130 -> 100 | 36% | 0.62 | 22.2 | 11.4 | 25 | 61% human |
+| **1.25** | 130 -> 114 | **24%** | **0.19** | 20.4 | 10.9 | 29 | **83% human, "highly confident"** |
+
+At 1.25 even the figure-heavy opening paragraph scans human. It drifts a
+little more (29 added claims cut against 25), which the fidelity check
+handles. Checkpoint 2250 at scale 1.25 is the default Russell adapter.
