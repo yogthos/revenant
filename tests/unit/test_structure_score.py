@@ -126,3 +126,22 @@ class TestCopiedRuns:
         out = f"{A} The man who has no tincture of philosophy goes on. {B}"
         s = document_score(f"{A} {B}", out, corpus_index=index, n=4)
         assert s["copied"] == 9  # "the man ... philosophy goes"
+
+
+class TestOpenerKept:
+    """A paragraph's opening sentence often carries the transition from the one before."""
+
+    def test_opener_kept_when_the_output_starts_from_the_input_opener(self):
+        from src.utils.structure import paragraph_score
+        out = "A tiger crouches beside the river in long grass. " + " ".join([C, B, D])
+        assert paragraph_score(" ".join([A, B, C, D]), out)["opener_kept"] is True
+
+    def test_opener_lost_when_it_moves_into_the_middle(self):
+        from src.utils.structure import paragraph_score
+        assert paragraph_score(" ".join([A, B, C, D]), " ".join([C, A, B, D]))["opener_kept"] is False
+
+    def test_document_reports_the_share_of_paragraphs(self):
+        from src.utils.structure import document_score
+        inp = f"{A} {B}\n\n{C} {D}"
+        out = f"{A} {B}\n\n{D} {C}"
+        assert document_score(inp, out)["opener_kept"] == 0.5

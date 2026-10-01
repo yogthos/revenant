@@ -217,3 +217,28 @@ With it off, checkpoint 2250 at 1.25 scored 77% human (130 -> 92 sentences,
 of 29. The invention blamed on the training filter was mostly the expansion.
 
 Default: checkpoint 2250, scale 1.25, `expand_for_texture` off.
+
+## Grafted skeletons break paragraph flow (2026-10-01)
+
+Each persona prompt carried a skeleton from a matching Russell paragraph
+("Follow this structure: [Abstract Claim] -> [Observation] -> ..."). The
+adapter rearranged the input to fit it, moving the sentences that carry a
+text's flow: a scene-setting opener, and the bridge that ties a paragraph to
+the one before. On a two-paragraph news piece (input/summit.md), three
+samples each, checkpoint 2250 at 1.25:
+
+| Prompt | Openers kept | Order | 1:1 |
+|---|---|---|---|
+| current (with skeleton) | 50% | 0.42 | 28% |
+| + "keep the opening idea" constraint | 67% | 0.67 | 26% |
+| **no skeleton** | **100%** | 0.83 | **19%** |
+
+Without the skeleton the order of ideas holds, sentences are still rebuilt
+(lowest 1:1), and the full piece scanned 100% human on GPTZero.
+`use_structural_grafting` is off by default. `structure_score.py` now
+reports the share of paragraphs whose output keeps the input's opener.
+
+Training prompts still include skeletons, so this is a train/inference
+mismatch that happens to help. Run 4 should drop or thin them and add
+document context (the end of the preceding paragraph) so the model knows what
+a paragraph's opener is bridging from.

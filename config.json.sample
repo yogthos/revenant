@@ -144,7 +144,7 @@
     "min_paragraph_words": 10,
     "_comment8": "RAG settings. Training rows get the same RAG hints and grafted skeletons (filter_training_data.py), so keep these on for adapters trained that way.",
     "use_structural_rag": true,
-    "use_structural_grafting": true,
+    "use_structural_grafting": false,
     "rag_sample_size": 300,
     "_comment9": "Persona settings (subjective voice to defeat AI detection)",
     "use_persona": true,

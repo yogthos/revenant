@@ -53,8 +53,17 @@ def paragraph_score(inp: str, out: str) -> dict:
         if shared / len(o) >= MATCH_THRESHOLD and shared / len(in_sents[best]) >= MATCH_THRESHOLD:
             one_to_one += 1
 
+    # Does the output open where the input did? The opener often carries the
+    # transition from the previous paragraph.
+    opener_kept = None
+    if in_sents and in_sents[0] and out_sents and out_sents[0]:
+        first, opener = out_sents[0], in_sents[0]
+        opener_kept = (len(first & opener) / len(opener) >= 0.5
+                       or (bool(followed) and followed[0] == 0 and bool(first & opener)))
+
     lengths = [len(s.split()) for s in out_raw]
     return {
+        "opener_kept": opener_kept,
         "n_in": len(in_sents),
         "n_out": len(out_raw),
         "one_to_one_count": one_to_one,
@@ -78,7 +87,9 @@ def document_score(inp: str, out: str, corpus_index: Optional[set] = None, n: in
     lengths = [k for s in scores for k in s["lengths"]]
     n_out = sum(s["n_out"] for s in scores)
     orders = [s["order"] for s in scores if s["order"] is not None]
+    openers = [s["opener_kept"] for s in scores if s["opener_kept"] is not None]
     return {
+        "opener_kept": sum(openers) / len(openers) if openers else None,
         "paragraphs": len(scores),
         "n_in": sum(s["n_in"] for s in scores),
         "n_out": n_out,
