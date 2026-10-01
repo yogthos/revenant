@@ -42,7 +42,7 @@ python restyle.py input.md -o output.md \
 [yogthos/hemmingway1-russell-lora-r256](https://huggingface.co/yogthos/hemmingway1-russell-lora-r256)
 is a rank-256 LoRA for [Altworld/Hemmingway-1](https://huggingface.co/Altworld/Hemmingway-1) (27B),
 trained on ten Russell books with LLM-style inputs. Use `checkpoint-2250`. At scale 1.25,
-restyling an AI-written essay scored 83% human on GPTZero; see
+restyling an AI-written essay scored 77% human on GPTZero with the essay's meaning kept; see
 [docs/structure_transfer_research.md](docs/structure_transfer_research.md). It runs unfused on an
 8-bit base: about 35GB of memory and 35GB of disk.
 
