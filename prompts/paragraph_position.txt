@@ -3,7 +3,7 @@
 # and closes the piece instead of treating every paragraph as a middle one.
 
 [OPENING]
-[CONTEXT]: This is the opening paragraph of the piece; begin where the passage begins.
+[CONTEXT]: This is an opening paragraph, setting up the narrative.
 
 [CLOSING]
-[CONTEXT]: This is the closing paragraph of the piece; end where the passage ends.
+[CONTEXT]: This is a closing paragraph, stating the conclusion.

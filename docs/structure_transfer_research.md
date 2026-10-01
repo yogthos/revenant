@@ -242,3 +242,21 @@ Training prompts still include skeletons, so this is a train/inference
 mismatch that happens to help. Run 4 should drop or thin them and add
 document context (the end of the preceding paragraph) so the model knows what
 a paragraph's opener is bridging from.
+
+### Opening and closing paragraph hints
+
+With `paragraph_position_hints`, the first and last restyled paragraphs get a
+line from `prompts/paragraph_position.txt`. Three samples each on the summit
+piece (no skeleton, checkpoint 2250 at 1.25):
+
+| Hint | Openers kept | Order | 1:1 | Mean len |
+|---|---|---|---|---|
+| none | 100% | 0.83 | 19% | 24.6 |
+| "opening paragraph of the piece; begin where the passage begins" | 100% | 0.94 | 32% | 22.6 |
+| "an opening paragraph, setting up the narrative" / "a closing paragraph, stating the conclusion" | 67% | 0.37 | 12% | 30.4 |
+
+The first wording made the model follow its input sentence by sentence. The
+second restructures most, and on a longer run of the summit piece it opened
+with the scene, kept the bridge into the second paragraph and scanned 90%
+human, so it is on by default. Samples vary: one of the three put a verdict
+first, so position belongs in training too (run 4, with document context).
